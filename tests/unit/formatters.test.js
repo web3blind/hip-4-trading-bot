@@ -6,10 +6,17 @@ import {
   parsePercentInput,
   parsePositiveNumberInput,
   parseUnitIntervalInput,
-  parseEventsFilterRangeInput,
   parseNonNegativeIntegerInput,
-  formatTxHashLink,
-  normalizeOutcomeSideHint
+  normalizeOutcomeSideHint,
+  formatPrice,
+  formatPricePercent,
+  formatUSDC,
+  formatOutcomeList,
+  formatOutcomeDetail,
+  formatPosition,
+  formatPositionsList,
+  formatOrder,
+  formatOrdersList,
 } from '../../src/modules/bot/ui/formatters.js';
 
 test('escapeHtml escapes reserved HTML characters', () => {
@@ -34,25 +41,101 @@ test('parseUnitIntervalInput rounds to requested precision', () => {
   assert.equal(parseUnitIntervalInput('0', 4), null);
 });
 
-test('parseEventsFilterRangeInput parses valid range and rejects invalid one', () => {
-  assert.deepEqual(parseEventsFilterRangeInput('0.1 - 0.9'), { min: 0.1, max: 0.9 });
-  assert.equal(parseEventsFilterRangeInput('0.9 - 0.1'), null);
-});
-
 test('parseNonNegativeIntegerInput parses integer and rejects non-integer', () => {
   assert.equal(parseNonNegativeIntegerInput(' 42 '), 42);
   assert.equal(parseNonNegativeIntegerInput('4.2'), null);
-});
-
-test('formatTxHashLink formats Polygonscan link', () => {
-  const hash = '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
-  const link = formatTxHashLink(hash);
-  assert.ok(link.includes('https://polygonscan.com/tx/'));
-  assert.ok(link.includes('<a href='));
 });
 
 test('normalizeOutcomeSideHint recognizes YES/NO variants', () => {
   assert.equal(normalizeOutcomeSideHint('yes'), 'YES');
   assert.equal(normalizeOutcomeSideHint('нет'), 'NO');
   assert.equal(normalizeOutcomeSideHint('maybe'), null);
+});
+
+// ─── New HIP-4 formatter tests ────────────────────────────────
+
+test('formatPrice formats 0-1 price as dollar + percentage', () => {
+  assert.equal(formatPrice(0.73), '$0.7300 (73.0%)');
+  assert.equal(formatPrice(0), '$0.0000 (0.0%)');
+  assert.equal(formatPrice(1), '$1.0000 (100.0%)');
+  assert.equal(formatPrice(null), 'N/A');
+  assert.equal(formatPrice('abc'), 'N/A');
+  assert.equal(formatPrice(undefined), 'N/A');
+});
+
+test('formatPricePercent formats 0-1 price as percentage only', () => {
+  assert.equal(formatPricePercent(0.73), '73.0%');
+  assert.equal(formatPricePercent(0.5), '50.0%');
+  assert.equal(formatPricePercent(0), '0.0%');
+  assert.equal(formatPricePercent(null), 'N/A');
+  assert.equal(formatPricePercent(undefined), 'N/A');
+});
+
+test('formatUSDC formats dollar amounts', () => {
+  assert.equal(formatUSDC(1234.5), '$1,234.50');
+  assert.equal(formatUSDC(0), '$0.00');
+  assert.equal(formatUSDC(null), '$0.00');
+});
+
+test('formatOutcomeList formats paginated outcome list', () => {
+  const outcomes = [
+    { question: 'Will BTC hit 100k?', yesPrice: 0.73, noPrice: 0.27 },
+    { question: 'Will ETH hit 10k?', yesPrice: 0.45, noPrice: 0.55 },
+  ];
+  const result = formatOutcomeList(outcomes, 1, 2);
+  assert.ok(result.includes('page 1/2'));
+  assert.ok(result.includes('Will BTC hit 100k?'));
+  assert.ok(result.includes('YES: 73.0%'));
+  assert.ok(result.includes('NO: 27.0%'));
+  assert.ok(result.includes('Will ETH hit 10k?'));
+});
+
+test('formatOutcomeList handles empty list', () => {
+  assert.equal(formatOutcomeList([], 1, 1), 'No outcomes found.');
+  assert.equal(formatOutcomeList(null, 1, 1), 'No outcomes found.');
+});
+
+test('formatOutcomeDetail shows question, prices, spread, and orderbook', () => {
+  const outcome = {
+    question: 'Will BTC hit 100k?',
+    description: 'Bitcoin price prediction',
+  };
+  const orderbook = {
+    bids: [['0.72', '10'], ['0.71', '5']],
+    asks: [['0.74', '8'], ['0.75', '3']],
+  };
+  const prices = { yes: 0.73, no: 0.27 };
+  const result = formatOutcomeDetail(outcome, orderbook, prices);
+  assert.ok(result.includes('Will BTC hit 100k?'));
+  assert.ok(result.includes('YES:'));
+  assert.ok(result.includes('NO:'));
+  assert.ok(result.includes('Spread:'));
+  assert.ok(result.includes('Orderbook (YES)'));
+  assert.ok(result.includes('Bids'));
+  assert.ok(result.includes('Asks'));
+});
+
+test('formatPosition formats a single position', () => {
+  const pos = { coin: '#21460', side: 'yes', size: '10', entry_price: '0.73' };
+  const result = formatPosition(pos);
+  assert.ok(result.includes('#21460'));
+  assert.ok(result.includes('YES'));
+  assert.ok(result.includes('10'));
+});
+
+test('formatPositionsList handles empty', () => {
+  assert.equal(formatPositionsList([]), 'No open positions.');
+});
+
+test('formatOrder formats a single order', () => {
+  const order = { coin: '#21460', side: 'buy', order_type: 'Limit', price: '0.73', size: '10', status: 'open', oid: 'abc123' };
+  const result = formatOrder(order);
+  assert.ok(result.includes('#21460'));
+  assert.ok(result.includes('BUY'));
+  assert.ok(result.includes('Limit'));
+  assert.ok(result.includes('abc123'));
+});
+
+test('formatOrdersList handles empty', () => {
+  assert.equal(formatOrdersList([]), 'No orders.');
 });

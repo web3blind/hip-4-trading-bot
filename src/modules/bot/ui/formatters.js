@@ -1,11 +1,204 @@
-﻿import { formatPriceFromMicro, parsePriceToMicro } from '../../polymarket.js';
+/**
+ * HIP-4 Outcome Formatters
+ *
+ * All formatters output plain text (no Markdown/HTML) for
+ * maximum Telegram + TalkBack accessibility.
+ */
 
-export function toUnitIntervalOrNull(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return null;
-  if (number < 0 || number > 1) return null;
-  return number;
+// ─── Price / USDC helpers ──────────────────────────────────────
+
+/**
+ * Format a 0-1 price as both dollar and percentage.
+ * e.g. 0.73 => "$0.73 (73%)"
+ */
+export function formatPrice(price) {
+  if (price === null || price === undefined) return 'N/A';
+  const num = Number(price);
+  if (!Number.isFinite(num)) return 'N/A';
+  const pct = (num * 100).toFixed(1);
+  return `$${num.toFixed(4)} (${pct}%)`;
 }
+
+/**
+ * Short percentage-only display.
+ * e.g. 0.73 => "73.0%"
+ */
+export function formatPricePercent(price) {
+  if (price === null || price === undefined) return 'N/A';
+  const num = Number(price);
+  if (!Number.isFinite(num)) return 'N/A';
+  return `${(num * 100).toFixed(1)}%`;
+}
+
+/**
+ * Format a USDC amount.
+ * e.g. 1234.5 => "$1,234.50"
+ */
+export function formatUSDC(amount) {
+  const num = Number(amount);
+  if (!Number.isFinite(num)) return '$0.00';
+  return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// ─── Outcome list ──────────────────────────────────────────────
+
+/**
+ * Format a paginated list of outcomes for the browse view.
+ * @param {Array} outcomes - array of outcome objects with question, prices
+ * @param {number} page - current page (1-based)
+ * @param {number} totalPages - total pages
+ * @returns {string}
+ */
+export function formatOutcomeList(outcomes, page, totalPages) {
+  if (!outcomes || outcomes.length === 0) {
+    return 'No outcomes found.';
+  }
+
+  let text = `Outcomes (page ${page}/${totalPages})\n\n`;
+
+  outcomes.forEach((outcome, index) => {
+    const num = (page - 1) * 5 + index + 1;
+    const question = outcome.question || outcome.description || 'Unknown outcome';
+    const yesPrice = outcome.yesPrice != null ? formatPricePercent(outcome.yesPrice) : 'N/A';
+    const noPrice = outcome.noPrice != null ? formatPricePercent(outcome.noPrice) : 'N/A';
+
+    text += `${num}. ${question}\n`;
+    text += `   YES: ${yesPrice}  |  NO: ${noPrice}\n\n`;
+  });
+
+  return text.trimEnd();
+}
+
+// ─── Outcome detail ────────────────────────────────────────────
+
+/**
+ * Format detailed view of a single outcome with orderbook.
+ * @param {object} outcome - outcome data (question, description, sides)
+ * @param {object} orderbook - { bids: [[price, size], ...], asks: [[price, size], ...] }
+ * @param {object} prices - { yes: string|number, no: string|number }
+ * @returns {string}
+ */
+export function formatOutcomeDetail(outcome, orderbook, prices) {
+  const question = outcome.question || outcome.description || 'Unknown outcome';
+  const description = outcome.description || '';
+
+  let text = `${question}\n`;
+  if (description && description !== question) {
+    text += `${description}\n`;
+  }
+  text += '\n';
+
+  // Prices
+  const yesPrice = prices?.yes != null ? formatPrice(prices.yes) : 'N/A';
+  const noPrice = prices?.no != null ? formatPrice(prices.no) : 'N/A';
+  text += `YES: ${yesPrice}\n`;
+  text += `NO: ${noPrice}\n`;
+
+  // Spread
+  if (prices?.yes != null && prices?.no != null) {
+    const spread = Math.abs(1 - Number(prices.yes) - Number(prices.no));
+    text += `Spread: ${(spread * 100).toFixed(2)}%\n`;
+  }
+
+  text += '\n';
+
+  // Mini orderbook (YES side)
+  if (orderbook && (orderbook.bids?.length || orderbook.asks?.length)) {
+    text += 'Orderbook (YES):\n';
+
+    if (orderbook.asks?.length) {
+      text += 'Asks:\n';
+      const asks = orderbook.asks.slice(0, 3);
+      asks.forEach(([price, size]) => {
+        text += `  ${formatPrice(price)}  size: ${Number(size).toFixed(2)}\n`;
+      });
+    }
+
+    if (orderbook.bids?.length) {
+      text += 'Bids:\n';
+      const bids = orderbook.bids.slice(0, 3);
+      bids.forEach(([price, size]) => {
+        text += `  ${formatPrice(price)}  size: ${Number(size).toFixed(2)}\n`;
+      });
+    }
+  }
+
+  return text.trimEnd();
+}
+
+// ─── Positions ─────────────────────────────────────────────────
+
+/**
+ * Format a single position.
+ */
+export function formatPosition(position) {
+  const coin = position.coin || 'Unknown';
+  const side = (position.side || '').toUpperCase();
+  const size = position.size || '0';
+  const entry = position.entry_price || position.entryPrice || '0';
+
+  let text = `${coin} ${side}\n`;
+  text += `  Size: ${size}\n`;
+  text += `  Entry: ${formatPrice(entry)}`;
+  return text;
+}
+
+/**
+ * Format all positions.
+ */
+export function formatPositionsList(positions) {
+  if (!positions || positions.length === 0) {
+    return 'No open positions.';
+  }
+
+  let text = `Positions (${positions.length})\n\n`;
+  positions.forEach((pos, index) => {
+    text += `${index + 1}. ${formatPosition(pos)}\n\n`;
+  });
+  return text.trimEnd();
+}
+
+// ─── Orders ────────────────────────────────────────────────────
+
+/**
+ * Format a single order.
+ */
+export function formatOrder(order) {
+  const coin = order.coin || 'Unknown';
+  const side = (order.side || '').toUpperCase();
+  const type = order.order_type || order.orderType || 'Limit';
+  const price = order.price || '0';
+  const size = order.size || '0';
+  const status = order.status || 'open';
+
+  let text = `${coin} ${side} ${type}\n`;
+  text += `  Price: ${formatPrice(price)}\n`;
+  text += `  Size: ${size}\n`;
+  text += `  Status: ${status}`;
+
+  if (order.oid) {
+    text += `\n  OID: ${order.oid}`;
+  }
+
+  return text;
+}
+
+/**
+ * Format all orders.
+ */
+export function formatOrdersList(orders) {
+  if (!orders || orders.length === 0) {
+    return 'No orders.';
+  }
+
+  let text = `Orders (${orders.length})\n\n`;
+  orders.forEach((ord, index) => {
+    text += `${index + 1}. ${formatOrder(ord)}\n\n`;
+  });
+  return text.trimEnd();
+}
+
+// ─── Utility formatters kept from old codebase ─────────────────
 
 export function escapeHtml(raw) {
   return String(raw ?? '')
@@ -16,22 +209,6 @@ export function escapeHtml(raw) {
     .replace(/'/g, '&#39;');
 }
 
-export function parseBaseUnitsBigIntSafe(value) {
-  if (value === null || value === undefined) return 0n;
-  const raw = String(value).trim();
-  if (!raw || !/^-?\d+$/.test(raw)) return 0n;
-  try {
-    return BigInt(raw);
-  } catch {
-    return 0n;
-  }
-}
-
-export function formatPlainNumber(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return '0';
-  return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(2).replace(/\.?0+$/, '');
-}
 export function normalizeOutcomeSideHint(value) {
   const normalized = String(value ?? '').trim().toUpperCase();
   if (!normalized) return null;
@@ -45,41 +222,6 @@ export function normalizeOutcomeSideHint(value) {
   }
 
   return null;
-}
-
-export function getRedeemActionLabel(language) {
-  return String(language || 'ru').toLowerCase() === 'ru' ? 'Погасить' : 'Redeem';
-}
-
-export function formatOrderPriceDisplay(priceNumber, t) {
-  if (!Number.isFinite(priceNumber)) {
-    return t('na');
-  }
-
-  const clamped = Math.max(0, Math.min(1, priceNumber));
-  const usd = formatPriceFromMicro(parsePriceToMicro(String(clamped)));
-  const cents = Math.round(clamped * 100);
-  return `${usd} (${cents}c)`;
-}
-
-function getTxUrl(txHash) {
-  const normalized = String(txHash || '').trim();
-  if (!normalized) return '';
-  return `https://polygonscan.com/tx/${normalized}`;
-}
-
-export function formatTxHashLink(txHash, anchorText = null) {
-  const normalized = String(txHash || '').trim();
-  if (!normalized) return '';
-  const label = anchorText || `${normalized.slice(0, 10)}...${normalized.slice(-8)}`;
-  return `<a href="${escapeHtml(getTxUrl(normalized))}">${escapeHtml(label)}</a>`;
-}
-
-export function formatSignedPercentValue(percent) {
-  const number = Number(percent);
-  if (!Number.isFinite(number)) return '0';
-  if (number === 0) return '0';
-  return number > 0 ? `+${number}` : `${number}`;
 }
 
 export function parsePercentInput(raw) {
@@ -134,22 +276,6 @@ export function parseUnitIntervalInput(raw, digits = 4) {
   }
 
   return Number(value.toFixed(Math.max(1, Math.floor(digits))));
-}
-
-export function parseEventsFilterRangeInput(raw) {
-  const text = String(raw ?? '').trim().replace(',', '.');
-  const match = text.match(/^\s*([0-9]*\.?[0-9]+)\s*[-\s:;]+\s*([0-9]*\.?[0-9]+)\s*$/);
-  if (!match) {
-    return null;
-  }
-
-  const min = toUnitIntervalOrNull(match[1]);
-  const max = toUnitIntervalOrNull(match[2]);
-  if (min === null || max === null || min >= max) {
-    return null;
-  }
-
-  return { min, max };
 }
 
 export function parseNonNegativeIntegerInput(raw) {

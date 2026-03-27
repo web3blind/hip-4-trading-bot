@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { getPolygonRpcUrl, getTranslationRuntimeConfig } from '../../src/modules/config.js';
+import { getHlNetwork, getTranslationRuntimeConfig } from '../../src/modules/config.js';
 
 function withEnv(overrides, fn) {
   const previous = {};
@@ -27,15 +27,15 @@ function withEnv(overrides, fn) {
   }
 }
 
-test('getPolygonRpcUrl returns empty string for blank env', () => {
-  withEnv({ POLYGON_RPC_URL: '   ' }, () => {
-    assert.equal(getPolygonRpcUrl(), '');
+test('getHlNetwork returns testnet by default', () => {
+  withEnv({ HL_NETWORK: null }, () => {
+    assert.equal(getHlNetwork(), 'testnet');
   });
 });
 
-test('getPolygonRpcUrl returns normalized URL', () => {
-  withEnv({ POLYGON_RPC_URL: ' https://polygon-rpc.com ' }, () => {
-    assert.equal(getPolygonRpcUrl(), 'https://polygon-rpc.com');
+test('getHlNetwork returns env value when set', () => {
+  withEnv({ HL_NETWORK: 'mainnet' }, () => {
+    assert.equal(getHlNetwork(), 'mainnet');
   });
 });
 
