@@ -46,6 +46,35 @@ function floatToWire(x) {
   return normalized;
 }
 
+function formatPriceForHl(price) {
+  const numeric = Number(price);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    throw new Error(`Invalid price: ${price}`);
+  }
+
+  if (numeric < 1) {
+    return removeTrailingZeros(numeric.toFixed(6));
+  }
+
+  return floatToWire(numeric);
+}
+
+function parseOrderStatuses(result) {
+  const statuses = result?.response?.data?.statuses;
+  return Array.isArray(statuses) ? statuses : [];
+}
+
+function getFirstOrderError(result) {
+  const statuses = parseOrderStatuses(result);
+  const entry = statuses.find((status) => status && typeof status === 'object' && typeof status.error === 'string');
+  return entry?.error || null;
+}
+
+function normalizeOpenOrderCoin(coin) {
+  if (typeof coin !== 'string') return coin;
+  return coin.startsWith('@') ? `#${coin.slice(1)}` : coin;
+}
+
 /**
  * Recursively remove trailing zeros from `p` and `s` fields.
  */
@@ -245,15 +274,15 @@ export class HLClient {
     for (const entry of universe) {
       const entryName = entry.name || '';
       if (entryName === lookupName || entryName === coin) {
-        // entry.tokens = [tokenIndex, quoteIndex]
-        const tokenIdx = entry.tokens?.[0];
+        const tokenIdx = Array.isArray(entry.tokens) ? entry.tokens[0] : null;
         if (tokenIdx != null && tokens[tokenIdx]) {
           return tokens[tokenIdx].szDecimals ?? 0;
         }
         break;
       }
     }
-    return 0; // default: integer sizes
+
+    return 0;
   }
 
   /**
@@ -294,7 +323,10 @@ export class HLClient {
   async getOpenOrders(address) {
     const addr = address || this.address;
     if (!addr) throw new Error('No address provided and no wallet configured');
-    return this._infoRequest({ type: 'openOrders', user: addr });
+    const orders = await this._infoRequest({ type: 'openOrders', user: addr });
+    return Array.isArray(orders)
+      ? orders.map((order) => ({ ...order, coin: normalizeOpenOrderCoin(order.coin) }))
+      : orders;
   }
 
   async getCandles(coin, interval, startTime, endTime) {
@@ -336,9 +368,11 @@ export class HLClient {
       ot = { limit: { tif: 'Gtc' } };
     }
 
+    const formattedPrice = formatPriceForHl(price);
+
     const orderWire = orderToWire({
       is_buy: isBuy,
-      limit_px: price,
+      limit_px: formattedPrice,
       sz: size,
       order_type: ot,
       reduce_only: false,
@@ -369,6 +403,12 @@ export class HLClient {
     process.stderr.write(`[placeOrder] wire: ${JSON.stringify(orderWire)}\n`);
 
     const result = await this._exchangeRequest(payload);
+    const orderError = getFirstOrderError(result);
+    if (orderError) {
+      const error = new Error(orderError);
+      error.hlResult = result;
+      throw error;
+    }
     process.stderr.write(`[placeOrder] result: ${JSON.stringify(result)}\n`);
     return result;
   }
@@ -405,11 +445,10 @@ export class HLClient {
     // Instead: place a GTC limit at best ask (buy) or best bid (sell).
     // It fills immediately if liquidity is there, and sits on book if not.
     const limitPrice = isBuy
-      ? Math.min(refPrice * (1 + slippagePct / 100), 0.9999)
-      : Math.max(refPrice * (1 - slippagePct / 100), 0.0001);
+      ? Math.min(refPrice * (1 + slippagePct / 100), 0.999999)
+      : Math.max(refPrice * (1 - slippagePct / 100), 0.000001);
 
-    // Round price to 5 significant figures (HL tick size)
-    const roundedPrice = parseFloat(limitPrice.toPrecision(5));
+    const roundedPrice = Number(limitPrice.toFixed(6));
 
     return this.placeOrder(coin, isBuy, roundedPrice, size, 'Limit');
   }

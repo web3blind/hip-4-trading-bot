@@ -10,7 +10,7 @@ import { busyLocks } from '../runtime.js';
 function isOutcomeToken(coin) {
   if (!coin) return false;
   const c = String(coin).trim();
-  return c.startsWith('#') || c.startsWith('+');
+  return c.startsWith('#') || c.startsWith('+') || c.startsWith('@');
 }
 
 /**
@@ -133,9 +133,14 @@ export function createOrdersFeature(deps) {
 
     try {
       await ctx.editMessageText('Cancelling order...');
-      // cancelOrder expects (coin, orderId) but we may not know coin
-      // For now just pass the oid — the exchange endpoint will handle it
-      await hlClient.cancelOrder(null, oid);
+      const orders = await hlClient.getOpenOrders(config.walletAddress);
+      const order = Array.isArray(orders)
+        ? orders.find((entry) => String(entry.oid) === String(oid))
+        : null;
+      if (!order?.coin) {
+        throw new Error('Order not found in open orders');
+      }
+      await hlClient.cancelOrder(order.coin, oid);
       await ctx.editMessageText(`Order cancelled: ${String(oid).slice(0, 16)}`, {
         reply_markup: new InlineKeyboard()
           .text('View Orders', 'orders:refresh')

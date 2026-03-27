@@ -42,6 +42,27 @@ function parseNumber(text) {
   return num;
 }
 
+function normalizeHlError(error) {
+  const raw = String(error?.message || error || '').trim();
+  if (!raw) return 'Something went wrong while talking to HyperLiquid.';
+
+  const lowered = raw.toLowerCase();
+  if (lowered.includes('minimum') || lowered.includes('$10') || lowered.includes('10 usdc')) {
+    return 'HyperLiquid requires at least $10 notional.';
+  }
+  if (lowered.includes('insufficient')) {
+    return 'Insufficient balance for this order.';
+  }
+  if (lowered.includes('80% away from the reference price') || lowered.includes('reference price')) {
+    return 'Price is too far from HyperLiquid reference price. Move it closer to the current market.';
+  }
+  if (lowered.includes('nonce')) {
+    return 'The trading session is out of sync. Please try again.';
+  }
+
+  return raw.replace(/^error:\s*/i, '').replace(/^exchange error:\s*/i, '');
+}
+
 // ─── Feature factory ────────────────────────────────────────────
 
 export function createTradeLimitFeature(_deps) {
@@ -224,7 +245,7 @@ export function createTradeLimitFeature(_deps) {
 
       await ctx.editMessageText(resultText, { reply_markup: mainMenuKeyboard() });
     } catch (error) {
-      const errMsg = error?.message || 'Unknown error';
+      const errMsg = normalizeHlError(error);
       await ctx.editMessageText(`Order failed: ${errMsg}`, { reply_markup: mainMenuKeyboard() });
     } finally {
       userStates.delete(chatId);
