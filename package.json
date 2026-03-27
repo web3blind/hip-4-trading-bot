@@ -1,8 +1,8 @@
 {
-  "name": "polymarket-trading-bot",
+  "name": "hip-4-telegram-bot",
   "version": "1.0.0",
   "type": "module",
-  "description": "Telegram bot for automated trading on Polymarket",
+  "description": "HyperLiquid HIP-4 outcome trading Telegram bot",
   "main": "src/index.js",
   "scripts": {
     "bootstrap": "node src/index.js --bootstrap",
@@ -15,19 +15,19 @@
     "migrate:export": "node scripts/export-migration-bundle.js",
     "migrate:apply": "node scripts/apply-migration-bundle.js",
     "pm2:start": "pm2 start ecosystem.config.cjs --env production",
-    "pm2:restart": "pm2 restart polymarket-trading-bot",
-    "pm2:stop": "pm2 stop polymarket-trading-bot",
-    "pm2:delete": "pm2 delete polymarket-trading-bot",
-    "pm2:logs": "pm2 logs polymarket-trading-bot --lines 200"
+    "pm2:restart": "pm2 restart hip-4-telegram-bot",
+    "pm2:stop": "pm2 stop hip-4-telegram-bot",
+    "pm2:delete": "pm2 delete hip-4-telegram-bot",
+    "pm2:logs": "pm2 logs hip-4-telegram-bot --lines 200"
   },
   "dependencies": {
-    "@polymarket/clob-client": "^5.2.4",
     "axios": "^1.7.0",
     "better-sqlite3": "^11.0.0",
     "dotenv": "^16.4.0",
     "ethers": "^5.8.0",
     "grammy": "^1.40.0",
     "https-proxy-agent": "^7.0.6",
+    "hyperliquid": "^1.7.7",
     "node-cron": "^3.0.3",
     "node-machine-id": "^1.1.12"
   },

@@ -14,20 +14,11 @@ let saveConfigQueue = Promise.resolve();
 // Default config structure for first run - all fields empty
 const DEFAULT_CONFIG = {
   encrypted: {
-    privateKey: '',
-    l2Credentials: {
-      apiKey: '',
-      secret: '',
-      passphrase: ''
-    }
+    privateKey: ''
   },
   walletAddress: '',
+  hlNetwork: process.env.HL_NETWORK || 'testnet',
   language: '',
-  strategies: {
-    stopLoss: -10,
-    takeProfit: 30,
-    maxAskPrice: 0.49
-  },
   notifications: {
     priceChangePercent: 10,
     priceRepeatStepPercent: 2,
@@ -210,8 +201,8 @@ export async function isFirstRun() {
   return !(await isWalletConfigured());
 }
 
-export function getPolygonRpcUrl() {
-  return toNonEmptyEnv(process.env.POLYGON_RPC_URL);
+export function getHlNetwork() {
+  return toNonEmptyEnv(process.env.HL_NETWORK) || 'testnet';
 }
 
 function parseBooleanEnv(value, fallback = false) {
