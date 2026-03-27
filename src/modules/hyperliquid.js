@@ -10,6 +10,21 @@ import { ethers } from 'ethers';
 import { encode as msgpackEncode } from '@msgpack/msgpack';
 import { HL_API, DEFAULTS } from './constants.js';
 
+const USER_SIGNED_DOMAIN_BY_NETWORK = {
+  testnet: {
+    name: 'HyperliquidSignTransaction',
+    version: '1',
+    chainId: 421614,
+    verifyingContract: '0x0000000000000000000000000000000000000000',
+  },
+  mainnet: {
+    name: 'HyperliquidSignTransaction',
+    version: '1',
+    chainId: 42161,
+    verifyingContract: '0x0000000000000000000000000000000000000000',
+  },
+};
+
 // ─── EIP-712 signing helpers (ethers v5) ────────────────────────
 
 const PHANTOM_DOMAIN = {
@@ -138,6 +153,19 @@ async function signL1Action(wallet, action, vaultAddress, nonce, isMainnet) {
     PHANTOM_DOMAIN,
     AGENT_TYPES,
     phantomAgent,
+  );
+  const { r, s, v } = ethers.utils.splitSignature(rawSig);
+  return { r, s, v };
+}
+
+async function signUserSignedAction(wallet, action, payloadTypes, primaryType, isMainnet) {
+  const domain = isMainnet
+    ? USER_SIGNED_DOMAIN_BY_NETWORK.mainnet
+    : USER_SIGNED_DOMAIN_BY_NETWORK.testnet;
+  const rawSig = await wallet._signTypedData(
+    domain,
+    { [primaryType]: payloadTypes },
+    action,
   );
   const { r, s, v } = ethers.utils.splitSignature(rawSig);
   return { r, s, v };
@@ -461,6 +489,39 @@ export class HLClient {
     const roundedPrice = Number(limitPrice.toFixed(5));
 
     return this.placeOrder(coin, isBuy, roundedPrice, size, 'Limit');
+  }
+
+  async transferUsdClass(amount, toPerp) {
+    if (!this.wallet) throw new Error('No wallet configured for signing');
+
+    const nonce = this._nonce();
+    const action = {
+      type: 'usdClassTransfer',
+      hyperliquidChain: this.isMainnet ? 'Mainnet' : 'Testnet',
+      signatureChainId: this.isMainnet ? '0xa4b1' : '0x66eee',
+      amount: String(amount),
+      toPerp: Boolean(toPerp),
+      nonce,
+    };
+
+    const signature = await signUserSignedAction(
+      this.wallet,
+      action,
+      [
+        { name: 'hyperliquidChain', type: 'string' },
+        { name: 'amount', type: 'string' },
+        { name: 'toPerp', type: 'bool' },
+        { name: 'nonce', type: 'uint64' },
+      ],
+      'HyperliquidTransaction:UsdClassTransfer',
+      this.isMainnet,
+    );
+
+    return this._exchangeRequest({ action, nonce, signature });
+  }
+
+  async transferBetweenSpotAndPerp(amount, toPerp) {
+    return this.transferUsdClass(amount, toPerp);
   }
 
   /**
