@@ -3,12 +3,6 @@
  *
  * Level 1: Events (questions) + standalone outcomes
  * Level 2: Outcomes within an event
- *
- * outcomeMeta returns:
- * {
- *   outcomes: [{ outcome: 9, name: "...", description: "...", sideSpecs: [...] }, ...],
- *   questions: [{ question: 1, name: "...", namedOutcomes: [10,11,12], fallbackOutcome: 13 }, ...]
- * }
  */
 
 import { OUTCOMES_PAGE_SIZE } from '../constants.js';
@@ -18,15 +12,9 @@ import { formatEventsList, formatEventOutcomes } from '../ui/formatters.js';
 
 const PAGE_SIZE = OUTCOMES_PAGE_SIZE;
 
-// In-memory cache (refreshed each fetch)
 let cachedEvents = [];
-let cachedOutcomeMap = new Map(); // outcomeId -> outcome data
+let cachedOutcomeMap = new Map();
 
-/**
- * Parse expiry from priceBinary description.
- * Returns Date or null.
- * Format: "class:priceBinary|...|expiry:20260328-0300|..."
- */
 function parseExpiry(description) {
   if (!description) return null;
   const match = description.match(/expiry:(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/);
@@ -34,33 +22,28 @@ function parseExpiry(description) {
   return new Date(`${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:00Z`);
 }
 
-/** Check if an outcome is expired */
 function isExpired(outcome) {
   const expiry = parseExpiry(outcome.description);
-  if (!expiry) return false; // no expiry = not expired
+  if (!expiry) return false;
   return expiry < new Date();
 }
 
-/** Check if outcome has any liquidity (mid price exists and > 0) */
-function hasLiquidity(outcome) {
-  return outcome.yesPrice != null || outcome.noPrice != null;
+function friendlyLoadError(scope) {
+  return `Could not load ${scope} right now. Please try again.`;
 }
 
-/**
- * Fetch and structure outcomes into events + standalones.
- */
 export async function fetchAndCacheOutcomes(hlClient) {
   const meta = await hlClient.getOutcomeMeta();
   const rawOutcomes = meta?.outcomes || [];
   const questions = meta?.questions || [];
 
-  // Fetch mid prices
   let mids = {};
   try {
     mids = await hlClient.getAllMids();
-  } catch {}
+  } catch {
+    mids = {};
+  }
 
-  // Build outcome objects
   const outcomeMap = new Map();
   for (const entry of rawOutcomes) {
     const oid = entry.outcome;
@@ -72,29 +55,27 @@ export async function fetchAndCacheOutcomes(hlClient) {
 
     const outcome = {
       outcomeId: oid,
+      question: entry.name || `Outcome #${oid}`,
       name: entry.name || `Outcome #${oid}`,
       description: entry.description || '',
       side0Name: sideSpecs[0]?.name || 'Yes',
       side1Name: sideSpecs[1]?.name || 'No',
       coin0,
       coin1,
+      status: isExpired({ description: entry.description || '' }) ? 'expired' : 'active',
       yesPrice: mids[coin0] != null ? parseFloat(mids[coin0]) : null,
       noPrice: mids[coin1] != null ? parseFloat(mids[coin1]) : null,
       sides: [
-        { side: 0, name: sideSpecs[0]?.name || 'Yes', coin: coin0 },
-        { side: 1, name: sideSpecs[1]?.name || 'No', coin: coin1 },
+        { side: 0, name: sideSpecs[0]?.name || 'Yes', coin: coin0, token: `@${10 * oid + 0}` },
+        { side: 1, name: sideSpecs[1]?.name || 'No', coin: coin1, token: `@${10 * oid + 1}` },
       ],
     };
 
     outcomeMap.set(oid, outcome);
-
     try { upsertOutcome(outcome); } catch {}
   }
 
-  // Build events list: questions + standalones
   const events = [];
-
-  // Track which outcomes belong to a question
   const claimedOutcomeIds = new Set();
 
   for (const q of questions) {
@@ -104,11 +85,10 @@ export async function fetchAndCacheOutcomes(hlClient) {
     const members = memberIds
       .map(id => outcomeMap.get(id))
       .filter(Boolean)
-      .filter(o => !isExpired(o)); // hide expired outcomes within a question
+      .filter(o => !isExpired(o));
 
     for (const id of memberIds) claimedOutcomeIds.add(id);
 
-    // Only show question if it has active outcomes
     if (members.length > 0) {
       events.push({
         type: 'question',
@@ -121,14 +101,10 @@ export async function fetchAndCacheOutcomes(hlClient) {
     }
   }
 
-  // Standalone outcomes (not part of any question)
   for (const [oid, outcome] of outcomeMap) {
     if (claimedOutcomeIds.has(oid)) continue;
-
-    // Skip expired outcomes in markets list
     if (isExpired(outcome)) continue;
 
-    // Parse priceBinary description for nicer display
     let displayName = outcome.name;
     if (outcome.description && outcome.description.startsWith('class:priceBinary')) {
       const parts = {};
@@ -156,29 +132,22 @@ export async function fetchAndCacheOutcomes(hlClient) {
     });
   }
 
-  // Sort: questions first, then standalones. Within each group, by liquidity.
   events.sort((a, b) => {
-    // Questions first
     if (a.type === 'question' && b.type !== 'question') return -1;
     if (a.type !== 'question' && b.type === 'question') return 1;
-    // For standalones, sort by whether they have prices (liquid first)
     if (a.type === 'standalone' && b.type === 'standalone') {
       const aHas = (a.yesPrice != null && a.noPrice != null) ? 1 : 0;
       const bHas = (b.yesPrice != null && b.noPrice != null) ? 1 : 0;
-      return bHas - aHas; // liquid first
+      return bHas - aHas;
     }
     return 0;
   });
 
   cachedEvents = events;
   cachedOutcomeMap = outcomeMap;
-
   return events;
 }
 
-/**
- * Level 1: Show events list (questions + standalones).
- */
 export async function showOutcomesList(ctx, hlClient, page = 1) {
   try {
     try { await ctx.editMessageText('Loading markets...'); } catch {}
@@ -186,7 +155,7 @@ export async function showOutcomesList(ctx, hlClient, page = 1) {
     const events = await fetchAndCacheOutcomes(hlClient);
 
     if (events.length === 0) {
-      const text = 'No markets available on testnet right now.';
+      const text = 'No active markets are available right now.';
       try {
         await ctx.editMessageText(text, { reply_markup: backKeyboard('back_menu') });
       } catch {
@@ -208,8 +177,8 @@ export async function showOutcomesList(ctx, hlClient, page = 1) {
     } catch {
       await ctx.reply(text, { reply_markup: keyboard });
     }
-  } catch (error) {
-    const errorText = 'Error loading markets: ' + (error?.message || 'unknown');
+  } catch {
+    const errorText = friendlyLoadError('markets');
     try {
       await ctx.editMessageText(errorText, { reply_markup: backKeyboard('back_menu') });
     } catch {
@@ -218,12 +187,8 @@ export async function showOutcomesList(ctx, hlClient, page = 1) {
   }
 }
 
-/**
- * Level 2: Show outcomes within an event (question).
- */
 export async function showEventOutcomes(ctx, hlClient, questionId) {
   try {
-    // Refresh if cache is empty
     if (cachedEvents.length === 0) {
       await fetchAndCacheOutcomes(hlClient);
     }
@@ -231,7 +196,7 @@ export async function showEventOutcomes(ctx, hlClient, questionId) {
     const event = cachedEvents.find(e => e.type === 'question' && e.questionId === questionId);
     if (!event) {
       try {
-        await ctx.editMessageText('Event not found.', { reply_markup: backKeyboard('outcomes:page:1') });
+        await ctx.editMessageText('This event no longer has active markets.', { reply_markup: backKeyboard('outcomes:page:1') });
       } catch {}
       return;
     }
@@ -244,8 +209,8 @@ export async function showEventOutcomes(ctx, hlClient, questionId) {
     } catch {
       await ctx.reply(text, { reply_markup: keyboard });
     }
-  } catch (error) {
-    const errorText = 'Error: ' + (error?.message || 'unknown');
+  } catch {
+    const errorText = friendlyLoadError('event markets');
     try {
       await ctx.editMessageText(errorText, { reply_markup: backKeyboard('outcomes:page:1') });
     } catch {}

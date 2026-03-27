@@ -12,7 +12,6 @@ import { createContext, safeLogError } from '../../logger.js';
 import { busyLocks, confirmationLocks, userStates, hlClient } from '../runtime.js';
 import { mainMenuKeyboard, getMainMenuKeyboard } from '../ui/keyboards.js';
 
-// Features (lazy-ish imports)
 import { showOutcomesList, showEventOutcomes } from '../features/outcomes.js';
 import { showOutcomeDetail } from '../features/outcome-details.js';
 import { createTradeMarketFeature } from '../features/trade-market.js';
@@ -27,18 +26,21 @@ import {
   handleSettingsLanguageChangeAction,
 } from '../features/language.js';
 
-// ─── Instantiate feature objects (stateless factories) ──────────
-
 const tradeMarket = createTradeMarketFeature({});
 const tradeLimit = createTradeLimitFeature({});
 
-// ─── Main callback handler ──────────────────────────────────────
+async function editOrReply(ctx, text, extra = {}) {
+  try {
+    await ctx.editMessageText(text, extra);
+  } catch {
+    await ctx.reply(text, extra);
+  }
+}
 
 export async function handleCallbackQuery(ctx) {
   const data = ctx.callbackQuery.data;
   const chatId = ctx.chat.id;
 
-  // Double-tap guard for confirm_* callbacks
   const isConfirm = data.startsWith('confirm_');
   if (isConfirm) {
     if (confirmationLocks.get(chatId)) {
@@ -59,10 +61,11 @@ export async function handleCallbackQuery(ctx) {
       try {
         text ? await ctx.answerCallbackQuery(text) : await ctx.answerCallbackQuery();
         answered = true;
-      } catch { answered = true; }
+      } catch {
+        answered = true;
+      }
     };
 
-    // ── Language selection (works before language is configured) ──
     if (data.startsWith('select_lang:')) {
       const selectedLang = data.split(':')[1];
       await handleLanguageSelectionAction(ctx, selectedLang, getMainMenuKeyboard);
@@ -77,31 +80,27 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
-    // ── Block while busy (except cancel) ──
-    const isCancelAction = data === 'cancel_confirmation' || data === 'cancel_export_pk';
+    const isCancelAction = data === 'cancel_confirmation' || data === 'cancel_export_pk' || data.startsWith('trade_cancel:');
     if (busyLocks.get(chatId) && !isCancelAction) {
       await ack(t('error_busy'));
       return;
     }
 
-    // Acknowledge early to avoid Telegram timeout
     await ack();
 
-    // ── Main menu ──
     if (data === 'menu' || data === 'back_menu') {
-      await ctx.editMessageText(t('main_menu'), {
+      userStates.delete(chatId);
+      await editOrReply(ctx, t('main_menu'), {
         reply_markup: await getMainMenuKeyboard(lang),
       });
       return;
     }
 
-    // ── Outcomes (market browser) ──
     if (data.startsWith('outcomes:')) {
-      // outcomes:page:<n>
       const parts = data.split(':');
       const page = parseInt(parts[2], 10) || 1;
       if (!hlClient) {
-        await ctx.editMessageText('HyperLiquid client not initialised.', {
+        await editOrReply(ctx, 'Trading is not ready yet. Create or import a wallet first.', {
           reply_markup: new InlineKeyboard().text('Back', 'back_menu'),
         });
         return;
@@ -110,11 +109,10 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
-    // ── Event (question with multiple outcomes) ──
     if (data.startsWith('event:')) {
       const questionId = parseInt(data.split(':')[1], 10);
-      if (!hlClient || isNaN(questionId)) {
-        await ctx.editMessageText('Invalid event.', {
+      if (!hlClient || Number.isNaN(questionId)) {
+        await editOrReply(ctx, 'This market event is no longer available.', {
           reply_markup: new InlineKeyboard().text('Back', 'outcomes:page:1'),
         });
         return;
@@ -123,11 +121,10 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
-    // ── Outcome detail ──
     if (data.startsWith('outcome:')) {
       const outcomeId = parseInt(data.split(':')[1], 10);
-      if (!hlClient || isNaN(outcomeId)) {
-        await ctx.editMessageText('Invalid outcome.', {
+      if (!hlClient || Number.isNaN(outcomeId)) {
+        await editOrReply(ctx, 'This market is no longer available.', {
           reply_markup: new InlineKeyboard().text('Back', 'outcomes:page:1'),
         });
         return;
@@ -136,14 +133,19 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
-    // ── Trade (market orders) ──
     if (data.startsWith('trade:')) {
-      // trade:{outcomeId}:{side}:{action}
       const parts = data.split(':');
       const outcomeId = parseInt(parts[1], 10);
       const sideStr = parts[2];
       const action = parts[3];
       await tradeMarket.handleTradeCallback(ctx, outcomeId, sideStr, action);
+      return;
+    }
+
+    if (data.startsWith('trade_cancel:')) {
+      const [, , outcomeIdRaw, sideStr, action] = data.split(':');
+      const outcomeId = parseInt(outcomeIdRaw, 10);
+      await tradeMarket.cancelTradeFlow(ctx, outcomeId, sideStr, action);
       return;
     }
 
@@ -169,9 +171,7 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
-    // ── Limit orders ──
     if (data.startsWith('limit:')) {
-      // limit:{outcomeId}:{side}:{action}
       const parts = data.split(':');
       const outcomeId = parseInt(parts[1], 10);
       const sideStr = parts[2];
@@ -185,10 +185,9 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
-    // ── Positions ──
     if (data === 'positions' || data === 'positions:refresh') {
       if (!hlClient) {
-        await ctx.editMessageText('HyperLiquid client not initialised.', {
+        await editOrReply(ctx, 'Trading is not ready yet. Create or import a wallet first.', {
           reply_markup: new InlineKeyboard().text('Back', 'back_menu'),
         });
         return;
@@ -198,19 +197,36 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
-    if (data.startsWith('pos:')) {
-      // pos:sell:<coin> — sell from positions
-      if (!hlClient) return;
-      // For now just redirect to positions list
-      const positions = createPositionsFeature({ hlClient });
-      await positions.showPositions(ctx);
+    if (data.startsWith('pos:sell:')) {
+      if (!hlClient) {
+        await editOrReply(ctx, 'Trading is not ready yet. Create or import a wallet first.', {
+          reply_markup: new InlineKeyboard().text('Back', 'back_menu'),
+        });
+        return;
+      }
+
+      const encodedCoin = data.slice('pos:sell:'.length);
+      const coin = decodeURIComponent(encodedCoin);
+      const match = String(coin).match(/^#?(\d+)$/);
+      if (!match) {
+        await editOrReply(ctx, 'This position cannot be sold from Telegram yet.', {
+          reply_markup: new InlineKeyboard()
+            .text('Back to positions', 'positions:refresh')
+            .text('Back', 'back_menu'),
+        });
+        return;
+      }
+
+      const assetId = Number(match[1]);
+      const outcomeId = Math.floor(assetId / 10);
+      const sideStr = assetId % 10 === 0 ? 'yes' : 'no';
+      await tradeMarket.handleTradeCallback(ctx, outcomeId, sideStr, 'sell');
       return;
     }
 
-    // ── Orders ──
     if (data === 'orders' || data === 'orders:refresh') {
       if (!hlClient) {
-        await ctx.editMessageText('HyperLiquid client not initialised.', {
+        await editOrReply(ctx, 'Trading is not ready yet. Create or import a wallet first.', {
           reply_markup: new InlineKeyboard().text('Back', 'back_menu'),
         });
         return;
@@ -235,7 +251,6 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
-    // ── Settings ──
     if (data === 'settings') {
       await showSettings(ctx);
       return;
@@ -251,7 +266,6 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
-    // ── Wallet / Security ──
     if (data === 'wallet' || data.startsWith('wallet:')) {
       await handleWalletCallback(ctx, data);
       return;
@@ -267,24 +281,21 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
-    // ── Cancel confirmation (generic) ──
     if (data === 'cancel_confirmation') {
       userStates.delete(chatId);
-      await ctx.editMessageText(t('cancel'), {
+      await editOrReply(ctx, t('cancel'), {
         reply_markup: await getMainMenuKeyboard(lang),
       });
       return;
     }
 
-    // ── Fallback: unhandled callback ──
     const logCtx = createContext('callbackRouter', 'handleCallbackQuery');
     safeLogError(logCtx, new Error(`Unhandled callback: ${data}`));
-
   } catch (error) {
     const logCtx = createContext('callbackRouter', 'handleCallbackQuery');
     safeLogError(logCtx, error, { data });
     try {
-      await ctx.editMessageText('An error occurred. Please try again.', {
+      await editOrReply(ctx, 'Something went wrong. Please try again.', {
         reply_markup: mainMenuKeyboard(),
       });
     } catch {}

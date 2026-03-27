@@ -4,36 +4,37 @@ import { getOutcomeByCoin } from '../../database.js';
 import { createContext, safeLogError } from '../../logger.js';
 import { busyLocks } from '../runtime.js';
 
-/**
- * Check if a coin is an outcome token (HIP-4).
- * Outcome coins start with '#' (e.g. "#21460")
- * and outcome tokens start with '+' (e.g. "+21460").
- */
 function isOutcomeToken(coin) {
   if (!coin) return false;
   const c = String(coin).trim();
-  return c.startsWith('#') || c.startsWith('+');
+  return c.startsWith('#') || c.startsWith('+') || c.startsWith('@');
 }
 
-/**
- * Resolve side label (YES/NO) from balance coin and DB lookup.
- */
 function resolveSide(coin, outcome) {
   if (!outcome || !outcome.sides) return 'Unknown';
   for (const side of outcome.sides) {
-    if (side.coin === coin) {
+    if (side.coin === coin || side.token === coin) {
       return side.side === 0 ? 'YES' : 'NO';
     }
   }
   return 'Unknown';
 }
 
-/**
- * Positions feature for HyperLiquid HIP-4 outcomes.
- *
- * @param {object} deps
- * @param {import('../../hyperliquid.js').HLClient} deps.hlClient
- */
+function findOutcomeForPosition(coin) {
+  return getOutcomeByCoin(coin)
+    || getOutcomeByCoin(String(coin).replace('@', '#'))
+    || getOutcomeByCoin(String(coin).replace('+', '#'))
+    || getOutcomeByCoin(String(coin).replace('#', '@'))
+    || getOutcomeByCoin(String(coin).replace('#', '+'));
+}
+
+function toSellCoin(coin, outcome) {
+  if (String(coin).startsWith('#')) return coin;
+  if (!outcome?.sides) return coin;
+  const match = outcome.sides.find((side) => side.coin === coin || side.token === coin);
+  return match?.coin || coin;
+}
+
 export function createPositionsFeature(deps) {
   const { hlClient } = deps;
 
@@ -41,7 +42,7 @@ export function createPositionsFeature(deps) {
     const config = await loadConfig();
 
     if (!config.walletAddress) {
-      await ctx.editMessageText('Wallet not configured. Use /setup first.', {
+      await ctx.editMessageText('Wallet not configured yet. Create or import a wallet first.', {
         reply_markup: new InlineKeyboard().text('Back', 'back_menu'),
       });
       return;
@@ -53,17 +54,13 @@ export function createPositionsFeature(deps) {
     busyLocks.set(chatId, true);
 
     try {
-      // Fetch user spot balances from HL
       const balances = await hlClient.getUserBalances(config.walletAddress);
-
-      // balances is { balances: [{ coin, token, hold, total }] }
       const allBalances = Array.isArray(balances?.balances) ? balances.balances : [];
 
-      // Filter for outcome tokens only, with non-zero balance
       const outcomePositions = allBalances.filter((b) => {
         if (!isOutcomeToken(b.coin)) return false;
         const total = parseFloat(b.total || '0');
-        return total > 0.0001; // filter dust
+        return total > 0.0001;
       });
 
       if (outcomePositions.length === 0) {
@@ -75,12 +72,11 @@ export function createPositionsFeature(deps) {
         return;
       }
 
-      // Fetch mid prices for current value
       let mids = {};
       try {
         mids = await hlClient.getAllMids();
       } catch {
-        // non-fatal — we'll just skip current price display
+        mids = {};
       }
 
       let text = 'Your Positions\n\n';
@@ -88,25 +84,23 @@ export function createPositionsFeature(deps) {
 
       for (let i = 0; i < outcomePositions.length; i++) {
         const pos = outcomePositions[i];
-        const coin = pos.coin;
+        const rawCoin = pos.coin;
         const total = parseFloat(pos.total || '0');
+        const outcome = findOutcomeForPosition(rawCoin);
+        const sellCoin = toSellCoin(rawCoin, outcome);
+        const question = outcome?.question || outcome?.description || sellCoin;
+        const side = resolveSide(rawCoin, outcome);
 
-        // Look up outcome details from DB
-        const outcome = getOutcomeByCoin(coin);
-        const question = outcome?.question || coin;
-        const side = resolveSide(coin, outcome);
-
-        // Current mid price
-        const midPrice = mids[coin] ? parseFloat(mids[coin]) : null;
+        const midPriceRaw = mids[sellCoin] ?? mids[rawCoin];
+        const midPrice = midPriceRaw != null ? parseFloat(midPriceRaw) : null;
         const priceStr = midPrice !== null ? midPrice.toFixed(4) : 'N/A';
         const valueStr = midPrice !== null ? (total * midPrice).toFixed(2) : 'N/A';
 
         text += `${i + 1}. ${question}\n`;
-        text += `   ${side} | Size: ${total.toFixed(2)} | Price: ${priceStr}\n`;
+        text += `   ${side} | Shares: ${total.toFixed(4)} | Price: ${priceStr}\n`;
         text += `   Value: $${valueStr}\n\n`;
 
-        // Sell button per position — encode coin in callback
-        const safeCoin = encodeURIComponent(coin);
+        const safeCoin = encodeURIComponent(sellCoin);
         keyboard.text(`Sell #${i + 1}`, `pos:sell:${safeCoin}`);
         if ((i + 1) % 2 === 0) keyboard.row();
       }
@@ -119,7 +113,7 @@ export function createPositionsFeature(deps) {
     } catch (error) {
       const logCtx = createContext('bot', 'showPositions');
       safeLogError(logCtx, error);
-      await ctx.editMessageText('Error loading positions. Try again.', {
+      await ctx.editMessageText('Could not load positions right now. Please try again.', {
         reply_markup: new InlineKeyboard()
           .text('Try Again', 'positions:refresh')
           .text('Back', 'back_menu'),

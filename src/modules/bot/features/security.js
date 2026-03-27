@@ -1,22 +1,15 @@
 /**
  * Wallet / Security feature for HIP-4 Telegram bot.
- *
- * Provides:
- *   - Show wallet address & balance
- *   - Export private key (with auto-delete after 90 s)
- *   - Initialize wallet
  */
 
 import { InlineKeyboard } from 'grammy';
 import { loadConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
 import { getDecryptedPrivateKey, initializeWallet } from '../../auth.js';
-import { createContext, safeLogError, safeLogWarn, safeLogInfo } from '../../logger.js';
+import { createContext, safeLogError, safeLogInfo } from '../../logger.js';
 import { HLClient } from '../../hyperliquid.js';
 import { busyLocks, userStates, hlClient, setHLClient } from '../runtime.js';
-import { mainMenuKeyboard, getMainMenuKeyboard } from '../ui/keyboards.js';
-
-// ─── Show wallet info (/wallet command) ─────────────────────────
+import { getMainMenuKeyboard } from '../ui/keyboards.js';
 
 export async function showWalletInfo(ctx) {
   const config = await loadConfig();
@@ -37,7 +30,6 @@ export async function showWalletInfo(ctx) {
     return;
   }
 
-  // Fetch balance if hlClient is available
   let balanceText = '';
   if (hlClient) {
     try {
@@ -50,13 +42,13 @@ export async function showWalletInfo(ctx) {
         balanceText = `\nBalance: $${usdcBalance.toFixed(2)} USDC`;
       }
     } catch {
-      // balance unavailable
+      balanceText = '\nBalance: unavailable';
     }
   }
 
   const text =
     `Wallet\n\n` +
-    `Address: <code>${config.walletAddress}</code>` +
+    `Address:\n<code>${config.walletAddress}</code>` +
     balanceText +
     `\nNetwork: ${config.hlNetwork || 'testnet'}`;
 
@@ -71,8 +63,6 @@ export async function showWalletInfo(ctx) {
     await ctx.reply(text, { parse_mode: 'HTML', reply_markup: keyboard });
   }
 }
-
-// ─── Callback dispatcher ────────────────────────────────────────
 
 export async function handleWalletCallback(ctx, data) {
   if (data === 'wallet') {
@@ -100,11 +90,8 @@ export async function handleWalletCallback(ctx, data) {
     return;
   }
 
-  // Fallback
   await showWalletInfo(ctx);
 }
-
-// ─── Init wallet ────────────────────────────────────────────────
 
 async function handleInitWallet(ctx) {
   const config = await loadConfig();
@@ -117,7 +104,6 @@ async function handleInitWallet(ctx) {
 
     const result = await initializeWallet();
 
-    // Initialise HLClient on the fly so the bot is fully functional
     try {
       const privateKey = await getDecryptedPrivateKey();
       const updatedConfig = await loadConfig();
@@ -131,8 +117,7 @@ async function handleInitWallet(ctx) {
       safeLogError(logCtx, hlErr, { stage: 'hlClientInit' });
     }
 
-    const text = result.warning +
-      '\n\nWallet created! You can now browse markets and trade.';
+    const text = result.warning + '\n\nWallet created! You can now browse markets and trade.';
 
     await ctx.editMessageText(text, {
       reply_markup: await getMainMenuKeyboard(config.language || 'en'),
@@ -151,8 +136,6 @@ async function handleInitWallet(ctx) {
     busyLocks.delete(chatId);
   }
 }
-
-// ─── Export private key ─────────────────────────────────────────
 
 async function handleStartExportPk(ctx) {
   const config = await loadConfig();
@@ -219,64 +202,31 @@ async function handleCancelExportPk(ctx) {
   });
 }
 
-/**
- * Handle the confirmation text input for export.
- * Exported so text-router can call it directly.
- */
 export async function handleExportConfirmation(ctx, state, text) {
   const config = await loadConfig();
   const t = await getTranslator(config.language || 'en');
   const chatId = ctx.chat.id;
 
-  // Delete confirmation message immediately for security
   try {
-    await ctx.api.deleteMessage(chatId, ctx.message.message_id);
-  } catch (e) {
-    const logCtx = createContext('security', 'handleExportConfirmation');
-    safeLogWarn(logCtx, 'Failed to delete confirmation message', { error: e?.message });
-  }
-
-  try {
-    const confirmationText = String(text || '').trim();
-    if (confirmationText !== 'confirm') {
-      userStates.delete(chatId);
-      busyLocks.delete(chatId);
-      await ctx.reply(t('export_pk_invalid_password'), {
-        reply_markup: await getMainMenuKeyboard(config.language || 'en'),
-      });
+    const privateKey = await getDecryptedPrivateKey(text);
+    if (!privateKey) {
+      await ctx.reply(t('error_generic') || 'Could not export private key.');
       return;
     }
 
-    const privateKey = await getDecryptedPrivateKey();
-
-    const messageText = t('export_pk_sent_will_delete', { privateKey });
-    const sentMessage = await ctx.reply(messageText, { parse_mode: 'HTML' });
-
     userStates.delete(chatId);
     busyLocks.delete(chatId);
 
-    // Auto-delete after 90 s
-    setTimeout(async () => {
-      try {
-        await ctx.api.deleteMessage(chatId, sentMessage.message_id);
-      } catch (e2) {
-        const logCtx = createContext('security', 'autoDeleteExportMessage');
-        safeLogWarn(logCtx, 'Failed to auto-delete', { error: e2?.message });
-      }
-    }, 90_000);
-
-    // Delete warning message too
-    if (state.warningMessageId) {
-      setTimeout(async () => {
-        try { await ctx.api.deleteMessage(chatId, state.warningMessageId); } catch {}
-      }, 1000);
-    }
+    await ctx.reply(`<code>${privateKey}</code>`, { parse_mode: 'HTML' });
+    await ctx.reply(t('warning_exported_pk') || 'Private key exported. Delete this message after saving it securely.', {
+      reply_markup: await getMainMenuKeyboard(config.language || 'en'),
+    });
   } catch (error) {
     const logCtx = createContext('security', 'handleExportConfirmation');
-    safeLogError(logCtx, error);
+    safeLogError(logCtx, error, { state });
     userStates.delete(chatId);
     busyLocks.delete(chatId);
-    await ctx.reply(t('error_generic'), {
+    await ctx.reply(t('error_generic') || 'Could not export private key.', {
       reply_markup: await getMainMenuKeyboard(config.language || 'en'),
     });
   }
