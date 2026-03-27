@@ -21,7 +21,12 @@ export function createHandleTextMessageRouter(deps) {
     handleNotificationSettingsInput,
     handleEventsFilterRangeInput,
     handleWithdrawAddress,
-    handleWithdrawAmount
+    handleWithdrawAmount,
+    // HIP-4 trade features
+    handleMarketBuyAmount,
+    handleMarketSellAmount,
+    handleHLLimitPrice,
+    handleHLLimitSize,
   } = deps;
 
   return async function handleTextMessage(ctx) {
@@ -49,6 +54,8 @@ export function createHandleTextMessageRouter(deps) {
     const isInConfirmationState = state.state === 'CONFIRMING_BUY' || state.state === 'CONFIRMING_SELL' ||
                                   state.state === 'CONFIRMING_SPLIT' || state.state === 'CONFIRMING_MERGE' ||
                                   state.state === 'CONFIRMING_LIMIT' || state.state === 'CONFIRMING_STRATEGY_SPLIT' ||
+                                  state.state === 'CONFIRMING_MARKET_BUY' || state.state === 'CONFIRMING_MARKET_SELL' ||
+                                  state.state === 'CONFIRMING_LIMIT_ORDER' ||
                                   state.state === 'AWAITING_EXPORT_CONFIRMATION';
     
     if (busyLocks.get(chatId) && !isInConfirmationState) {
@@ -80,7 +87,12 @@ export function createHandleTextMessageRouter(deps) {
           await handleLimitAmount(ctx, state, text);
           break;
         case 'AWAITING_LIMIT_PRICE':
-          await handleLimitPrice(ctx, state, text);
+          // HIP-4 limit (has outcomeId) vs legacy (has tokenId)
+          if (state.outcomeId != null && handleHLLimitPrice) {
+            await handleHLLimitPrice(ctx, state, text);
+          } else if (handleLimitPrice) {
+            await handleLimitPrice(ctx, state, text);
+          }
           break;
         case 'AWAITING_STRATEGY_STOP_LOSS':
         case 'AWAITING_STRATEGY_TAKE_PROFIT':
@@ -100,6 +112,17 @@ export function createHandleTextMessageRouter(deps) {
           break;
         case 'AWAITING_WITHDRAW_AMOUNT':
           await handleWithdrawAmount(ctx, text);
+          break;
+        // HIP-4 market trade states
+        case 'AWAITING_MARKET_BUY_AMOUNT':
+          if (handleMarketBuyAmount) await handleMarketBuyAmount(ctx, state, text);
+          break;
+        case 'AWAITING_MARKET_SELL_AMOUNT':
+          if (handleMarketSellAmount) await handleMarketSellAmount(ctx, state, text);
+          break;
+        // HIP-4 limit trade size
+        case 'AWAITING_LIMIT_SIZE':
+          if (handleHLLimitSize) await handleHLLimitSize(ctx, state, text);
           break;
         default:
           await ctx.reply(t('main_menu'), {

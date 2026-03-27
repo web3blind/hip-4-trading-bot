@@ -1,13 +1,130 @@
 /**
  * HyperLiquid API Client for HIP-4 Outcome Trading
  *
- * Info endpoints are implemented via raw fetch.
- * Exchange endpoints (order placement, cancellation) are stubs
- * pending SDK signing integration in Milestone 1.2/1.4.
+ * Info endpoints via raw fetch.
+ * Exchange endpoints (order, cancel) use EIP-712 typed-data signing
+ * with msgpack action hashing — compatible with ethers v5.
  */
 
 import { ethers } from 'ethers';
-import { HL_API } from './constants.js';
+import { encode as msgpackEncode } from '@msgpack/msgpack';
+import { HL_API, DEFAULTS } from './constants.js';
+
+// ─── EIP-712 signing helpers (ethers v5) ────────────────────────
+
+const PHANTOM_DOMAIN = {
+  name: 'Exchange',
+  version: '1',
+  chainId: 1337,
+  verifyingContract: '0x0000000000000000000000000000000000000000',
+};
+
+const AGENT_TYPES = {
+  Agent: [
+    { name: 'source', type: 'string' },
+    { name: 'connectionId', type: 'bytes32' },
+  ],
+};
+
+/**
+ * Remove trailing zeros from numeric string.
+ * "12345.0" => "12345", "0.12340" => "0.1234"
+ */
+function removeTrailingZeros(val) {
+  if (typeof val !== 'string' || !val.includes('.')) return val;
+  const normalized = val.replace(/\.?0+$/, '');
+  return normalized === '-0' ? '0' : normalized;
+}
+
+/**
+ * float -> wire string (max 8 decimals, no trailing zeros)
+ */
+function floatToWire(x) {
+  const rounded = x.toFixed(8);
+  let normalized = rounded.replace(/\.?0+$/, '');
+  if (normalized === '-0') normalized = '0';
+  return normalized;
+}
+
+/**
+ * Recursively remove trailing zeros from `p` and `s` fields.
+ */
+function normalizeAction(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(normalizeAction);
+
+  const result = { ...obj };
+  for (const key of Object.keys(result)) {
+    const v = result[key];
+    if (v && typeof v === 'object') {
+      result[key] = normalizeAction(v);
+    } else if ((key === 'p' || key === 's') && typeof v === 'string') {
+      result[key] = removeTrailingZeros(v);
+    }
+  }
+  return result;
+}
+
+/**
+ * Compute keccak256( msgpack(action) || nonce_be64 || vaultFlag [|| vaultAddr] )
+ */
+function actionHash(action, vaultAddress, nonce) {
+  const normalized = normalizeAction(action);
+  const msgPackBytes = msgpackEncode(normalized);
+  const extra = vaultAddress ? 29 : 9;
+  const data = new Uint8Array(msgPackBytes.length + extra);
+  data.set(msgPackBytes);
+  const view = new DataView(data.buffer);
+  view.setBigUint64(msgPackBytes.length, BigInt(nonce), false);
+  if (!vaultAddress) {
+    view.setUint8(msgPackBytes.length + 8, 0);
+  } else {
+    view.setUint8(msgPackBytes.length + 8, 1);
+    data.set(ethers.utils.arrayify(vaultAddress), msgPackBytes.length + 9);
+  }
+  return ethers.utils.keccak256(data);
+}
+
+/**
+ * Sign an L1 action via EIP-712 phantom agent.
+ */
+async function signL1Action(wallet, action, vaultAddress, nonce, isMainnet) {
+  const hash = actionHash(action, vaultAddress, nonce);
+  const phantomAgent = {
+    source: isMainnet ? 'a' : 'b',
+    connectionId: hash,
+  };
+
+  // ethers v5: wallet._signTypedData(domain, types, value)
+  const rawSig = await wallet._signTypedData(
+    PHANTOM_DOMAIN,
+    AGENT_TYPES,
+    phantomAgent,
+  );
+  const { r, s, v } = ethers.utils.splitSignature(rawSig);
+  return { r, s, v };
+}
+
+// ─── Order wire helpers ─────────────────────────────────────────
+
+function orderToWire(order, assetIndex) {
+  const wire = {
+    a: assetIndex,
+    b: order.is_buy,
+    p: typeof order.limit_px === 'string'
+      ? removeTrailingZeros(order.limit_px)
+      : floatToWire(Number(order.limit_px)),
+    s: typeof order.sz === 'string'
+      ? removeTrailingZeros(order.sz)
+      : floatToWire(Number(order.sz)),
+    r: order.reduce_only ?? false,
+    t: order.order_type,
+  };
+  if (order.cloid) wire.c = order.cloid;
+  return wire;
+}
+
+// ─── HLClient ───────────────────────────────────────────────────
 
 export class HLClient {
   /**
@@ -16,6 +133,7 @@ export class HLClient {
    */
   constructor(privateKey, network = 'testnet') {
     this.network = network;
+    this.isMainnet = network === 'mainnet';
 
     if (privateKey) {
       const key = privateKey.startsWith('0x') ? privateKey : '0x' + privateKey;
@@ -25,18 +143,24 @@ export class HLClient {
       this.wallet = null;
       this.address = null;
     }
+
+    // Caches
+    this._spotUniverseCache = null;
+    this._spotUniverseCacheTs = 0;
   }
 
   // ─── Internal helpers ───────────────────────────────────────────
 
-  /**
-   * POST to the info endpoint.
-   * @param {object} body - JSON payload
-   * @returns {Promise<any>}
-   */
+  _infoUrl() {
+    return this.isMainnet ? HL_API.MAINNET_INFO : HL_API.TESTNET_INFO;
+  }
+
+  _exchangeUrl() {
+    return this.isMainnet ? HL_API.MAINNET_EXCHANGE : HL_API.TESTNET_EXCHANGE;
+  }
+
   async _infoRequest(body) {
-    const url = this.network === 'testnet' ? HL_API.TESTNET_INFO : HL_API.MAINNET_INFO;
-    const response = await fetch(url, {
+    const response = await fetch(this._infoUrl(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -45,74 +169,92 @@ export class HLClient {
     return response.json();
   }
 
-  // ─── Info endpoints ─────────────────────────────────────────────
+  async _exchangeRequest(payload) {
+    const response = await fetch(this._exchangeUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`HL Exchange error ${response.status}: ${text}`);
+    }
+    return response.json();
+  }
 
   /**
-   * Fetch metadata for all spot assets (including HIP-4 outcomes).
-   * Returns the full spotMeta response (universe + tokens).
+   * Generate a unique monotonic nonce (millisecond timestamp).
    */
+  _nonce() {
+    const ts = Date.now();
+    if (!this._lastNonce || ts > this._lastNonce) {
+      this._lastNonce = ts;
+    } else {
+      this._lastNonce++;
+    }
+    return this._lastNonce;
+  }
+
+  /**
+   * Look up the spot universe index for a coin like "#21460".
+   * Returns 10000 + universeIndex for the OrderWire `a` field.
+   */
+  async _resolveSpotAssetIndex(coin) {
+    const TTL = 5 * 60_000; // 5 min cache
+    const now = Date.now();
+    if (!this._spotUniverseCache || now - this._spotUniverseCacheTs > TTL) {
+      const meta = await this._infoRequest({ type: 'spotMeta' });
+      this._spotUniverseCache = meta;
+      this._spotUniverseCacheTs = now;
+    }
+
+    const universe = this._spotUniverseCache?.universe || [];
+    // Universe entries have a `name` field like "#21460/USDC"
+    // The coin portion before "/" should match
+    for (let i = 0; i < universe.length; i++) {
+      const entry = universe[i];
+      const entryName = entry.name || '';
+      // Match either exact name or the coin prefix
+      if (entryName === coin || entryName.startsWith(coin + '/') || entryName === coin + '/USDC') {
+        return 10000 + i;
+      }
+    }
+
+    throw new Error(`Cannot resolve spot asset index for coin "${coin}". Not found in spot universe.`);
+  }
+
+  // ─── Info endpoints ─────────────────────────────────────────────
+
   async getOutcomeMeta() {
     return this._infoRequest({ type: 'spotMeta' });
   }
 
-  /**
-   * Fetch L2 orderbook for a given coin.
-   * @param {string} coin - e.g. "#21460" for an outcome coin
-   * @returns {Promise<{levels: Array}>}
-   */
   async getOrderbook(coin) {
     return this._infoRequest({ type: 'l2Book', coin });
   }
 
-  /**
-   * Fetch all mid prices.
-   * @returns {Promise<Record<string, string>>} Map of coin -> mid price
-   */
   async getAllMids() {
     return this._infoRequest({ type: 'allMids' });
   }
 
-  /**
-   * Fetch user spot token balances.
-   * @param {string} address - Wallet address
-   * @returns {Promise<object>}
-   */
   async getUserBalances(address) {
     const addr = address || this.address;
     if (!addr) throw new Error('No address provided and no wallet configured');
     return this._infoRequest({ type: 'spotClearinghouseState', user: addr });
   }
 
-  /**
-   * Fetch user fill (trade) history.
-   * @param {string} address - Wallet address
-   * @returns {Promise<Array>}
-   */
   async getUserFills(address) {
     const addr = address || this.address;
     if (!addr) throw new Error('No address provided and no wallet configured');
     return this._infoRequest({ type: 'userFills', user: addr });
   }
 
-  /**
-   * Fetch open orders for the user.
-   * @param {string} address - Wallet address
-   * @returns {Promise<Array>}
-   */
   async getOpenOrders(address) {
     const addr = address || this.address;
     if (!addr) throw new Error('No address provided and no wallet configured');
     return this._infoRequest({ type: 'openOrders', user: addr });
   }
 
-  /**
-   * Fetch candlestick data.
-   * @param {string} coin - e.g. "#21460"
-   * @param {string} interval - e.g. "1h", "1d"
-   * @param {number} startTime - Unix timestamp (ms)
-   * @param {number} endTime - Unix timestamp (ms)
-   * @returns {Promise<Array>}
-   */
   async getCandles(coin, interval, startTime, endTime) {
     return this._infoRequest({
       type: 'candleSnapshot',
@@ -120,56 +262,178 @@ export class HLClient {
     });
   }
 
-  // ─── Exchange endpoints (stubs) ─────────────────────────────────
+  // ─── Exchange endpoints ─────────────────────────────────────────
 
   /**
-   * Place an order. Stub — requires SDK signing integration.
-   * @param {string} coin
-   * @param {boolean} isBuy
-   * @param {number} price
-   * @param {number} size
-   * @param {string} orderType - 'Limit' or 'Market'
+   * Place an order on the spot orderbook.
+   *
+   * @param {string} coin - e.g. "#21460"
+   * @param {boolean} isBuy - true for buy, false for sell
+   * @param {number|string} price - limit price
+   * @param {number|string} size - order size (in outcome shares)
+   * @param {string} orderType - 'Limit' (GTC) or 'Market' (IOC with slippage)
+   * @returns {Promise<object>} Exchange response
    */
   async placeOrder(coin, isBuy, price, size, orderType = 'Limit') {
-    throw new Error('Not implemented yet — requires SDK integration (Milestone 1.4)');
+    if (!this.wallet) throw new Error('No wallet configured for signing');
+
+    const assetIndex = await this._resolveSpotAssetIndex(coin);
+
+    // Build order_type
+    let ot;
+    if (orderType === 'Market') {
+      ot = { limit: { tif: 'Ioc' } };
+    } else {
+      ot = { limit: { tif: 'Gtc' } };
+    }
+
+    const orderWire = orderToWire({
+      is_buy: isBuy,
+      limit_px: price,
+      sz: size,
+      order_type: ot,
+      reduce_only: false,
+    }, assetIndex);
+
+    const action = {
+      type: 'order',
+      orders: [orderWire],
+      grouping: 'na',
+    };
+
+    const nonce = this._nonce();
+    const signature = await signL1Action(
+      this.wallet,
+      action,
+      null, // no vault
+      nonce,
+      this.isMainnet,
+    );
+
+    const payload = {
+      action,
+      nonce,
+      signature,
+      vaultAddress: null,
+    };
+
+    return this._exchangeRequest(payload);
   }
 
   /**
-   * Cancel an order. Stub — requires SDK signing integration.
-   * @param {string} coin
-   * @param {number|string} orderId
+   * Place a market order with slippage protection.
+   * Uses IOC order type with aggressive price.
+   *
+   * @param {string} coin - outcome coin e.g. "#21460"
+   * @param {boolean} isBuy - buy or sell
+   * @param {number} sizeUsdc - amount in USDC to spend (for buys) — will be converted to shares
+   * @param {number} [slippagePct=2] - slippage percentage
+   * @returns {Promise<object>}
+   */
+  async placeMarketOrder(coin, isBuy, size, slippagePct = DEFAULTS.ORDER_SLIPPAGE_PERCENT) {
+    // Get current price from orderbook
+    const book = await this.getOrderbook(coin);
+    const [bids, asks] = book?.levels || [[], []];
+
+    let refPrice;
+    if (isBuy) {
+      refPrice = asks?.[0]?.px ? Number(asks[0].px) : null;
+      if (!refPrice && bids?.[0]?.px) refPrice = Number(bids[0].px) * 1.05;
+    } else {
+      refPrice = bids?.[0]?.px ? Number(bids[0].px) : null;
+      if (!refPrice && asks?.[0]?.px) refPrice = Number(asks[0].px) * 0.95;
+    }
+
+    if (!refPrice || refPrice <= 0) {
+      throw new Error('Cannot determine market price — orderbook is empty');
+    }
+
+    // Apply slippage
+    const slipFactor = slippagePct / 100;
+    const limitPrice = isBuy
+      ? refPrice * (1 + slipFactor)
+      : refPrice * (1 - slipFactor);
+
+    // Clamp to 0-1 range for outcome prices
+    const clampedPrice = Math.min(Math.max(limitPrice, 0.0001), 0.9999);
+
+    return this.placeOrder(coin, isBuy, clampedPrice, size, 'Market');
+  }
+
+  /**
+   * Cancel an order.
+   * @param {string} coin - e.g. "#21460"
+   * @param {number} orderId - Order OID
    */
   async cancelOrder(coin, orderId) {
-    throw new Error('Not implemented yet — requires SDK integration (Milestone 1.4)');
+    if (!this.wallet) throw new Error('No wallet configured for signing');
+
+    const assetIndex = await this._resolveSpotAssetIndex(coin);
+
+    const action = {
+      type: 'cancel',
+      cancels: [{ a: assetIndex, o: Number(orderId) }],
+    };
+
+    const nonce = this._nonce();
+    const signature = await signL1Action(
+      this.wallet,
+      action,
+      null,
+      nonce,
+      this.isMainnet,
+    );
+
+    return this._exchangeRequest({ action, nonce, signature, vaultAddress: null });
   }
 
   /**
-   * Cancel all open orders. Stub — requires SDK signing integration.
+   * Cancel all open orders.
    */
   async cancelAllOrders() {
-    throw new Error('Not implemented yet — requires SDK integration (Milestone 1.4)');
+    if (!this.wallet) throw new Error('No wallet configured for signing');
+
+    const openOrders = await this.getOpenOrders();
+    if (!openOrders || openOrders.length === 0) {
+      return { status: 'ok', message: 'No open orders to cancel' };
+    }
+
+    const cancels = [];
+    for (const order of openOrders) {
+      try {
+        const assetIndex = await this._resolveSpotAssetIndex(order.coin);
+        cancels.push({ a: assetIndex, o: Number(order.oid) });
+      } catch {
+        // Skip orders for unknown coins
+      }
+    }
+
+    if (cancels.length === 0) {
+      return { status: 'ok', message: 'No cancellable orders found' };
+    }
+
+    const action = { type: 'cancel', cancels };
+    const nonce = this._nonce();
+    const signature = await signL1Action(
+      this.wallet,
+      action,
+      null,
+      nonce,
+      this.isMainnet,
+    );
+
+    return this._exchangeRequest({ action, nonce, signature, vaultAddress: null });
   }
 
   // ─── Factory ────────────────────────────────────────────────────
 
-  /**
-   * Static factory: creates an HLClient already wired up with a wallet.
-   * @param {string} privateKey - Hex private key (with or without 0x)
-   * @param {string} [network='testnet'] - 'testnet' or 'mainnet'
-   * @returns {Promise<HLClient>}
-   */
   static async create(privateKey, network = 'testnet') {
     const client = new HLClient(privateKey, network);
-    // Future: any async initialisation (e.g. SDK handshake) goes here.
     return client;
   }
 
   // ─── Utility ────────────────────────────────────────────────────
 
-  /**
-   * Get the wallet address.
-   * @returns {string|null}
-   */
   getAddress() {
     return this.address;
   }

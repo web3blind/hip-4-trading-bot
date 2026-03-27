@@ -75,6 +75,12 @@ export function outcomeDetailKeyboard(outcomeId, t) {
     .text('Sell YES', `trade:${outcomeId}:yes:sell`)
     .text('Sell NO', `trade:${outcomeId}:no:sell`)
     .row()
+    .text('Limit Buy YES', `limit:${outcomeId}:yes:buy`)
+    .text('Limit Buy NO', `limit:${outcomeId}:no:buy`)
+    .row()
+    .text('Limit Sell YES', `limit:${outcomeId}:yes:sell`)
+    .text('Limit Sell NO', `limit:${outcomeId}:no:sell`)
+    .row()
     .text('Back to list', 'outcomes:page:1');
 }
 

@@ -79,7 +79,15 @@ export function createHandleCallbackRouter(deps) {
     handleConfirmExportPk,
     handleCancelExportPk,
     showLanguageSettings,
-    handleSettingsLanguageChange
+    handleSettingsLanguageChange,
+    // HIP-4 trade features
+    handleTradeCallback,
+    executeConfirmedMarketBuy,
+    executeConfirmedMarketSell,
+    handleLimitCallback,
+    executeConfirmedLimitOrder,
+    // HIP-4 outcome detail
+    showOutcomeDetail,
   } = deps;
 
   return async function handleCallback(ctx) {
@@ -543,6 +551,38 @@ export function createHandleCallbackRouter(deps) {
       } else if (data.startsWith('set_lang:')) {
         const lang = data.split(':')[1];
         await handleSettingsLanguageChange(ctx, lang);
+      // ─── HIP-4 Outcome detail ──────────────────────────────────
+      } else if (data.startsWith('outcome:')) {
+        const outcomeId = parseInt(data.split(':')[1], 10);
+        if (showOutcomeDetail && !isNaN(outcomeId)) {
+          await showOutcomeDetail(ctx, outcomeId);
+        }
+      // ─── HIP-4 Market trade callbacks ──────────────────────────
+      } else if (data.startsWith('trade:')) {
+        // trade:{outcomeId}:{side}:{action}
+        const parts = data.split(':');
+        const outcomeId = parseInt(parts[1], 10);
+        const side = parts[2];
+        const action = parts[3];
+        if (handleTradeCallback && !isNaN(outcomeId)) {
+          await handleTradeCallback(ctx, outcomeId, side, action);
+        }
+      } else if (data === 'confirm_market_buy') {
+        if (executeConfirmedMarketBuy) await executeConfirmedMarketBuy(ctx);
+      } else if (data === 'confirm_market_sell') {
+        if (executeConfirmedMarketSell) await executeConfirmedMarketSell(ctx);
+      // ─── HIP-4 Limit trade callbacks ──────────────────────────
+      } else if (data.startsWith('limit:')) {
+        // limit:{outcomeId}:{side}:{action}
+        const parts = data.split(':');
+        const outcomeId = parseInt(parts[1], 10);
+        const side = parts[2];
+        const action = parts[3];
+        if (handleLimitCallback && !isNaN(outcomeId)) {
+          await handleLimitCallback(ctx, outcomeId, side, action);
+        }
+      } else if (data === 'confirm_limit_order') {
+        if (executeConfirmedLimitOrder) await executeConfirmedLimitOrder(ctx);
       } else if (data === 'back_menu') {
         await ctx.editMessageText(t('main_menu'), {
           reply_markup: await getMainMenuKeyboard(config.language || 'ru')
