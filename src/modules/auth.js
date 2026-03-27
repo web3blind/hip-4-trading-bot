@@ -1,69 +1,29 @@
 import { ethers } from 'ethers';
 import { randomBytes, createCipheriv, createDecipheriv, scryptSync } from 'crypto';
-import { CLOB_API_URL, POLYGON_CHAIN_ID } from './constants.js';
 import { createContext, safeLogInfo, safeLogWarn } from './logger.js';
+import { saveConfig } from './config.js';
 
 // Lazy import for node-machine-id (CommonJS compatibility)
 async function getMachineIdModule() {
   const module = await import('node-machine-id');
   return module.default || module;
 }
-// TODO: Circular import with config.js - config.js uses dynamic imports
-// for decrypt/getMachineKey to break the cycle. auth.js imports saveConfig
-// at top-level because initializeWallet needs it synchronously.
-// Full refactor to remove cycle deferred to later phase.
-import { saveConfig } from './config.js';
 
 const ENCRYPTION_VERSION = 'v2';
 const AES_KEY_BYTES = 32;
 const GCM_IV_BYTES = 12;
 const GCM_TAG_BYTES = 16;
 
-// Generate new EVM private key
-export async function generatePrivateKey() {
-  const wallet = ethers.Wallet.createRandom();
-  return {
-    privateKey: wallet.privateKey,
-    address: wallet.address
-  };
-}
+// ─── Key derivation ──────────────────────────────────────────────
 
-// Create L2 API credentials using SDK
-// SDK is loaded lazily via dynamic import to avoid runtime errors in Phase 1
-export async function createL2Credentials(privateKey) {
-  // Dynamic import to avoid top-level SDK dependency
-  const { ClobClient } = await import('@polymarket/clob-client');
-  
-  // Create a temporary wallet for L2 credential creation
-  const signer = new ethers.Wallet(privateKey);
-  
-  // Initialize ClobClient with minimal config to access createApiKey/deriveApiKey
-  const client = new ClobClient(
-    CLOB_API_URL,
-    POLYGON_CHAIN_ID,
-    signer,
-    undefined, // No creds yet
-    0, // signature_type: EOA
-    signer.address // funder: same as signer
-  );
-  
-  // Try to create or derive API key
-  // SDK returns { key, secret, passphrase } (not apiKey)
-  const apiCreds = await client.createOrDeriveApiKey();
-  
-  return {
-    apiKey: apiCreds.key,
-    secret: apiCreds.secret,
-    passphrase: apiCreds.passphrase
-  };
-}
-
-// Get machine-specific encryption key
+/**
+ * Get machine-specific encryption key via node-machine-id + scryptSync.
+ */
 export async function getMachineKey() {
   try {
     const mod = await getMachineIdModule();
     const id = await mod.machineId();
-    return scryptSync(id, 'polymarket-bot-salt-v1', 32);
+    return scryptSync(id, 'hyperliquid-bot-salt-v1', AES_KEY_BYTES);
   } catch (error) {
     const ctx = createContext('auth', 'getMachineKey');
     safeLogWarn(ctx, 'Machine ID unavailable, refusing to start', { message: error?.message });
@@ -72,6 +32,8 @@ export async function getMachineKey() {
     throw e;
   }
 }
+
+// ─── AES-256-GCM encrypt / decrypt ──────────────────────────────
 
 function assertAes256Key(key) {
   if (!Buffer.isBuffer(key) || key.length !== AES_KEY_BYTES) {
@@ -93,7 +55,10 @@ function decodeBase64Strict(value, fieldName) {
   return buffer;
 }
 
-// Encrypt data using AES-256-GCM.
+/**
+ * Encrypt plaintext with AES-256-GCM.
+ * Returns "v2:<iv>:<ciphertext>:<authTag>" (all base64).
+ */
 export async function encrypt(data, key) {
   assertAes256Key(key);
   const iv = randomBytes(GCM_IV_BYTES);
@@ -104,7 +69,9 @@ export async function encrypt(data, key) {
   return `${ENCRYPTION_VERSION}:${iv.toString('base64')}:${encrypted}:${authTag}`;
 }
 
-// Decrypt data
+/**
+ * Decrypt AES-256-GCM payload produced by encrypt().
+ */
 export async function decrypt(encryptedData, key) {
   assertAes256Key(key);
 
@@ -132,7 +99,6 @@ export async function decrypt(encryptedData, key) {
     throw new Error(`Invalid encrypted data format: authTag must be ${GCM_TAG_BYTES} bytes`);
   }
 
-  // ciphertext can be empty for empty plaintext, so keep base64 validation separate.
   if (typeof ciphertextBase64 !== 'string' || ciphertextBase64.length === 0) {
     throw new Error('Invalid encrypted data format: ciphertext is empty');
   }
@@ -155,123 +121,109 @@ export async function decrypt(encryptedData, key) {
   }
 }
 
-// Initialize wallet on first run
-// Phase 1: Minimal skeleton only - no allowances/trading yet
-export async function initializeWallet() {
-  const ctx = createContext('auth', 'initializeWallet');
-  safeLogInfo(ctx, 'Initializing new wallet');
-  
-  // 1. Generate private key
-  const { privateKey, address } = await generatePrivateKey();
-  
-  // 2. Get encryption key
+// ─── Wallet management ───────────────────────────────────────────
+
+/**
+ * Generate a new random Ethereum wallet, encrypt the private key,
+ * and save the config. Returns { walletAddress, encryptedPrivateKey }.
+ */
+export async function generateWallet() {
+  const ctx = createContext('auth', 'generateWallet');
+  safeLogInfo(ctx, 'Generating new wallet');
+
+  const wallet = ethers.Wallet.createRandom();
   const machineKey = await getMachineKey();
-  
-  // 3. Encrypt private key
-  const encryptedPrivateKey = await encrypt(privateKey, machineKey);
-  
-  // 4. Create L2 credentials with retry logic
-  let l2Creds;
-  const delays = [1000, 2000, 4000]; // 1s, 2s, 4s
-  
-  for (let attempt = 0; attempt <= delays.length; attempt++) {
-    try {
-      l2Creds = await createL2Credentials(privateKey);
-      safeLogInfo(ctx, 'L2 credentials created successfully');
-      break;
-    } catch (error) {
-      if (attempt < delays.length) {
-        safeLogWarn(ctx, 'L2 credentials creation failed, retrying', {
-          attempt: attempt + 1,
-          delayMs: delays[attempt]
-        });
-        await new Promise(resolve => setTimeout(resolve, delays[attempt]));
-      } else {
-        throw new Error(`Failed to create L2 credentials after ${delays.length + 1} attempts: ${error.message}`);
-      }
-    }
-  }
-  
-  const encryptedL2Credentials = {
-    apiKey: await encrypt(l2Creds.apiKey, machineKey),
-    secret: await encrypt(l2Creds.secret, machineKey),
-    passphrase: await encrypt(l2Creds.passphrase, machineKey)
-  };
-  
-  // 5. Create config object
-  const config = {
-    encrypted: {
-      privateKey: encryptedPrivateKey,
-      l2Credentials: encryptedL2Credentials
-    },
-    walletAddress: address,
-    language: 'ru',
-    strategies: {
-      stopLoss: -10,
-      takeProfit: 30
-    },
-    notifications: {
-      priceChangePercent: 10,
-      priceRepeatStepPercent: 2,
-      alertCooldownSeconds: 300
-    }
-  };
-  
-  // 6. Save encrypted config
-  await saveConfig(config);
-  
-  // 7. Return wallet info for display
+  const encryptedPrivateKey = await encrypt(wallet.privateKey, machineKey);
+
   return {
-    address,
-    warning: `⚠️ ВНИМАНИЕ!
-Создан новый кошелёк для Polymarket.
-Адрес: ${address}
-
-ЭТО НОВЫЙ КОШЕЛЁК. Пополните его отдельно.
-НЕ ИСПОЛЬЗУЙТЕ ваш основной кошелёк!
-
-Экспортируйте и сохраните приватный ключ (Настройки → Экспорт ключа).
-При переустановке ОС или переносе на новое устройство доступ к кошельку может быть потерян.`
+    walletAddress: wallet.address,
+    encryptedPrivateKey,
   };
 }
 
-// Get decrypted private key (moved from config.js to keep config module clean)
-export async function getDecryptedPrivateKey() {
-  const { loadConfig } = await import('./config.js');
-  const config = await loadConfig();
-  
-  if (!config.encrypted?.privateKey) {
+/**
+ * Import an existing wallet from a hex private key.
+ * @param {string} privateKeyHex - Private key with or without 0x prefix
+ * @returns {{ walletAddress: string, encryptedPrivateKey: string }}
+ */
+export async function importWallet(privateKeyHex) {
+  const ctx = createContext('auth', 'importWallet');
+  safeLogInfo(ctx, 'Importing wallet from private key');
+
+  const key = privateKeyHex.startsWith('0x') ? privateKeyHex : `0x${privateKeyHex}`;
+  const wallet = new ethers.Wallet(key);
+
+  const machineKey = await getMachineKey();
+  const encryptedPrivateKey = await encrypt(wallet.privateKey, machineKey);
+
+  return {
+    walletAddress: wallet.address,
+    encryptedPrivateKey,
+  };
+}
+
+/**
+ * Decrypt and return the private key from a config object.
+ * @param {object} config - Config with config.encrypted.privateKey
+ * @returns {Promise<string>} Hex private key (0x-prefixed)
+ */
+export async function getPrivateKey(config) {
+  if (!config?.encrypted?.privateKey) {
     throw new Error('Private key not found in config');
   }
-  
   const machineKey = await getMachineKey();
   return await decrypt(config.encrypted.privateKey, machineKey);
 }
 
-// Get decrypted L2 credentials (moved from config.js to keep config module clean)
-export async function getDecryptedL2Credentials() {
+/**
+ * Return the wallet address from a config object.
+ * @param {object} config
+ * @returns {string}
+ */
+export function getWalletAddress(config) {
+  if (!config?.walletAddress) {
+    throw new Error('Wallet address not found in config');
+  }
+  return config.walletAddress;
+}
+
+/**
+ * Backward-compatible alias: decrypt private key from the stored config file.
+ * Used by workers.js, security.js, bot.js etc.
+ */
+export async function getDecryptedPrivateKey() {
   const { loadConfig } = await import('./config.js');
   const config = await loadConfig();
-  
-  const encryptedCreds = config.encrypted?.l2Credentials;
-  const encryptedApiKey = encryptedCreds?.apiKey || encryptedCreds?.key;
-  const encryptedSecret = encryptedCreds?.secret;
-  const encryptedPassphrase = encryptedCreds?.passphrase;
+  return getPrivateKey(config);
+}
 
-  if (!encryptedApiKey || !encryptedSecret || !encryptedPassphrase) {
-    throw new Error('L2 credentials not found in config');
-  }
-  
-  const machineKey = await getMachineKey();
-  const key = await decrypt(encryptedApiKey, machineKey);
-  const secret = await decrypt(encryptedSecret, machineKey);
-  const passphrase = await decrypt(encryptedPassphrase, machineKey);
-  
+/**
+ * Initialize a new wallet and save to config (convenience wrapper).
+ * Called on first run.
+ */
+export async function initializeWallet() {
+  const ctx = createContext('auth', 'initializeWallet');
+  safeLogInfo(ctx, 'Initializing new wallet');
+
+  const { walletAddress, encryptedPrivateKey } = await generateWallet();
+
+  const config = {
+    encrypted: {
+      privateKey: encryptedPrivateKey,
+    },
+    walletAddress,
+    language: '',
+    notifications: {
+      priceChangePercent: 10,
+      priceRepeatStepPercent: 2,
+      alertCooldownSeconds: 300,
+    },
+  };
+
+  await saveConfig(config);
+
   return {
-    // Keep both names for backward compatibility in callers.
-    key,
-    apiKey: key,
-    secret,
-    passphrase
+    address: walletAddress,
+    warning: `⚠️ WARNING!\nNew wallet created for HyperLiquid.\nAddress: ${walletAddress}\n\nThis is a NEW wallet. Fund it separately.\nDO NOT use your main wallet!\n\nExport and save the private key (Settings → Export Key).\nAccess may be lost if the OS is reinstalled or moved to a new device.`,
   };
 }

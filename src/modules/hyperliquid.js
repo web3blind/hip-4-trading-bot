@@ -150,6 +150,20 @@ export class HLClient {
     throw new Error('Not implemented yet — requires SDK integration (Milestone 1.4)');
   }
 
+  // ─── Factory ────────────────────────────────────────────────────
+
+  /**
+   * Static factory: creates an HLClient already wired up with a wallet.
+   * @param {string} privateKey - Hex private key (with or without 0x)
+   * @param {string} [network='testnet'] - 'testnet' or 'mainnet'
+   * @returns {Promise<HLClient>}
+   */
+  static async create(privateKey, network = 'testnet') {
+    const client = new HLClient(privateKey, network);
+    // Future: any async initialisation (e.g. SDK handshake) goes here.
+    return client;
+  }
+
   // ─── Utility ────────────────────────────────────────────────────
 
   /**
