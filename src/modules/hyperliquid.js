@@ -384,26 +384,27 @@ export class HLClient {
     let refPrice;
     if (isBuy) {
       refPrice = asks?.[0]?.px ? Number(asks[0].px) : null;
-      if (!refPrice && bids?.[0]?.px) refPrice = Number(bids[0].px) * 1.05;
     } else {
       refPrice = bids?.[0]?.px ? Number(bids[0].px) : null;
-      if (!refPrice && asks?.[0]?.px) refPrice = Number(asks[0].px) * 0.95;
     }
 
     if (!refPrice || refPrice <= 0) {
       throw new Error('Cannot determine market price — orderbook is empty');
     }
 
-    // Apply slippage
-    const slipFactor = slippagePct / 100;
+    // For outcomes (price 0-1), use aggressive limit at best price.
+    // IOC with slippage hits HL's "80% from reference" check because
+    // outcome markPx in spotMeta is stale/wrong.
+    // Instead: place a GTC limit at best ask (buy) or best bid (sell).
+    // It fills immediately if liquidity is there, and sits on book if not.
     const limitPrice = isBuy
-      ? refPrice * (1 + slipFactor)
-      : refPrice * (1 - slipFactor);
+      ? Math.min(refPrice * (1 + slippagePct / 100), 0.9999)
+      : Math.max(refPrice * (1 - slippagePct / 100), 0.0001);
 
-    // Clamp to 0-1 range for outcome prices
-    const clampedPrice = Math.min(Math.max(limitPrice, 0.0001), 0.9999);
+    // Round price to 5 significant figures (HL tick size)
+    const roundedPrice = parseFloat(limitPrice.toPrecision(5));
 
-    return this.placeOrder(coin, isBuy, clampedPrice, size, 'Market');
+    return this.placeOrder(coin, isBuy, roundedPrice, size, 'Limit');
   }
 
   /**
