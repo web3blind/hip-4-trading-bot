@@ -244,6 +244,15 @@ export function deleteOrder(oid) {
   return stmt.run(oid);
 }
 
+// ─── Outcome by Coin ─────────────────────────────────────────
+
+export function getOutcomeByCoin(coin) {
+  const sideStmt = db.prepare('SELECT * FROM outcome_sides WHERE coin = ? LIMIT 1');
+  const sideRow = sideStmt.get(coin);
+  if (!sideRow) return null;
+  return getOutcomeById(sideRow.outcome_id);
+}
+
 // ─── Database lifecycle ───────────────────────────────────────
 
 export function closeDatabase() {
