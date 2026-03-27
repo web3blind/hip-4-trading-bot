@@ -260,6 +260,12 @@ export function createTradeMarketFeature(_deps) {
       });
       return;
     }
+    if (usdcAmount < 10) {
+      await ctx.reply('Minimum order value is $10 USDC on HyperLiquid.', {
+        reply_markup: buyAmountKeyboard(state.outcomeId, state.usdcBalance),
+      });
+      return;
+    }
     if (state.usdcBalance > 0 && usdcAmount > state.usdcBalance) {
       await ctx.reply(`Insufficient balance. You have $${state.usdcBalance.toFixed(2)} USDC.`, {
         reply_markup: buyAmountKeyboard(state.outcomeId, state.usdcBalance),
