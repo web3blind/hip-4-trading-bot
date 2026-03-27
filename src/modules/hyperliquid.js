@@ -226,7 +226,7 @@ export class HLClient {
   // ─── Info endpoints ─────────────────────────────────────────────
 
   async getOutcomeMeta() {
-    return this._infoRequest({ type: 'spotMeta' });
+    return this._infoRequest({ type: 'outcomeMeta' });
   }
 
   async getOrderbook(coin) {
