@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { loadConfig } from './modules/config.js';
+import { loadConfig, ensureConfigFileExists } from './modules/config.js';
 import { initBot, startBot, stopBot } from './modules/bot/bot.js';
 import { initDatabase } from './modules/database.js';
 import {
@@ -11,6 +11,9 @@ import {
 } from './modules/logger.js';
 import { startWorkers, stopWorkers } from './modules/workers.js';
 import { applyProxyRuntime } from './modules/proxy.js';
+import { HLClient } from './modules/hyperliquid.js';
+import { getDecryptedPrivateKey } from './modules/auth.js';
+import { setHLClient } from './modules/bot/runtime.js';
 
 // Patch console first to catch any SDK secret leakage
 patchConsoleForRedaction();
@@ -76,17 +79,13 @@ async function main() {
     safeLogInfo(ctx, 'Proxy runtime configured', {
       enabled: proxyRuntime.enabled,
       proxy: proxyRuntime.enabled ? proxyRuntime.redacted : 'disabled',
-      proxyTransportDowngraded: Boolean(proxyRuntime.downgradedToHttpConnect),
-      outboundHttpTimeoutMs: proxyRuntime.httpTimeoutMs,
-      clobAxiosTimeoutPatched: Boolean(proxyRuntime.clobAxiosPatched),
-      clobHttpHelpersPatched: Boolean(proxyRuntime.clobHttpHelpersPatched),
-      proxyAgentConfigured: Boolean(proxyRuntime.proxyAgentConfigured)
     });
+
     if (isBootstrap) {
       safeLogInfo(ctx, 'Running in bootstrap mode');
       await runBootstrap();
     } else {
-      safeLogInfo(ctx, 'Starting Polymarket Trading Bot (production)');
+      safeLogInfo(ctx, 'Starting HyperLiquid HIP-4 Trading Bot');
       await runBot();
     }
   } catch (error) {
@@ -96,59 +95,94 @@ async function main() {
   }
 }
 
-// Bootstrap mode - Phase 1 sanity check
+// Bootstrap mode - sanity check
 async function runBootstrap() {
   const ctx = createContext('index', 'runBootstrap');
-  safeLogInfo(ctx, 'Phase 1 bootstrap: loading config');
-  
-  // Test config loading to ensure paths work
+  safeLogInfo(ctx, 'Bootstrap: loading config');
+
   const config = await loadConfig();
   safeLogInfo(ctx, 'Config loaded successfully', {
     walletAddress: config.walletAddress || 'not configured'
   });
 
-  // Phase 1 sanity check: verify auth.js imports without crashing
   const { getMachineKey, encrypt, decrypt } = await import('./modules/auth.js');
   const machineKey = await getMachineKey();
   const testEncrypted = await encrypt('test-value', machineKey);
   const testDecrypted = await decrypt(testEncrypted, machineKey);
   if (testDecrypted !== 'test-value') throw new Error('Encrypt/decrypt round-trip failed');
-  safeLogInfo(ctx, 'auth.js import OK (getMachineKey, encrypt, decrypt work)');
-  
-  safeLogInfo(ctx, 'Phase 1 bootstrap OK');
+  safeLogInfo(ctx, 'auth.js OK');
+
+  safeLogInfo(ctx, 'Bootstrap OK');
   process.exit(0);
 }
 
-// Bot mode - Phase 4
+// Bot mode
 async function runBot() {
+  const ctx = createContext('index', 'runBot');
+
   // Validate environment
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   const allowedUserId = process.env.TELEGRAM_ALLOWED_USER_ID;
-  
+
   if (!botToken) {
     throw new Error('TELEGRAM_BOT_TOKEN not set in environment');
   }
-  
+
   if (!allowedUserId) {
     throw new Error('TELEGRAM_ALLOWED_USER_ID not set in environment');
   }
-  
-  const ctx = createContext('index', 'runBot');
+
+  // 1) Init database
   safeLogInfo(ctx, 'Initializing database');
   initDatabase();
   safeLogInfo(ctx, 'Database initialized');
-  
+
+  // 2) Load / ensure config
+  safeLogInfo(ctx, 'Loading config');
+  const config = await ensureConfigFileExists();
+  safeLogInfo(ctx, 'Config ready', {
+    walletAddress: config?.walletAddress || 'not configured',
+    network: config?.hlNetwork || 'testnet',
+  });
+
+  // 3) Init HyperLiquid client (if wallet is configured)
+  let hlClient = null;
+  if (config?.walletAddress && config?.encrypted?.privateKey) {
+    try {
+      safeLogInfo(ctx, 'Initializing HyperLiquid client');
+      const privateKey = await getDecryptedPrivateKey();
+      const network = config.hlNetwork || 'testnet';
+      hlClient = HLClient.create(privateKey, network);
+      setHLClient(hlClient);
+      safeLogInfo(ctx, 'HyperLiquid client initialized', { network });
+    } catch (error) {
+      safeLogError(ctx, error, { stage: 'hlClientInit' });
+      safeLogInfo(ctx, 'Continuing without HyperLiquid client (wallet may not be configured)');
+    }
+  } else {
+    safeLogInfo(ctx, 'Wallet not configured — skipping HyperLiquid client init');
+  }
+
+  // 4) Init bot
   safeLogInfo(ctx, 'Initializing bot');
   await initBot(botToken, allowedUserId);
   safeLogInfo(ctx, 'Bot initialized');
-  
+
+  // 5) Start bot polling
   safeLogInfo(ctx, 'Starting bot');
   startBot();
 
-  safeLogInfo(ctx, 'Starting background workers');
-  startWorkers();
-  
-  // Keep process alive
+  // 6) Start workers (if HL client is available)
+  if (hlClient) {
+    safeLogInfo(ctx, 'Starting background workers');
+    startWorkers({
+      hlClient,
+      chatId: allowedUserId,
+    });
+  } else {
+    safeLogInfo(ctx, 'Skipping workers (no HyperLiquid client)');
+  }
+
   safeLogInfo(ctx, 'Bot is running');
 }
 

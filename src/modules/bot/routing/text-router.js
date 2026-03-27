@@ -1,142 +1,97 @@
+/**
+ * Text-message router for HIP-4 Telegram bot.
+ *
+ * Routes free-form text input to the appropriate feature handler
+ * based on the current user state in runtime.userStates.
+ */
+
 import { loadConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
 import { createContext, safeLogError } from '../../logger.js';
-import { mapErrorToUserMessage } from '../../polymarket.js';
 import { busyLocks, userStates } from '../runtime.js';
+import { mainMenuKeyboard, getMainMenuKeyboard } from '../ui/keyboards.js';
 
-export function createHandleTextMessageRouter(deps) {
-  const {
-    parsePolymarketEventUrl,
-    handlePolymarketEventUrlInput,
-    getMainMenuKeyboard,
-    handleBuyAmount,
-    handleSellAmount,
-    handleSplitAmount,
-    handleStrategySplitAmount,
-    handleMergeAmount,
-    handleExportConfirmation,
-    handleLimitAmount,
-    handleLimitPrice,
-    handleStrategySettingsInput,
-    handleNotificationSettingsInput,
-    handleEventsFilterRangeInput,
-    handleWithdrawAddress,
-    handleWithdrawAmount,
-    // HIP-4 trade features
-    handleMarketBuyAmount,
-    handleMarketSellAmount,
-    handleHLLimitPrice,
-    handleHLLimitSize,
-  } = deps;
+// Feature imports
+import { createTradeMarketFeature } from '../features/trade-market.js';
+import { createTradeLimitFeature } from '../features/trade-limit.js';
+import { handleExportConfirmation } from '../features/security.js';
 
-  return async function handleTextMessage(ctx) {
-    const chatId = ctx.chat.id;
-    const text = ctx.message.text;
-    const config = await loadConfig();
-    const t = await getTranslator(config.language || 'ru');
-    
-    const state = userStates.get(chatId);
-    if (!state) {
-      const parsedUrl = parsePolymarketEventUrl(text);
-      if (parsedUrl) {
-        await handlePolymarketEventUrlInput(ctx, parsedUrl, t);
-        return;
-      }
+// Instantiate features
+const tradeMarket = createTradeMarketFeature({});
+const tradeLimit = createTradeLimitFeature({});
 
-      // No active state, show menu
-      await ctx.reply(t('main_menu'), {
-        reply_markup: await getMainMenuKeyboard(config.language || 'ru')
-      });
-      return;
+// ─── Confirmation states that bypass the busy lock ──────────────
+
+const CONFIRMATION_STATES = new Set([
+  'CONFIRMING_MARKET_BUY',
+  'CONFIRMING_MARKET_SELL',
+  'CONFIRMING_LIMIT_ORDER',
+  'AWAITING_EXPORT_CONFIRMATION',
+]);
+
+// ─── Main text handler ──────────────────────────────────────────
+
+export async function handleTextMessage(ctx) {
+  const chatId = ctx.chat.id;
+  const text = ctx.message.text;
+  const config = await loadConfig();
+  const lang = config.language || 'en';
+  const t = await getTranslator(lang);
+
+  const state = userStates.get(chatId);
+
+  // No active state → show menu
+  if (!state) {
+    await ctx.reply(t('main_menu'), {
+      reply_markup: await getMainMenuKeyboard(lang),
+    });
+    return;
+  }
+
+  // Check busy lock (skip for confirmation states)
+  if (busyLocks.get(chatId) && !CONFIRMATION_STATES.has(state.state)) {
+    await ctx.reply(t('error_busy'));
+    return;
+  }
+
+  try {
+    switch (state.state) {
+      // ── Market trade amounts ──
+      case 'AWAITING_MARKET_BUY_AMOUNT':
+        await tradeMarket.handleMarketBuyAmount(ctx, state, text);
+        break;
+
+      case 'AWAITING_MARKET_SELL_AMOUNT':
+        await tradeMarket.handleMarketSellAmount(ctx, state, text);
+        break;
+
+      // ── Limit order inputs ──
+      case 'AWAITING_LIMIT_PRICE':
+        await tradeLimit.handleLimitPrice(ctx, state, text);
+        break;
+
+      case 'AWAITING_LIMIT_SIZE':
+        await tradeLimit.handleLimitSize(ctx, state, text);
+        break;
+
+      // ── Wallet export confirmation ──
+      case 'AWAITING_EXPORT_CONFIRMATION':
+        await handleExportConfirmation(ctx, state, text);
+        break;
+
+      // ── Fallback ──
+      default:
+        await ctx.reply(t('main_menu'), {
+          reply_markup: await getMainMenuKeyboard(lang),
+        });
+        break;
     }
-    
-    // Check busy lock - but NOT during confirmation state
-    const isInConfirmationState = state.state === 'CONFIRMING_BUY' || state.state === 'CONFIRMING_SELL' ||
-                                  state.state === 'CONFIRMING_SPLIT' || state.state === 'CONFIRMING_MERGE' ||
-                                  state.state === 'CONFIRMING_LIMIT' || state.state === 'CONFIRMING_STRATEGY_SPLIT' ||
-                                  state.state === 'CONFIRMING_MARKET_BUY' || state.state === 'CONFIRMING_MARKET_SELL' ||
-                                  state.state === 'CONFIRMING_LIMIT_ORDER' ||
-                                  state.state === 'AWAITING_EXPORT_CONFIRMATION';
-    
-    if (busyLocks.get(chatId) && !isInConfirmationState) {
-      await ctx.reply(t('error_busy'));
-      return;
-    }
-    
-    try {
-      switch (state.state) {
-        case 'AWAITING_BUY_AMOUNT':
-          await handleBuyAmount(ctx, state, text);
-          break;
-        case 'AWAITING_SELL_AMOUNT':
-          await handleSellAmount(ctx, state, text);
-          break;
-        case 'AWAITING_SPLIT_AMOUNT':
-          await handleSplitAmount(ctx, state, text);
-          break;
-        case 'AWAITING_STRATEGY_SPLIT_AMOUNT':
-          await handleStrategySplitAmount(ctx, state, text);
-          break;
-        case 'AWAITING_MERGE_AMOUNT':
-          await handleMergeAmount(ctx, state, text);
-          break;
-        case 'AWAITING_EXPORT_CONFIRMATION':
-          await handleExportConfirmation(ctx, state, text);
-          break;
-        case 'AWAITING_LIMIT_AMOUNT':
-          await handleLimitAmount(ctx, state, text);
-          break;
-        case 'AWAITING_LIMIT_PRICE':
-          // HIP-4 limit (has outcomeId) vs legacy (has tokenId)
-          if (state.outcomeId != null && handleHLLimitPrice) {
-            await handleHLLimitPrice(ctx, state, text);
-          } else if (handleLimitPrice) {
-            await handleLimitPrice(ctx, state, text);
-          }
-          break;
-        case 'AWAITING_STRATEGY_STOP_LOSS':
-        case 'AWAITING_STRATEGY_TAKE_PROFIT':
-        case 'AWAITING_STRATEGY_MAX_ASK_PRICE':
-          await handleStrategySettingsInput(ctx, state, text);
-          break;
-        case 'AWAITING_NOTIFICATION_PRICE_CHANGE':
-        case 'AWAITING_NOTIFICATION_REPEAT_STEP':
-        case 'AWAITING_NOTIFICATION_COOLDOWN':
-          await handleNotificationSettingsInput(ctx, state, text);
-          break;
-        case 'AWAITING_EVENTS_FILTER_RANGE':
-          await handleEventsFilterRangeInput(ctx, state, text);
-          break;
-        case 'AWAITING_WITHDRAW_ADDRESS':
-          await handleWithdrawAddress(ctx, text);
-          break;
-        case 'AWAITING_WITHDRAW_AMOUNT':
-          await handleWithdrawAmount(ctx, text);
-          break;
-        // HIP-4 market trade states
-        case 'AWAITING_MARKET_BUY_AMOUNT':
-          if (handleMarketBuyAmount) await handleMarketBuyAmount(ctx, state, text);
-          break;
-        case 'AWAITING_MARKET_SELL_AMOUNT':
-          if (handleMarketSellAmount) await handleMarketSellAmount(ctx, state, text);
-          break;
-        // HIP-4 limit trade size
-        case 'AWAITING_LIMIT_SIZE':
-          if (handleHLLimitSize) await handleHLLimitSize(ctx, state, text);
-          break;
-        default:
-          await ctx.reply(t('main_menu'), {
-            reply_markup: await getMainMenuKeyboard(config.language || 'ru')
-          });
-      }
-    } catch (error) {
-      const ctxLog = createContext('bot', 'handleTextMessage');
-      safeLogError(ctxLog, error, { state: state?.state });
-      const errorInfo = mapErrorToUserMessage(error);
-      await ctx.reply(t(errorInfo.key, errorInfo.params), {
-        reply_markup: await getMainMenuKeyboard(config.language || 'ru')
-      });
-      userStates.delete(chatId);
-    }
-  };
+  } catch (error) {
+    const logCtx = createContext('textRouter', 'handleTextMessage');
+    safeLogError(logCtx, error, { state: state?.state });
+    await ctx.reply(t('error_generic'), {
+      reply_markup: await getMainMenuKeyboard(lang),
+    });
+    userStates.delete(chatId);
+  }
 }
