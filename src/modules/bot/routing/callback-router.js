@@ -147,6 +147,18 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
+    if (data.startsWith('mkt_buy_pct:')) {
+      const pct = parseInt(data.split(':')[1], 10);
+      await tradeMarket.handleBuyPctCallback(ctx, pct);
+      return;
+    }
+
+    if (data.startsWith('mkt_sell_pct:')) {
+      const pct = parseInt(data.split(':')[1], 10);
+      await tradeMarket.handleSellPctCallback(ctx, pct);
+      return;
+    }
+
     if (data === 'confirm_market_buy') {
       await tradeMarket.executeConfirmedMarketBuy(ctx);
       return;
