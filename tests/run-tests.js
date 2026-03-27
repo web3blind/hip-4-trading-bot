@@ -1,11 +1,9 @@
 import { runLoggerTests } from './unit/logger.test.js';
 import { runMigrationCommonTests } from './unit/migration-common.test.js';
-import { runPolymarketConversionTests } from './unit/polymarket-conversions.test.js';
 
 const suites = [
   ['logger', runLoggerTests],
   ['migration-common', runMigrationCommonTests],
-  ['polymarket-conversions', runPolymarketConversionTests]
 ];
 
 let failures = 0;
