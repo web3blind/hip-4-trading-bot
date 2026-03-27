@@ -62,8 +62,10 @@ export function formatOutcomeList(outcomes, page, totalPages) {
     const yesPrice = outcome.yesPrice != null ? formatPricePercent(outcome.yesPrice) : 'N/A';
     const noPrice = outcome.noPrice != null ? formatPricePercent(outcome.noPrice) : 'N/A';
 
+    const s0 = outcome.side0Name || 'YES';
+    const s1 = outcome.side1Name || 'NO';
     text += `${num}. ${question}\n`;
-    text += `   YES: ${yesPrice}  |  NO: ${noPrice}\n\n`;
+    text += `   ${s0}: ${yesPrice}  |  ${s1}: ${noPrice}\n\n`;
   });
 
   return text.trimEnd();
