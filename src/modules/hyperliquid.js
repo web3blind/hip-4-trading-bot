@@ -325,6 +325,9 @@ export class HLClient {
 
     const assetIndex = await this._resolveSpotAssetIndex(coin);
 
+    // Debug log for troubleshooting
+    process.stderr.write(`[placeOrder] ${JSON.stringify({ coin, isBuy, price, size, orderType, assetIndex })}\n`);
+
     // Build order_type
     let ot;
     if (orderType === 'Market') {
@@ -363,7 +366,11 @@ export class HLClient {
       vaultAddress: null,
     };
 
-    return this._exchangeRequest(payload);
+    process.stderr.write(`[placeOrder] wire: ${JSON.stringify(orderWire)}\n`);
+
+    const result = await this._exchangeRequest(payload);
+    process.stderr.write(`[placeOrder] result: ${JSON.stringify(result)}\n`);
+    return result;
   }
 
   /**

@@ -376,6 +376,7 @@ export function createTradeMarketFeature(_deps) {
       const statuses = result?.response?.data?.statuses || [];
       const filled = statuses.find(s => s.filled);
       const resting = statuses.find(s => s.resting);
+      const errStatus = statuses.find(s => s.error);
 
       let resultText;
       if (filled) {
@@ -387,6 +388,8 @@ export function createTradeMarketFeature(_deps) {
           `Avg price: ${formatPrice(filled.filled.avgPx)}`;
       } else if (resting) {
         resultText = `Order resting on book.\nOID: ${resting.resting.oid}`;
+      } else if (errStatus) {
+        resultText = `Order rejected: ${errStatus.error}`;
       } else {
         resultText = `Order submitted.\n${JSON.stringify(statuses).slice(0, 200)}`;
       }
@@ -420,6 +423,7 @@ export function createTradeMarketFeature(_deps) {
       const statuses = result?.response?.data?.statuses || [];
       const filled = statuses.find(s => s.filled);
       const resting = statuses.find(s => s.resting);
+      const errStatus = statuses.find(s => s.error);
 
       let resultText;
       if (filled) {
@@ -431,6 +435,8 @@ export function createTradeMarketFeature(_deps) {
           `Proceeds: ~$${(Number(filled.filled.totalSz) * Number(filled.filled.avgPx)).toFixed(2)} USDC`;
       } else if (resting) {
         resultText = `Order resting on book.\nOID: ${resting.resting.oid}`;
+      } else if (errStatus) {
+        resultText = `Order rejected: ${errStatus.error}`;
       } else {
         resultText = `Order submitted.\n${JSON.stringify(statuses).slice(0, 200)}`;
       }
