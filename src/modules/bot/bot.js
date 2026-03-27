@@ -169,13 +169,14 @@ async function handleStartCommand(ctx) {
   let message =
     `${t('welcome')}\n\n` +
     `${t('wallet_status')}: ` +
-    (walletConfigured ? config.walletAddress : t('not_configured'));
+    (walletConfigured ? `<code>${config.walletAddress}</code>` : t('not_configured'));
 
   if (!walletConfigured) {
     message += '\n\n' + t('wallet_not_configured_help');
   }
 
   await ctx.reply(message, {
+    parse_mode: 'HTML',
     reply_markup: await getMainMenuKeyboard(config.language || 'en'),
   });
 }

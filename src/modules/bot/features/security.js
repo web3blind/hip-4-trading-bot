@@ -56,7 +56,7 @@ export async function showWalletInfo(ctx) {
 
   const text =
     `Wallet\n\n` +
-    `Address: ${config.walletAddress}` +
+    `Address: <code>${config.walletAddress}</code>` +
     balanceText +
     `\nNetwork: ${config.hlNetwork || 'testnet'}`;
 
@@ -66,9 +66,9 @@ export async function showWalletInfo(ctx) {
     .text(t('back') || 'Back', 'back_menu');
 
   try {
-    await ctx.editMessageText(text, { reply_markup: keyboard });
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: keyboard });
   } catch {
-    await ctx.reply(text, { reply_markup: keyboard });
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: keyboard });
   }
 }
 

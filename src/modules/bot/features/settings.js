@@ -20,7 +20,7 @@ export async function showSettings(ctx) {
   const config = await loadConfig();
   const t = await getTranslator(config.language || 'en');
 
-  const walletStatus = config.walletAddress || t('not_configured');
+  const walletStatus = config.walletAddress ? `<code>${config.walletAddress}</code>` : t('not_configured');
   const languageDisplay = config.language === 'ru' ? '🇷🇺 Русский' : '🇬🇧 English';
   const network = config.hlNetwork || 'testnet';
 
@@ -43,9 +43,9 @@ export async function showSettings(ctx) {
   keyboard.text(t('back') || 'Back', 'back_menu');
 
   try {
-    await ctx.editMessageText(text, { reply_markup: keyboard });
+    await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: keyboard });
   } catch {
-    await ctx.reply(text, { reply_markup: keyboard });
+    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: keyboard });
   }
 }
 
