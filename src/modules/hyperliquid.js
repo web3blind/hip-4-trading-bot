@@ -209,14 +209,22 @@ export class HLClient {
     }
 
     const universe = this._spotUniverseCache?.universe || [];
-    // Universe entries have a `name` field like "#21460/USDC"
-    // The coin portion before "/" should match
-    for (let i = 0; i < universe.length; i++) {
-      const entry = universe[i];
+
+    // Outcome coins use "#" prefix in API (e.g. "#110") but appear
+    // in spot universe with "@" prefix (e.g. "@110").
+    // Convert "#110" → "@110" for lookup.
+    const lookupName = coin.startsWith('#') ? '@' + coin.slice(1) : coin;
+
+    for (const entry of universe) {
       const entryName = entry.name || '';
-      // Match either exact name or the coin prefix
-      if (entryName === coin || entryName.startsWith(coin + '/') || entryName === coin + '/USDC') {
-        return 10000 + i;
+      if (
+        entryName === lookupName ||
+        entryName === coin ||
+        entryName.startsWith(lookupName + '/') ||
+        entryName.startsWith(coin + '/')
+      ) {
+        // Use entry.index (the universe's own index), not array position
+        return 10000 + entry.index;
       }
     }
 

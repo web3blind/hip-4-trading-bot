@@ -156,6 +156,20 @@ export async function fetchAndCacheOutcomes(hlClient) {
     });
   }
 
+  // Sort: questions first, then standalones. Within each group, by liquidity.
+  events.sort((a, b) => {
+    // Questions first
+    if (a.type === 'question' && b.type !== 'question') return -1;
+    if (a.type !== 'question' && b.type === 'question') return 1;
+    // For standalones, sort by whether they have prices (liquid first)
+    if (a.type === 'standalone' && b.type === 'standalone') {
+      const aHas = (a.yesPrice != null && a.noPrice != null) ? 1 : 0;
+      const bHas = (b.yesPrice != null && b.noPrice != null) ? 1 : 0;
+      return bHas - aHas; // liquid first
+    }
+    return 0;
+  });
+
   cachedEvents = events;
   cachedOutcomeMap = outcomeMap;
 
