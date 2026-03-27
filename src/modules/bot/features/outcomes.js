@@ -23,6 +23,30 @@ let cachedEvents = [];
 let cachedOutcomeMap = new Map(); // outcomeId -> outcome data
 
 /**
+ * Parse expiry from priceBinary description.
+ * Returns Date or null.
+ * Format: "class:priceBinary|...|expiry:20260328-0300|..."
+ */
+function parseExpiry(description) {
+  if (!description) return null;
+  const match = description.match(/expiry:(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/);
+  if (!match) return null;
+  return new Date(`${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:00Z`);
+}
+
+/** Check if an outcome is expired */
+function isExpired(outcome) {
+  const expiry = parseExpiry(outcome.description);
+  if (!expiry) return false; // no expiry = not expired
+  return expiry < new Date();
+}
+
+/** Check if outcome has any liquidity (mid price exists and > 0) */
+function hasLiquidity(outcome) {
+  return outcome.yesPrice != null || outcome.noPrice != null;
+}
+
+/**
  * Fetch and structure outcomes into events + standalones.
  */
 export async function fetchAndCacheOutcomes(hlClient) {
@@ -79,23 +103,30 @@ export async function fetchAndCacheOutcomes(hlClient) {
 
     const members = memberIds
       .map(id => outcomeMap.get(id))
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter(o => !isExpired(o)); // hide expired outcomes within a question
 
     for (const id of memberIds) claimedOutcomeIds.add(id);
 
-    events.push({
-      type: 'question',
-      questionId: q.question,
-      name: q.name,
-      description: q.description || '',
-      outcomeCount: members.length,
-      outcomes: members,
-    });
+    // Only show question if it has active outcomes
+    if (members.length > 0) {
+      events.push({
+        type: 'question',
+        questionId: q.question,
+        name: q.name,
+        description: q.description || '',
+        outcomeCount: members.length,
+        outcomes: members,
+      });
+    }
   }
 
   // Standalone outcomes (not part of any question)
   for (const [oid, outcome] of outcomeMap) {
     if (claimedOutcomeIds.has(oid)) continue;
+
+    // Skip expired outcomes in markets list
+    if (isExpired(outcome)) continue;
 
     // Parse priceBinary description for nicer display
     let displayName = outcome.name;

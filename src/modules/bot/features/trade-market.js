@@ -157,6 +157,26 @@ export function createTradeMarketFeature(_deps) {
 
     const priceDisplay = midPrice != null ? formatPrice(midPrice) : 'N/A';
 
+    // Check if orderbook has liquidity for the requested action
+    if (isBuy && bestAsk == null) {
+      const text = `Market BUY ${sideLabel}\n\nNo asks in orderbook — cannot place market buy.\nTry a limit order instead.`;
+      const kb = new InlineKeyboard()
+        .text('Limit order', `limit:${outcomeId}:${sideStr}:buy`)
+        .row()
+        .text('Back', `outcome:${outcomeId}`);
+      try { await ctx.editMessageText(text, { reply_markup: kb }); } catch { await ctx.reply(text, { reply_markup: kb }); }
+      return;
+    }
+    if (!isBuy && bestBid == null) {
+      const text = `Market SELL ${sideLabel}\n\nNo bids in orderbook — cannot place market sell.\nTry a limit order instead.`;
+      const kb = new InlineKeyboard()
+        .text('Limit order', `limit:${outcomeId}:${sideStr}:sell`)
+        .row()
+        .text('Back', `outcome:${outcomeId}`);
+      try { await ctx.editMessageText(text, { reply_markup: kb }); } catch { await ctx.reply(text, { reply_markup: kb }); }
+      return;
+    }
+
     // Save state
     const stateData = {
       state: isBuy ? 'AWAITING_MARKET_BUY_AMOUNT' : 'AWAITING_MARKET_SELL_AMOUNT',
