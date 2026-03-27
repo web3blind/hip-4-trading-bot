@@ -231,6 +231,40 @@ export class HLClient {
     throw new Error(`Cannot resolve spot asset index for coin "${coin}". Not found in spot universe.`);
   }
 
+  /**
+   * Get szDecimals for an outcome coin (how many decimal places allowed for size).
+   */
+  async _getSzDecimals(coin) {
+    // Ensure cache is populated
+    await this._resolveSpotAssetIndex(coin);
+
+    const universe = this._spotUniverseCache?.universe || [];
+    const tokens = this._spotUniverseCache?.tokens || [];
+    const lookupName = coin.startsWith('#') ? '@' + coin.slice(1) : coin;
+
+    for (const entry of universe) {
+      const entryName = entry.name || '';
+      if (entryName === lookupName || entryName === coin) {
+        // entry.tokens = [tokenIndex, quoteIndex]
+        const tokenIdx = entry.tokens?.[0];
+        if (tokenIdx != null && tokens[tokenIdx]) {
+          return tokens[tokenIdx].szDecimals ?? 0;
+        }
+        break;
+      }
+    }
+    return 0; // default: integer sizes
+  }
+
+  /**
+   * Round size to the correct number of decimals for this coin.
+   */
+  async _roundSize(coin, size) {
+    const szDecimals = await this._getSzDecimals(coin);
+    const factor = Math.pow(10, szDecimals);
+    return Math.floor(size * factor) / factor;
+  }
+
   // ─── Info endpoints ─────────────────────────────────────────────
 
   async getOutcomeMeta() {
@@ -284,6 +318,10 @@ export class HLClient {
    */
   async placeOrder(coin, isBuy, price, size, orderType = 'Limit') {
     if (!this.wallet) throw new Error('No wallet configured for signing');
+
+    // Round size to allowed decimals for this coin
+    size = await this._roundSize(coin, Number(size));
+    if (size <= 0) throw new Error('Order size too small after rounding');
 
     const assetIndex = await this._resolveSpotAssetIndex(coin);
 
