@@ -238,7 +238,18 @@ export class HLClient {
    * Returns 10000 + universeIndex for the OrderWire `a` field.
    */
   async _resolveSpotAssetIndex(coin) {
-    const TTL = 5 * 60_000; // 5 min cache
+    // HIP-4 outcome coins use "#" prefix (e.g. "#90", "#110").
+    // Their asset ID = 100_000_000 + encoding (per HL docs "Asset IDs / Outcomes").
+    // This is DIFFERENT from regular spot coins (@90) which use 10_000 + universe.index.
+    if (coin.startsWith('#')) {
+      const encoding = parseInt(coin.slice(1), 10);
+      if (!isNaN(encoding)) {
+        return 100_000_000 + encoding;
+      }
+    }
+
+    // Regular spot coins — look up in spotMeta universe
+    const TTL = 5 * 60_000;
     const now = Date.now();
     if (!this._spotUniverseCache || now - this._spotUniverseCacheTs > TTL) {
       const meta = await this._infoRequest({ type: 'spotMeta' });
@@ -247,21 +258,11 @@ export class HLClient {
     }
 
     const universe = this._spotUniverseCache?.universe || [];
-
-    // Outcome coins use "#" prefix in API (e.g. "#110") but appear
-    // in spot universe with "@" prefix (e.g. "@110").
-    // Convert "#110" → "@110" for lookup.
-    const lookupName = coin.startsWith('#') ? '@' + coin.slice(1) : coin;
+    const lookupName = coin.startsWith('@') ? coin : '@' + coin;
 
     for (const entry of universe) {
       const entryName = entry.name || '';
-      if (
-        entryName === lookupName ||
-        entryName === coin ||
-        entryName.startsWith(lookupName + '/') ||
-        entryName.startsWith(coin + '/')
-      ) {
-        // Use entry.index (the universe's own index), not array position
+      if (entryName === lookupName || entryName === coin || entryName.startsWith(lookupName + '/')) {
         return 10000 + entry.index;
       }
     }
