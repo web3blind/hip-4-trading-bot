@@ -75,7 +75,29 @@ export async function fetchOutcomeDetails(hlClient, outcomeId) {
   try { await hlClient._resolveSpotAssetIndex(yesCoin); yesInUniverse = true; } catch {}
   try { await hlClient._resolveSpotAssetIndex(noCoin); noInUniverse = true; } catch {}
 
-  if (yesInUniverse) {
+  // Check reference price (markPx) to determine if HL will accept orders.
+  // If markPx is >80% away from mid, HL rejects ALL orders on that side.
+  let yesRefOk = false, noRefOk = false;
+  try {
+    const metaCtx = await hlClient._infoRequest({ type: 'spotMetaAndAssetCtxs' });
+    const uniArr = metaCtx?.[0]?.universe || [];
+    const ctxArr = metaCtx?.[1] || [];
+    const yesMid = prices.yes != null ? parseFloat(prices.yes) : null;
+    const noMid = prices.no != null ? parseFloat(prices.no) : null;
+
+    for (let i = 0; i < uniArr.length; i++) {
+      const name = uniArr[i]?.name || '';
+      const markPx = ctxArr[i]?.markPx ? parseFloat(ctxArr[i].markPx) : 0;
+      if (name === '@' + (10 * outcomeId + 0) && yesMid && markPx > 0) {
+        yesRefOk = Math.abs(yesMid - markPx) / markPx < 0.8;
+      }
+      if (name === '@' + (10 * outcomeId + 1) && noMid && markPx > 0) {
+        noRefOk = Math.abs(noMid - markPx) / markPx < 0.8;
+      }
+    }
+  } catch {}
+
+  if (yesInUniverse && yesRefOk) {
     try {
       const yesBook = await hlClient.getOrderbook(yesCoin);
       if (yesBook?.levels) {
@@ -88,7 +110,7 @@ export async function fetchOutcomeDetails(hlClient, outcomeId) {
     } catch {}
   }
 
-  if (noInUniverse) {
+  if (noInUniverse && noRefOk) {
     try {
       const noBook = await hlClient.getOrderbook(noCoin);
       if (noBook?.levels) {
@@ -99,9 +121,9 @@ export async function fetchOutcomeDetails(hlClient, outcomeId) {
     } catch {}
   }
 
-  // Also expose universe status for limit buttons
-  tradeable.yesInUniverse = yesInUniverse;
-  tradeable.noInUniverse = noInUniverse;
+  // Expose universe + reference status for limit buttons
+  tradeable.yesInUniverse = yesInUniverse && yesRefOk;
+  tradeable.noInUniverse = noInUniverse && noRefOk;
 
   return { outcome, orderbook, prices, tradeable };
 }
