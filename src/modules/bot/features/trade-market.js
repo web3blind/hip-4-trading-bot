@@ -51,8 +51,14 @@ function normalizeHlError(error) {
   if (lowered.includes('insufficient')) {
     return 'Insufficient balance for this order.';
   }
+  if (lowered.includes('80%') || lowered.includes('reference price')) {
+    return 'This market has a stale reference price on HyperLiquid testnet.\nTrading is temporarily unavailable for this side.\nTry a different market or the other side.';
+  }
   if (lowered.includes('slippage')) {
     return 'Price moved too far. Try a smaller size or use a limit order.';
+  }
+  if (lowered.includes('not found in spot universe')) {
+    return 'This market is not available for trading yet (not in spot universe).';
   }
   if (lowered.includes('nonce')) {
     return 'The trading session is out of sync. Please try again.';
