@@ -11,8 +11,9 @@ import { InlineKeyboard } from 'grammy';
 import { loadConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
 import { getDecryptedPrivateKey, initializeWallet } from '../../auth.js';
-import { createContext, safeLogError, safeLogWarn } from '../../logger.js';
-import { busyLocks, userStates, hlClient } from '../runtime.js';
+import { createContext, safeLogError, safeLogWarn, safeLogInfo } from '../../logger.js';
+import { HLClient } from '../../hyperliquid.js';
+import { busyLocks, userStates, hlClient, setHLClient } from '../runtime.js';
 import { mainMenuKeyboard, getMainMenuKeyboard } from '../ui/keyboards.js';
 
 // ─── Show wallet info (/wallet command) ─────────────────────────
@@ -112,18 +113,35 @@ async function handleInitWallet(ctx) {
 
   busyLocks.set(chatId, true);
   try {
-    try { await ctx.editMessageText(t('loading')); } catch {}
+    try { await ctx.editMessageText(t('loading') || 'Creating wallet...'); } catch {}
 
     const result = await initializeWallet();
 
-    await ctx.editMessageText(result.warning, {
+    // Initialise HLClient on the fly so the bot is fully functional
+    try {
+      const privateKey = await getDecryptedPrivateKey();
+      const updatedConfig = await loadConfig();
+      const network = updatedConfig.hlNetwork || 'testnet';
+      const client = await HLClient.create(privateKey, network);
+      setHLClient(client);
+      const logCtx = createContext('security', 'handleInitWallet');
+      safeLogInfo(logCtx, 'HLClient initialised after wallet creation', { network });
+    } catch (hlErr) {
+      const logCtx = createContext('security', 'handleInitWallet');
+      safeLogError(logCtx, hlErr, { stage: 'hlClientInit' });
+    }
+
+    const text = result.warning +
+      '\n\nWallet created! You can now browse markets and trade.';
+
+    await ctx.editMessageText(text, {
       reply_markup: await getMainMenuKeyboard(config.language || 'en'),
     });
   } catch (error) {
     const logCtx = createContext('security', 'handleInitWallet');
     safeLogError(logCtx, error);
     try {
-      await ctx.editMessageText(t('error_generic'), {
+      await ctx.editMessageText(t('error_generic') || 'Error occurred.', {
         reply_markup: new InlineKeyboard()
           .text(t('try_again') || 'Try Again', 'init_wallet')
           .text(t('back') || 'Back', 'back_menu'),

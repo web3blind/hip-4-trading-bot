@@ -25,7 +25,7 @@ async function getHLClient() {
   const config = await loadConfig();
   const pk = await getDecryptedPrivateKey();
   if (!pk) throw new Error('Wallet not configured');
-  return HLClient.create(pk, config.network || 'testnet');
+  return await HLClient.create(pk, config.network || 'testnet');
 }
 
 function parseSide(sideStr) {

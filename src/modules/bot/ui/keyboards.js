@@ -18,20 +18,32 @@ export function getLanguageSelectionKeyboard() {
 
 // ─── Main menu ─────────────────────────────────────────────────
 
-export function mainMenuKeyboard(t) {
+export function mainMenuKeyboard(t, { walletConfigured = true } = {}) {
   const label = (key, fallback) => (t ? t(key) : fallback);
 
-  return new InlineKeyboard()
-    .text(label('menu_markets', 'Markets'), 'outcomes:page:1')
+  const kb = new InlineKeyboard();
+
+  if (!walletConfigured) {
+    kb.text('Init Wallet', 'init_wallet').row();
+    kb.text(label('menu_settings', 'Settings'), 'settings');
+    return kb;
+  }
+
+  kb.text(label('menu_markets', 'Markets'), 'outcomes:page:1')
     .text(label('menu_positions', 'Positions'), 'positions')
     .row()
     .text(label('menu_orders', 'Orders'), 'orders')
+    .text('Wallet', 'wallet')
+    .row()
     .text(label('menu_settings', 'Settings'), 'settings');
+  return kb;
 }
 
-// Alias for backward compat
+// Alias — checks wallet config state
 export async function getMainMenuKeyboard(lang) {
-  return mainMenuKeyboard(null);
+  const { isWalletConfigured } = await import('../../config.js');
+  const configured = await isWalletConfigured();
+  return mainMenuKeyboard(null, { walletConfigured: configured });
 }
 
 // ─── Outcomes list (paginated) ─────────────────────────────────

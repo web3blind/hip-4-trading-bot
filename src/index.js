@@ -152,7 +152,7 @@ async function runBot() {
       safeLogInfo(ctx, 'Initializing HyperLiquid client');
       const privateKey = await getDecryptedPrivateKey();
       const network = config.hlNetwork || 'testnet';
-      hlClient = HLClient.create(privateKey, network);
+      hlClient = await HLClient.create(privateKey, network);
       setHLClient(hlClient);
       safeLogInfo(ctx, 'HyperLiquid client initialized', { network });
     } catch (error) {
