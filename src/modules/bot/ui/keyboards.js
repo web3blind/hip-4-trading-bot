@@ -117,10 +117,14 @@ export function outcomeDetailKeyboard(outcomeId, t, tradeable) {
     kb.row();
   }
 
-  // Limit buttons — always available (user sets own price)
-  kb.text('Limit YES', `limit:${outcomeId}:yes:buy`)
-    .text('Limit NO', `limit:${outcomeId}:no:buy`)
-    .row();
+  // Limit buttons — only if coin is in spot universe
+  const limitRow = [];
+  if (tr.yesInUniverse !== false) limitRow.push({ text: 'Limit YES', data: `limit:${outcomeId}:yes:buy` });
+  if (tr.noInUniverse !== false) limitRow.push({ text: 'Limit NO', data: `limit:${outcomeId}:no:buy` });
+  if (limitRow.length > 0) {
+    limitRow.forEach(b => kb.text(b.text, b.data));
+    kb.row();
+  }
 
   kb.text('Back to list', 'outcomes:page:1');
   return kb;

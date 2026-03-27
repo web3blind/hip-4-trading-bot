@@ -70,25 +70,38 @@ export async function fetchOutcomeDetails(hlClient, outcomeId) {
   const yesCoin = toCoin(outcomeId, 0);
   const noCoin = toCoin(outcomeId, 1);
 
-  try {
-    const yesBook = await hlClient.getOrderbook(yesCoin);
-    if (yesBook?.levels) {
-      const [rawBids, rawAsks] = yesBook.levels;
-      orderbook.bids = (rawBids || []).slice(0, ORDERBOOK_DEPTH).map(e => [e.px, e.sz]);
-      orderbook.asks = (rawAsks || []).slice(0, ORDERBOOK_DEPTH).map(e => [e.px, e.sz]);
-      if (rawAsks?.length > 0) tradeable.yesBuy = true;
-      if (rawBids?.length > 0) tradeable.yesSell = true;
-    }
-  } catch {}
+  // Check if coins are in spot universe (required for trading)
+  let yesInUniverse = false, noInUniverse = false;
+  try { await hlClient._resolveSpotAssetIndex(yesCoin); yesInUniverse = true; } catch {}
+  try { await hlClient._resolveSpotAssetIndex(noCoin); noInUniverse = true; } catch {}
 
-  try {
-    const noBook = await hlClient.getOrderbook(noCoin);
-    if (noBook?.levels) {
-      const [rawBids, rawAsks] = noBook.levels;
-      if (rawAsks?.length > 0) tradeable.noBuy = true;
-      if (rawBids?.length > 0) tradeable.noSell = true;
-    }
-  } catch {}
+  if (yesInUniverse) {
+    try {
+      const yesBook = await hlClient.getOrderbook(yesCoin);
+      if (yesBook?.levels) {
+        const [rawBids, rawAsks] = yesBook.levels;
+        orderbook.bids = (rawBids || []).slice(0, ORDERBOOK_DEPTH).map(e => [e.px, e.sz]);
+        orderbook.asks = (rawAsks || []).slice(0, ORDERBOOK_DEPTH).map(e => [e.px, e.sz]);
+        if (rawAsks?.length > 0) tradeable.yesBuy = true;
+        if (rawBids?.length > 0) tradeable.yesSell = true;
+      }
+    } catch {}
+  }
+
+  if (noInUniverse) {
+    try {
+      const noBook = await hlClient.getOrderbook(noCoin);
+      if (noBook?.levels) {
+        const [rawBids, rawAsks] = noBook.levels;
+        if (rawAsks?.length > 0) tradeable.noBuy = true;
+        if (rawBids?.length > 0) tradeable.noSell = true;
+      }
+    } catch {}
+  }
+
+  // Also expose universe status for limit buttons
+  tradeable.yesInUniverse = yesInUniverse;
+  tradeable.noInUniverse = noInUniverse;
 
   return { outcome, orderbook, prices, tradeable };
 }
