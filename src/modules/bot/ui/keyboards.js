@@ -46,34 +46,51 @@ export async function getMainMenuKeyboard(lang) {
   return mainMenuKeyboard(null, { walletConfigured: configured });
 }
 
-// ─── Outcomes list (paginated) ─────────────────────────────────
+// ─── Events list (Level 1: questions + standalones) ─────────────
 
-export function outcomesListKeyboard(outcomes, page, totalPages, t) {
+export function outcomesListKeyboard(events, page, totalPages, t) {
   const keyboard = new InlineKeyboard();
 
-  if (outcomes && outcomes.length > 0) {
-    outcomes.forEach((outcome) => {
-      const label = (outcome.question || outcome.description || 'Unknown').slice(0, 50);
-      keyboard.text(label, `outcome:${outcome.outcomeId || outcome.outcome_id}`).row();
+  if (events && events.length > 0) {
+    events.forEach((event) => {
+      if (event.type === 'question') {
+        const label = (event.name || 'Event').slice(0, 50);
+        keyboard.text(label, `event:${event.questionId}`).row();
+      } else {
+        // Standalone outcome — go directly to detail
+        const label = (event.name || 'Outcome').slice(0, 50);
+        keyboard.text(label, `outcome:${event.outcomeId}`).row();
+      }
     });
   }
 
-  // Pagination row
+  // Pagination
   const navButtons = [];
-  if (page > 1) {
-    navButtons.push({ text: '< Prev', data: `outcomes:page:${page - 1}` });
-  }
-  if (page < totalPages) {
-    navButtons.push({ text: 'Next >', data: `outcomes:page:${page + 1}` });
-  }
-
+  if (page > 1) navButtons.push({ text: '< Prev', data: `outcomes:page:${page - 1}` });
+  if (page < totalPages) navButtons.push({ text: 'Next >', data: `outcomes:page:${page + 1}` });
   if (navButtons.length > 0) {
     navButtons.forEach(btn => keyboard.text(btn.text, btn.data));
     keyboard.row();
   }
 
   keyboard.text('Back', 'back_menu');
+  return keyboard;
+}
 
+// ─── Event outcomes (Level 2: outcomes within a question) ───────
+
+export function eventOutcomesKeyboard(event) {
+  const keyboard = new InlineKeyboard();
+
+  if (event.outcomes && event.outcomes.length > 0) {
+    for (const o of event.outcomes) {
+      const price = o.yesPrice != null ? ` (${(o.yesPrice * 100).toFixed(0)}%)` : '';
+      const label = (o.name + price).slice(0, 50);
+      keyboard.text(label, `outcome:${o.outcomeId}`).row();
+    }
+  }
+
+  keyboard.text('Back to markets', 'outcomes:page:1');
   return keyboard;
 }
 

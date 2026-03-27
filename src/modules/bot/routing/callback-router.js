@@ -13,7 +13,7 @@ import { busyLocks, confirmationLocks, userStates, hlClient } from '../runtime.j
 import { mainMenuKeyboard, getMainMenuKeyboard } from '../ui/keyboards.js';
 
 // Features (lazy-ish imports)
-import { showOutcomesList } from '../features/outcomes.js';
+import { showOutcomesList, showEventOutcomes } from '../features/outcomes.js';
 import { showOutcomeDetail } from '../features/outcome-details.js';
 import { createTradeMarketFeature } from '../features/trade-market.js';
 import { createTradeLimitFeature } from '../features/trade-limit.js';
@@ -107,6 +107,19 @@ export async function handleCallbackQuery(ctx) {
         return;
       }
       await showOutcomesList(ctx, hlClient, page);
+      return;
+    }
+
+    // ── Event (question with multiple outcomes) ──
+    if (data.startsWith('event:')) {
+      const questionId = parseInt(data.split(':')[1], 10);
+      if (!hlClient || isNaN(questionId)) {
+        await ctx.editMessageText('Invalid event.', {
+          reply_markup: new InlineKeyboard().text('Back', 'outcomes:page:1'),
+        });
+        return;
+      }
+      await showEventOutcomes(ctx, hlClient, questionId);
       return;
     }
 

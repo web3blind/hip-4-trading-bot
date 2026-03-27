@@ -71,6 +71,56 @@ export function formatOutcomeList(outcomes, page, totalPages) {
   return text.trimEnd();
 }
 
+// ─── Events list (Level 1) ──────────────────────────────────────
+
+export function formatEventsList(events, page, totalPages) {
+  if (!events || events.length === 0) {
+    return 'No markets available.';
+  }
+
+  let text = `Markets (page ${page}/${totalPages})\n\n`;
+
+  events.forEach((event, index) => {
+    const num = (page - 1) * 5 + index + 1;
+
+    if (event.type === 'question') {
+      text += `${num}. ${event.name}\n`;
+      text += `   ${event.outcomeCount} outcomes\n\n`;
+    } else {
+      // Standalone outcome
+      const yesPrice = event.yesPrice != null ? formatPricePercent(event.yesPrice) : 'N/A';
+      const noPrice = event.noPrice != null ? formatPricePercent(event.noPrice) : 'N/A';
+      const s0 = event.side0Name || 'YES';
+      const s1 = event.side1Name || 'NO';
+      text += `${num}. ${event.name}\n`;
+      text += `   ${s0}: ${yesPrice}  |  ${s1}: ${noPrice}\n\n`;
+    }
+  });
+
+  return text.trimEnd();
+}
+
+// ─── Event outcomes (Level 2) ───────────────────────────────────
+
+export function formatEventOutcomes(event) {
+  let text = `${event.name}\n`;
+  if (event.description) {
+    text += `${event.description}\n`;
+  }
+  text += '\nOutcomes:\n\n';
+
+  for (const o of event.outcomes) {
+    const yesPrice = o.yesPrice != null ? formatPricePercent(o.yesPrice) : 'N/A';
+    const noPrice = o.noPrice != null ? formatPricePercent(o.noPrice) : 'N/A';
+    const s0 = o.side0Name || 'YES';
+    const s1 = o.side1Name || 'NO';
+    text += `${o.name}\n`;
+    text += `  ${s0}: ${yesPrice}  |  ${s1}: ${noPrice}\n\n`;
+  }
+
+  return text.trimEnd();
+}
+
 // ─── Outcome detail ────────────────────────────────────────────
 
 /**
