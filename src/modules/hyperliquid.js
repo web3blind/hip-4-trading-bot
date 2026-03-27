@@ -46,17 +46,26 @@ function floatToWire(x) {
   return normalized;
 }
 
+/**
+ * HyperLiquid enforces a maximum of 5 significant decimal places
+ * for spot/outcome prices. Prices with more decimals get
+ * "Price must be divisible by tick size" errors.
+ *
+ * We round (floor for buys, ceil for sells is caller's concern)
+ * to 5 decimal places max.
+ */
 function formatPriceForHl(price) {
   const numeric = Number(price);
   if (!Number.isFinite(numeric) || numeric <= 0) {
     throw new Error(`Invalid price: ${price}`);
   }
 
-  if (numeric < 1) {
-    return removeTrailingZeros(numeric.toFixed(6));
+  if (numeric >= 1) {
+    return floatToWire(numeric);
   }
 
-  return floatToWire(numeric);
+  // For sub-$1 prices (outcome tokens etc.), cap at 5 decimal places
+  return removeTrailingZeros(numeric.toFixed(5));
 }
 
 function parseOrderStatuses(result) {
@@ -445,10 +454,10 @@ export class HLClient {
     // Instead: place a GTC limit at best ask (buy) or best bid (sell).
     // It fills immediately if liquidity is there, and sits on book if not.
     const limitPrice = isBuy
-      ? Math.min(refPrice * (1 + slippagePct / 100), 0.999999)
-      : Math.max(refPrice * (1 - slippagePct / 100), 0.000001);
+      ? Math.min(refPrice * (1 + slippagePct / 100), 0.99999)
+      : Math.max(refPrice * (1 - slippagePct / 100), 0.00001);
 
-    const roundedPrice = Number(limitPrice.toFixed(6));
+    const roundedPrice = Number(limitPrice.toFixed(5));
 
     return this.placeOrder(coin, isBuy, roundedPrice, size, 'Limit');
   }
