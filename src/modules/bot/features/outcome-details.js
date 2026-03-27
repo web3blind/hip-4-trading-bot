@@ -63,30 +63,34 @@ export async function fetchOutcomeDetails(hlClient, outcomeId) {
     // Prices unavailable
   }
 
-  // Fetch orderbook for YES side
+  // Fetch orderbook for BOTH sides to know what's tradeable
   let orderbook = { bids: [], asks: [] };
+  const tradeable = { yesBuy: false, yesSell: false, noBuy: false, noSell: false };
+
+  const yesCoin = toCoin(outcomeId, 0);
+  const noCoin = toCoin(outcomeId, 1);
+
   try {
-    const yesCoin = toCoin(outcomeId, 0);
-    const book = await hlClient.getOrderbook(yesCoin);
-
-    // l2Book response format: { levels: [[{px, sz, n}, ...], [{px, sz, n}, ...]] }
-    // levels[0] = bids, levels[1] = asks
-    if (book?.levels) {
-      const [rawBids, rawAsks] = book.levels;
-
-      orderbook.bids = (rawBids || [])
-        .slice(0, ORDERBOOK_DEPTH)
-        .map(entry => [entry.px, entry.sz]);
-
-      orderbook.asks = (rawAsks || [])
-        .slice(0, ORDERBOOK_DEPTH)
-        .map(entry => [entry.px, entry.sz]);
+    const yesBook = await hlClient.getOrderbook(yesCoin);
+    if (yesBook?.levels) {
+      const [rawBids, rawAsks] = yesBook.levels;
+      orderbook.bids = (rawBids || []).slice(0, ORDERBOOK_DEPTH).map(e => [e.px, e.sz]);
+      orderbook.asks = (rawAsks || []).slice(0, ORDERBOOK_DEPTH).map(e => [e.px, e.sz]);
+      if (rawAsks?.length > 0) tradeable.yesBuy = true;
+      if (rawBids?.length > 0) tradeable.yesSell = true;
     }
-  } catch {
-    // Orderbook unavailable
-  }
+  } catch {}
 
-  return { outcome, orderbook, prices };
+  try {
+    const noBook = await hlClient.getOrderbook(noCoin);
+    if (noBook?.levels) {
+      const [rawBids, rawAsks] = noBook.levels;
+      if (rawAsks?.length > 0) tradeable.noBuy = true;
+      if (rawBids?.length > 0) tradeable.noSell = true;
+    }
+  } catch {}
+
+  return { outcome, orderbook, prices, tradeable };
 }
 
 /**
@@ -112,9 +116,9 @@ export async function showOutcomeDetail(ctx, hlClient, outcomeId) {
       return;
     }
 
-    const { outcome, orderbook, prices } = details;
+    const { outcome, orderbook, prices, tradeable } = details;
     const text = formatOutcomeDetail(outcome, orderbook, prices);
-    const keyboard = outcomeDetailKeyboard(outcomeId);
+    const keyboard = outcomeDetailKeyboard(outcomeId, null, tradeable);
 
     await ctx.editMessageText(text, { reply_markup: keyboard });
   } catch (error) {

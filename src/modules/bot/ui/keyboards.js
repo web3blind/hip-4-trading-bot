@@ -96,21 +96,34 @@ export function eventOutcomesKeyboard(event) {
 
 // ─── Outcome detail ────────────────────────────────────────────
 
-export function outcomeDetailKeyboard(outcomeId, t) {
-  return new InlineKeyboard()
-    .text('Buy YES', `trade:${outcomeId}:yes:buy`)
-    .text('Buy NO', `trade:${outcomeId}:no:buy`)
-    .row()
-    .text('Sell YES', `trade:${outcomeId}:yes:sell`)
-    .text('Sell NO', `trade:${outcomeId}:no:sell`)
-    .row()
-    .text('Limit Buy YES', `limit:${outcomeId}:yes:buy`)
-    .text('Limit Buy NO', `limit:${outcomeId}:no:buy`)
-    .row()
-    .text('Limit Sell YES', `limit:${outcomeId}:yes:sell`)
-    .text('Limit Sell NO', `limit:${outcomeId}:no:sell`)
-    .row()
-    .text('Back to list', 'outcomes:page:1');
+export function outcomeDetailKeyboard(outcomeId, t, tradeable) {
+  const kb = new InlineKeyboard();
+  const tr = tradeable || { yesBuy: true, yesSell: true, noBuy: true, noSell: true };
+
+  // Market buttons — only show if orderbook has liquidity
+  const marketRow = [];
+  if (tr.yesBuy) marketRow.push({ text: 'Buy YES', data: `trade:${outcomeId}:yes:buy` });
+  if (tr.noBuy) marketRow.push({ text: 'Buy NO', data: `trade:${outcomeId}:no:buy` });
+  if (marketRow.length > 0) {
+    marketRow.forEach(b => kb.text(b.text, b.data));
+    kb.row();
+  }
+
+  const sellRow = [];
+  if (tr.yesSell) sellRow.push({ text: 'Sell YES', data: `trade:${outcomeId}:yes:sell` });
+  if (tr.noSell) sellRow.push({ text: 'Sell NO', data: `trade:${outcomeId}:no:sell` });
+  if (sellRow.length > 0) {
+    sellRow.forEach(b => kb.text(b.text, b.data));
+    kb.row();
+  }
+
+  // Limit buttons — always available (user sets own price)
+  kb.text('Limit YES', `limit:${outcomeId}:yes:buy`)
+    .text('Limit NO', `limit:${outcomeId}:no:buy`)
+    .row();
+
+  kb.text('Back to list', 'outcomes:page:1');
+  return kb;
 }
 
 // ─── Trade confirmation ────────────────────────────────────────
