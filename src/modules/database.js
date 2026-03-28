@@ -25,6 +25,7 @@ export function initDatabase() {
 
   // Create tables
   createTables();
+  createPriceAlertsTable();
 
   return db;
 }
@@ -90,6 +91,8 @@ function createTables() {
     CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
     CREATE INDEX IF NOT EXISTS idx_orders_oid ON orders(oid);
   `);
+
+
 }
 
 // ─── Outcomes ─────────────────────────────────────────────────
@@ -251,6 +254,30 @@ export function getOutcomeByCoin(coin) {
   const sideRow = sideStmt.get(coin);
   if (!sideRow) return null;
   return getOutcomeById(sideRow.outcome_id);
+}
+
+// ─── Price alert state (for automatic position monitoring) ────
+
+function createPriceAlertsTable() {
+  db.exec(`CREATE TABLE IF NOT EXISTS price_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    coin TEXT NOT NULL,
+    last_price TEXT,
+    last_alert_time INTEGER,
+    UNIQUE(coin)
+  )`);
+}
+
+export function getPriceAlertState(coin) {
+  const stmt = db.prepare('SELECT * FROM price_alerts WHERE coin = ?');
+  return stmt.get(coin) || null;
+}
+
+export function updatePriceAlertState(coin, lastPrice, lastAlertTime) {
+  const stmt = db.prepare(`INSERT INTO price_alerts (coin, last_price, last_alert_time)
+    VALUES (?, ?, ?)
+    ON CONFLICT(coin) DO UPDATE SET last_price = ?, last_alert_time = ?`);
+  stmt.run(coin, String(lastPrice), lastAlertTime, String(lastPrice), lastAlertTime);
 }
 
 // ─── Database lifecycle ───────────────────────────────────────

@@ -1,5 +1,6 @@
 import { InlineKeyboard } from 'grammy';
 import { loadConfig } from '../../config.js';
+import { getTranslator } from '../../i18n.js';
 import { getOutcomeByCoin } from '../../database.js';
 import { createContext, safeLogError } from '../../logger.js';
 import { busyLocks } from '../runtime.js';
@@ -37,15 +38,16 @@ export function createOrdersFeature(deps) {
 
   async function showOrders(ctx) {
     const config = await loadConfig();
+    const t = await getTranslator(config.language || 'en');
 
     if (!config.walletAddress) {
-      await ctx.editMessageText('Wallet not configured. Use /setup first.', {
-        reply_markup: new InlineKeyboard().text('Back', 'back_menu'),
+      await ctx.editMessageText(t('wallet_not_configured_setup'), {
+        reply_markup: new InlineKeyboard().text(t('back'), 'back_menu'),
       });
       return;
     }
 
-    await ctx.editMessageText('Loading orders...');
+    await ctx.editMessageText(t('loading_orders'));
 
     const chatId = ctx.chat.id;
     busyLocks.set(chatId, true);
@@ -59,15 +61,15 @@ export function createOrdersFeature(deps) {
       const outcomeOrders = ordersList.filter((o) => isOutcomeToken(o.coin));
 
       if (outcomeOrders.length === 0) {
-        await ctx.editMessageText('No open outcome orders.', {
+        await ctx.editMessageText(t('no_open_orders'), {
           reply_markup: new InlineKeyboard()
-            .text('Refresh', 'orders:refresh')
-            .text('Back', 'back_menu'),
+            .text(t('refresh'), 'orders:refresh')
+            .text(t('back'), 'back_menu'),
         });
         return;
       }
 
-      let text = 'Your Open Orders\n\n';
+      let text = `${t('open_orders_title')}\n\n`;
       const keyboard = new InlineKeyboard();
 
       for (let i = 0; i < outcomeOrders.length; i++) {
@@ -81,37 +83,37 @@ export function createOrdersFeature(deps) {
         const side = resolveSide(coin, outcome);
 
         const orderSide = order.side === 'B' ? 'BUY' : order.side === 'A' ? 'SELL' : (order.side || 'Unknown');
-        const price = order.limitPx || order.px || order.price || 'N/A';
-        const size = order.sz || order.size || order.origSz || 'N/A';
+        const price = order.limitPx || order.px || order.price || t('na');
+        const size = order.sz || order.size || order.origSz || t('na');
         const orderType = order.orderType || 'Limit';
 
         text += `${i + 1}. ${question}\n`;
         text += `   ${side} ${orderSide} | ${orderType}\n`;
-        text += `   Price: ${price} | Size: ${size}\n`;
+        text += `   ${t('price')}: ${price} | ${t('size')}: ${size}\n`;
         if (oid) text += `   OID: ${String(oid).slice(0, 12)}...\n`;
         text += '\n';
 
         // Cancel button per order
         const safeOid = encodeURIComponent(oid);
-        keyboard.text(`Cancel #${i + 1}`, `order:cancel:${safeOid}`);
+        keyboard.text(t('cancel_num', { num: i + 1 }), `order:cancel:${safeOid}`);
         if ((i + 1) % 2 === 0) keyboard.row();
       }
 
       keyboard.row();
       if (outcomeOrders.length > 1) {
-        keyboard.text('Cancel All', 'orders:cancelall');
+        keyboard.text(t('cancel_all'), 'orders:cancelall');
       }
-      keyboard.text('Refresh', 'orders:refresh');
-      keyboard.text('Back', 'back_menu');
+      keyboard.text(t('refresh'), 'orders:refresh');
+      keyboard.text(t('back'), 'back_menu');
 
       await ctx.editMessageText(text, { reply_markup: keyboard });
     } catch (error) {
       const logCtx = createContext('bot', 'showOrders');
       safeLogError(logCtx, error);
-      await ctx.editMessageText('Error loading orders. Try again.', {
+      await ctx.editMessageText(t('could_not_load', { scope: t('menu_orders') }), {
         reply_markup: new InlineKeyboard()
-          .text('Try Again', 'orders:refresh')
-          .text('Back', 'back_menu'),
+          .text(t('try_again'), 'orders:refresh')
+          .text(t('back'), 'back_menu'),
       });
     } finally {
       busyLocks.delete(chatId);
@@ -120,10 +122,11 @@ export function createOrdersFeature(deps) {
 
   async function cancelOrder(ctx, oid) {
     const config = await loadConfig();
+    const t = await getTranslator(config.language || 'en');
 
     if (!config.walletAddress) {
-      await ctx.editMessageText('Wallet not configured.', {
-        reply_markup: new InlineKeyboard().text('Back', 'back_menu'),
+      await ctx.editMessageText(t('wallet_not_configured_setup'), {
+        reply_markup: new InlineKeyboard().text(t('back'), 'back_menu'),
       });
       return;
     }
@@ -132,7 +135,7 @@ export function createOrdersFeature(deps) {
     busyLocks.set(chatId, true);
 
     try {
-      await ctx.editMessageText('Cancelling order...');
+      await ctx.editMessageText(t('cancelling_order'));
       const orders = await hlClient.getOpenOrders(config.walletAddress);
       const order = Array.isArray(orders)
         ? orders.find((entry) => String(entry.oid) === String(oid))
@@ -141,18 +144,18 @@ export function createOrdersFeature(deps) {
         throw new Error('Order not found in open orders');
       }
       await hlClient.cancelOrder(order.coin, oid);
-      await ctx.editMessageText(`Order cancelled: ${String(oid).slice(0, 16)}`, {
+      await ctx.editMessageText(t('order_cancelled_short', { oid: String(oid).slice(0, 16) }), {
         reply_markup: new InlineKeyboard()
-          .text('View Orders', 'orders:refresh')
-          .text('Back', 'back_menu'),
+          .text(t('view_orders'), 'orders:refresh')
+          .text(t('back'), 'back_menu'),
       });
     } catch (error) {
       const logCtx = createContext('bot', 'cancelOrder');
       safeLogError(logCtx, error);
-      await ctx.editMessageText('Failed to cancel order. It may have already been filled.', {
+      await ctx.editMessageText(t('cancel_order_failed'), {
         reply_markup: new InlineKeyboard()
-          .text('Try Again', `order:cancel:${encodeURIComponent(oid)}`)
-          .text('Back', 'orders:refresh'),
+          .text(t('try_again'), `order:cancel:${encodeURIComponent(oid)}`)
+          .text(t('back'), 'orders:refresh'),
       });
     } finally {
       busyLocks.delete(chatId);
@@ -161,10 +164,11 @@ export function createOrdersFeature(deps) {
 
   async function cancelAllOrders(ctx) {
     const config = await loadConfig();
+    const t = await getTranslator(config.language || 'en');
 
     if (!config.walletAddress) {
-      await ctx.editMessageText('Wallet not configured.', {
-        reply_markup: new InlineKeyboard().text('Back', 'back_menu'),
+      await ctx.editMessageText(t('wallet_not_configured_setup'), {
+        reply_markup: new InlineKeyboard().text(t('back'), 'back_menu'),
       });
       return;
     }
@@ -173,20 +177,20 @@ export function createOrdersFeature(deps) {
     busyLocks.set(chatId, true);
 
     try {
-      await ctx.editMessageText('Cancelling all orders...');
+      await ctx.editMessageText(t('cancelling_all_orders'));
       await hlClient.cancelAllOrders();
-      await ctx.editMessageText('All orders cancelled.', {
+      await ctx.editMessageText(t('all_orders_cancelled'), {
         reply_markup: new InlineKeyboard()
-          .text('View Orders', 'orders:refresh')
-          .text('Back', 'back_menu'),
+          .text(t('view_orders'), 'orders:refresh')
+          .text(t('back'), 'back_menu'),
       });
     } catch (error) {
       const logCtx = createContext('bot', 'cancelAllOrders');
       safeLogError(logCtx, error);
-      await ctx.editMessageText('Failed to cancel orders. Try again.', {
+      await ctx.editMessageText(t('cancel_all_failed'), {
         reply_markup: new InlineKeyboard()
-          .text('Try Again', 'orders:cancelall')
-          .text('Back', 'orders:refresh'),
+          .text(t('try_again'), 'orders:cancelall')
+          .text(t('back'), 'orders:refresh'),
       });
     } finally {
       busyLocks.delete(chatId);

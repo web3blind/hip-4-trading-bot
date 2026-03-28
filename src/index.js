@@ -165,7 +165,7 @@ async function runBot() {
 
   // 4) Init bot
   safeLogInfo(ctx, 'Initializing bot');
-  await initBot(botToken, allowedUserId);
+  const botInstance = await initBot(botToken, allowedUserId);
   safeLogInfo(ctx, 'Bot initialized');
 
   // 5) Start bot polling
@@ -177,6 +177,7 @@ async function runBot() {
     safeLogInfo(ctx, 'Starting background workers');
     startWorkers({
       hlClient,
+      bot: botInstance,
       chatId: allowedUserId,
     });
   } else {

@@ -37,25 +37,29 @@ export async function showWalletInfo(ctx) {
     try {
       spotUsdc = await hlClient.getSpotUsdcBalance();
       perpUsdc = await hlClient.getPerpBalance();
-      balanceText = `\nSpot USDC: $${spotUsdc.toFixed(2)}`;
-      balanceText += `\nPrediction funding: $${perpUsdc.toFixed(2)}`;
+      balanceText = `\n${t('spot_usdc')}: $${spotUsdc.toFixed(2)}`;
+      balanceText += `\n${t('prediction_funding')}: $${perpUsdc.toFixed(2)}`;
     } catch {
-      balanceText = '\nBalance: unavailable';
+      balanceText = `\n${t('balance_unavailable')}`;
     }
   }
 
   const text =
-    `Wallet\n\n` +
+    `${t('wallet_title')}\n\n` +
     `Address:\n<code>${config.walletAddress}</code>` +
     balanceText +
-    `\nNetwork: ${config.hlNetwork || 'testnet'}`;
+    `\n${t('network_label')}: ${config.hlNetwork || 'testnet'}`;
 
   const keyboard = new InlineKeyboard();
   if (spotUsdc > 0.01) {
-    keyboard.text(`Fund Predictions ($${spotUsdc.toFixed(2)})`, 'wallet:fund_predictions').row();
+    keyboard.text(`${t('fund_predictions')} ($${spotUsdc.toFixed(2)})`, 'wallet:fund_predictions').row();
+  }
+  const totalUsdc = spotUsdc + perpUsdc;
+  if (totalUsdc >= 1) {
+    keyboard.text(t('withdraw_btn'), 'withdraw_start').row();
   }
   keyboard
-    .text(t('settings_export_pk') || 'Export Key', 'start_export_pk')
+    .text(t('settings_export_pk') || t('export_key'), 'start_export_pk')
     .row()
     .text(t('back') || 'Back', 'back_menu');
 
@@ -102,22 +106,24 @@ export async function handleWalletCallback(ctx, data) {
 
 async function handleFundPredictions(ctx) {
   const chatId = ctx.chat.id;
+  const config = await loadConfig();
+  const t = await getTranslator(config.language || 'en');
   busyLocks.set(chatId, true);
 
   try {
     if (!hlClient) {
-      try { await ctx.editMessageText('Trading not ready. Create a wallet first.', {
-        reply_markup: new InlineKeyboard().text('Back', 'back_menu'),
+      try { await ctx.editMessageText(t('trading_not_ready'), {
+        reply_markup: new InlineKeyboard().text(t('back'), 'back_menu'),
       }); } catch {}
       return;
     }
 
-    try { await ctx.editMessageText('Transferring spot USDC to prediction funding...'); } catch {}
+    try { await ctx.editMessageText(t('transferring_to_predictions')); } catch {}
 
     const spotBal = await hlClient.getSpotUsdcBalance();
     if (spotBal < 0.01) {
-      try { await ctx.editMessageText('No spot USDC available to transfer.', {
-        reply_markup: new InlineKeyboard().text('Back', 'wallet'),
+      try { await ctx.editMessageText(t('no_spot_usdc'), {
+        reply_markup: new InlineKeyboard().text(t('back'), 'wallet'),
       }); } catch {}
       return;
     }
@@ -130,21 +136,21 @@ async function handleFundPredictions(ctx) {
     const newSpot = await hlClient.getSpotUsdcBalance();
 
     const text =
-      `Funded!\n\n` +
-      `Transferred: $${transferAmt.toFixed(2)} USDC\n` +
-      `Prediction funding: $${newPerp.toFixed(2)}\n` +
-      `Remaining spot: $${newSpot.toFixed(2)}`;
+      `${t('funded_title')}\n\n` +
+      `${t('transferred')}: $${transferAmt.toFixed(2)} USDC\n` +
+      `${t('prediction_funding')}: $${newPerp.toFixed(2)}\n` +
+      `${t('remaining_spot')}: $${newSpot.toFixed(2)}`;
 
     try { await ctx.editMessageText(text, {
       reply_markup: new InlineKeyboard()
-        .text('Back to Wallet', 'wallet')
+        .text(t('back_to_wallet'), 'wallet')
         .row()
-        .text('Main Menu', 'back_menu'),
+        .text(t('main_menu_btn'), 'back_menu'),
     }); } catch {}
   } catch (err) {
     process.stderr.write(`[fundPredictions] error: ${err.message}\n`);
-    try { await ctx.editMessageText(`Transfer failed: ${err.message}`, {
-      reply_markup: new InlineKeyboard().text('Back', 'wallet'),
+    try { await ctx.editMessageText(t('transfer_failed', { error: err.message }), {
+      reply_markup: new InlineKeyboard().text(t('back'), 'wallet'),
     }); } catch {}
   } finally {
     busyLocks.delete(chatId);
@@ -158,7 +164,7 @@ async function handleInitWallet(ctx) {
 
   busyLocks.set(chatId, true);
   try {
-    try { await ctx.editMessageText(t('loading') || 'Creating wallet...'); } catch {}
+    try { await ctx.editMessageText(t('creating_wallet')); } catch {}
 
     const result = await initializeWallet();
 
@@ -175,7 +181,7 @@ async function handleInitWallet(ctx) {
       safeLogError(logCtx, hlErr, { stage: 'hlClientInit' });
     }
 
-    const text = result.warning + '\n\nWallet created! You can now browse markets and trade.';
+    const text = result.warning + '\n\n' + t('wallet_created');
 
     await ctx.editMessageText(text, {
       reply_markup: await getMainMenuKeyboard(config.language || 'en'),
@@ -276,7 +282,7 @@ export async function handleExportConfirmation(ctx, state, text) {
     busyLocks.delete(chatId);
 
     await ctx.reply(`<code>${privateKey}</code>`, { parse_mode: 'HTML' });
-    await ctx.reply(t('warning_exported_pk') || 'Private key exported. Delete this message after saving it securely.', {
+    await ctx.reply(t('warning_exported_pk'), {
       reply_markup: await getMainMenuKeyboard(config.language || 'en'),
     });
   } catch (error) {

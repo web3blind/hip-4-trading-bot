@@ -9,6 +9,7 @@
 
 import { InlineKeyboard } from 'grammy';
 import { loadConfig } from '../../config.js';
+import { getTranslator } from '../../i18n.js';
 import { toCoin, SIDES } from '../../hl-encoding.js';
 import { HLClient } from '../../hyperliquid.js';
 import { getDecryptedPrivateKey } from '../../auth.js';
@@ -26,6 +27,11 @@ async function getHLClient() {
   return await HLClient.create(pk, config.hlNetwork || 'testnet');
 }
 
+async function getT() {
+  const config = await loadConfig();
+  return await getTranslator(config.language || 'en');
+}
+
 function parseSide(sideStr) {
   const s = (sideStr || '').toLowerCase();
   if (s === 'yes') return SIDES.YES;
@@ -40,28 +46,28 @@ function parseNumber(text) {
   return num;
 }
 
-function normalizeHlError(error) {
+function normalizeHlError(error, t) {
   const raw = String(error?.message || error || '').trim();
-  if (!raw) return 'Something went wrong while talking to HyperLiquid.';
+  if (!raw) return t ? t('hl_something_wrong') : 'Something went wrong while talking to HyperLiquid.';
 
   const lowered = raw.toLowerCase();
   if (lowered.includes('minimum') || lowered.includes('$10')) {
-    return 'HyperLiquid requires at least $10 notional.';
+    return t ? t('hl_min_10') : 'HyperLiquid requires at least $10 notional.';
   }
   if (lowered.includes('insufficient')) {
-    return 'Insufficient balance for this order.';
+    return t ? t('hl_insufficient') : 'Insufficient balance for this order.';
   }
   if (lowered.includes('80%') || lowered.includes('reference price')) {
-    return 'This market has a stale reference price on HyperLiquid testnet.\nTrading is temporarily unavailable for this side.\nTry a different market or the other side.';
+    return t ? t('hl_reference_price') : 'This market has a stale reference price on HyperLiquid testnet.\nTrading is temporarily unavailable for this side.\nTry a different market or the other side.';
   }
   if (lowered.includes('slippage')) {
-    return 'Price moved too far. Try a smaller size or use a limit order.';
+    return t ? t('hl_slippage') : 'Price moved too far. Try a smaller size or use a limit order.';
   }
   if (lowered.includes('not found in spot universe')) {
-    return 'This market is not available for trading yet (not in spot universe).';
+    return t ? t('hl_not_in_universe') : 'This market is not available for trading yet (not in spot universe).';
   }
   if (lowered.includes('nonce')) {
-    return 'The trading session is out of sync. Please try again.';
+    return t ? t('hl_nonce') : 'The trading session is out of sync. Please try again.';
   }
 
   return raw.replace(/^error:\s*/i, '').replace(/^exchange error:\s*/i, '');
@@ -103,7 +109,7 @@ async function getSharesBalance(client, address, coin) {
 }
 
 /** Build quick-amount keyboard for BUY (USDC amounts) */
-function buyAmountKeyboard(outcomeId, usdcBalance, sideStr) {
+function buyAmountKeyboard(outcomeId, usdcBalance, sideStr, t) {
   const kb = new InlineKeyboard();
   if (usdcBalance > 0) {
     const pcts = [25, 50, 75];
@@ -115,17 +121,17 @@ function buyAmountKeyboard(outcomeId, usdcBalance, sideStr) {
     }
     const maxAmt = Math.floor(usdcBalance * 100) / 100;
     if (maxAmt >= 0.01) {
-      kb.text(`Max ($${maxAmt})`, 'mkt_buy_pct:100');
+      kb.text(`${t ? t('max') : 'Max'} ($${maxAmt})`, 'mkt_buy_pct:100');
     }
     kb.row();
   }
-  kb.text('Back', `outcome:${outcomeId}`)
-    .text('Cancel', `trade_cancel:${outcomeId}:${sideStr}:buy`);
+  kb.text(t ? t('back') : 'Back', `outcome:${outcomeId}`)
+    .text(t ? t('cancel') : 'Cancel', `trade_cancel:${outcomeId}:${sideStr}:buy`);
   return kb;
 }
 
 /** Build quick-amount keyboard for SELL (shares amounts) */
-function sellAmountKeyboard(outcomeId, sharesBalance, sideStr) {
+function sellAmountKeyboard(outcomeId, sharesBalance, sideStr, t) {
   const kb = new InlineKeyboard();
   if (sharesBalance > 0) {
     const pcts = [25, 50, 75];
@@ -135,17 +141,18 @@ function sellAmountKeyboard(outcomeId, sharesBalance, sideStr) {
         kb.text(`${p}%`, `mkt_sell_pct:${p}`);
       }
     }
-    kb.text('Max', 'mkt_sell_pct:100');
+    kb.text(t ? t('max') : 'Max', 'mkt_sell_pct:100');
     kb.row();
   }
-  kb.text('Back', `positions:refresh`)
-    .text('Cancel', `trade_cancel:${outcomeId}:${sideStr}:sell`);
+  kb.text(t ? t('back') : 'Back', `positions:refresh`)
+    .text(t ? t('cancel') : 'Cancel', `trade_cancel:${outcomeId}:${sideStr}:sell`);
   return kb;
 }
 
 export function createTradeMarketFeature(_deps) {
   async function handleTradeCallback(ctx, outcomeId, sideStr, action) {
     const chatId = ctx.chat.id;
+    const t = await getT();
     const side = parseSide(sideStr);
 
     if (side === null || !['buy', 'sell'].includes(action) || !Number.isFinite(Number(outcomeId))) {
@@ -181,24 +188,24 @@ export function createTradeMarketFeature(_deps) {
       // continue with whatever data we have
     }
 
-    const priceDisplay = midPrice != null ? formatPrice(midPrice) : 'N/A';
+    const priceDisplay = midPrice != null ? formatPrice(midPrice) : t('na');
 
     if (isBuy && bestAsk == null) {
-      const text = `Market BUY ${sideLabel}\n\nNo asks are available right now, so a market buy cannot be placed.\nTry a limit order instead.`;
+      const text = `${t('market_buy')} ${sideLabel}\n\n${t('no_asks_available')}`;
       const kb = new InlineKeyboard()
-        .text('Limit order', `limit:${outcomeId}:${sideStr}:buy`)
+        .text(t('limit_order_btn'), `limit:${outcomeId}:${sideStr}:buy`)
         .row()
-        .text('Back', `outcome:${outcomeId}`);
+        .text(t('back'), `outcome:${outcomeId}`);
       await replaceOrReply(ctx, text, { reply_markup: kb });
       return;
     }
 
     if (!isBuy && bestBid == null) {
-      const text = `Market SELL ${sideLabel}\n\nNo bids are available right now, so a market sell cannot be placed.\nTry a limit order instead.`;
+      const text = `${t('market_sell')} ${sideLabel}\n\n${t('no_bids_available')}`;
       const kb = new InlineKeyboard()
-        .text('Limit order', `limit:${outcomeId}:${sideStr}:sell`)
+        .text(t('limit_order_btn'), `limit:${outcomeId}:${sideStr}:sell`)
         .row()
-        .text('Back', `outcome:${outcomeId}`);
+        .text(t('back'), `outcome:${outcomeId}`);
       await replaceOrReply(ctx, text, { reply_markup: kb });
       return;
     }
@@ -225,19 +232,19 @@ export function createTradeMarketFeature(_deps) {
     if (isBuy) {
       const balText = usdcBalance > 0 ? `$${usdcBalance.toFixed(2)}` : '$0.00';
       promptText =
-        `Market BUY ${sideLabel}\n` +
-        `Price: ${priceDisplay}\n` +
-        `Available: ${balText} USDC\n\n` +
-        `Enter how much USDC to spend:`;
-      keyboard = buyAmountKeyboard(outcomeId, usdcBalance, sideStr);
+        `${t('market_buy')} ${sideLabel}\n` +
+        `${t('price')}: ${priceDisplay}\n` +
+        `${t('available')}: ${balText} USDC\n\n` +
+        t('enter_usdc_to_spend');
+      keyboard = buyAmountKeyboard(outcomeId, usdcBalance, sideStr, t);
     } else {
       const sharesText = sharesBalance > 0 ? sharesBalance.toFixed(4) : '0';
       promptText =
-        `Market SELL ${sideLabel}\n` +
-        `Price: ${priceDisplay}\n` +
-        `Your shares: ${sharesText}\n\n` +
-        `Enter how many shares to sell:`;
-      keyboard = sellAmountKeyboard(outcomeId, sharesBalance, sideStr);
+        `${t('market_sell')} ${sideLabel}\n` +
+        `${t('price')}: ${priceDisplay}\n` +
+        `${t('your_shares')}: ${sharesText}\n\n` +
+        t('enter_shares_to_sell');
+      keyboard = sellAmountKeyboard(outcomeId, sharesBalance, sideStr, t);
     }
 
     await replaceOrReply(ctx, promptText, { reply_markup: keyboard });
@@ -274,22 +281,23 @@ export function createTradeMarketFeature(_deps) {
   }
 
   async function handleMarketBuyAmount(ctx, state, text) {
+    const t = await getT();
     const usdcAmount = parseNumber(text);
     if (!usdcAmount) {
-      await ctx.reply('Invalid amount. Enter a positive USDC amount, like 25 or 100.50.', {
-        reply_markup: buyAmountKeyboard(state.outcomeId, state.usdcBalance, state.sideStr),
+      await ctx.reply(t('invalid_usdc_amount'), {
+        reply_markup: buyAmountKeyboard(state.outcomeId, state.usdcBalance, state.sideStr, t),
       });
       return;
     }
     if (usdcAmount < 10) {
-      await ctx.reply('Minimum order value is $10 USDC on HyperLiquid.', {
-        reply_markup: buyAmountKeyboard(state.outcomeId, state.usdcBalance, state.sideStr),
+      await ctx.reply(t('min_order_10'), {
+        reply_markup: buyAmountKeyboard(state.outcomeId, state.usdcBalance, state.sideStr, t),
       });
       return;
     }
     if (state.usdcBalance > 0 && usdcAmount > state.usdcBalance) {
-      await ctx.reply(`Insufficient balance. You have $${state.usdcBalance.toFixed(2)} USDC.`, {
-        reply_markup: buyAmountKeyboard(state.outcomeId, state.usdcBalance, state.sideStr),
+      await ctx.reply(t('insufficient_balance', { balance: state.usdcBalance.toFixed(2) }), {
+        reply_markup: buyAmountKeyboard(state.outcomeId, state.usdcBalance, state.sideStr, t),
       });
       return;
     }
@@ -297,16 +305,17 @@ export function createTradeMarketFeature(_deps) {
   }
 
   async function handleMarketSellAmount(ctx, state, text) {
+    const t = await getT();
     const shares = parseNumber(text);
     if (!shares) {
-      await ctx.reply('Invalid amount. Enter a positive number of shares, like 10 or 42.5.', {
-        reply_markup: sellAmountKeyboard(state.outcomeId, state.sharesBalance, state.sideStr),
+      await ctx.reply(t('invalid_shares_amount'), {
+        reply_markup: sellAmountKeyboard(state.outcomeId, state.sharesBalance, state.sideStr, t),
       });
       return;
     }
     if (state.sharesBalance > 0 && shares > state.sharesBalance * 1.001) {
-      await ctx.reply(`Insufficient shares. You have ${state.sharesBalance.toFixed(4)}.`, {
-        reply_markup: sellAmountKeyboard(state.outcomeId, state.sharesBalance, state.sideStr),
+      await ctx.reply(t('insufficient_shares', { shares: state.sharesBalance.toFixed(4) }), {
+        reply_markup: sellAmountKeyboard(state.outcomeId, state.sharesBalance, state.sideStr, t),
       });
       return;
     }
@@ -314,24 +323,25 @@ export function createTradeMarketFeature(_deps) {
   }
 
   async function showBuyConfirmation(ctx, state, usdcAmount) {
+    const t = await getT();
     const chatId = ctx.chat?.id || ctx.callbackQuery?.message?.chat?.id;
     const price = state.bestAsk || state.midPrice || 0;
     const estimatedShares = price > 0 ? (usdcAmount / price) : 0;
 
     const confirmText =
-      `Confirm Market BUY\n\n` +
-      `Side: ${state.sideLabel}\n` +
-      `Spend: $${usdcAmount.toFixed(2)} USDC\n` +
-      `Est. price: ${price > 0 ? formatPrice(price) : 'N/A'}\n` +
-      `Est. shares: ${estimatedShares.toFixed(4)}\n` +
-      `Order type: Market (IOC)\n\n` +
-      `Proceed?`;
+      `${t('confirm_market_buy')}\n\n` +
+      `${t('side')}: ${state.sideLabel}\n` +
+      `${t('spend')}: $${usdcAmount.toFixed(2)} USDC\n` +
+      `${t('est_price')}: ${price > 0 ? formatPrice(price) : t('na')}\n` +
+      `${t('est_shares')}: ${estimatedShares.toFixed(4)}\n` +
+      `${t('order_type')}: ${t('market_ioc')}\n\n` +
+      t('proceed');
 
     const keyboard = new InlineKeyboard()
-      .text('Confirm', 'confirm_market_buy')
-      .text('Edit amount', `trade:${state.outcomeId}:${state.sideStr}:buy`)
+      .text(t('confirm'), 'confirm_market_buy')
+      .text(t('edit_amount'), `trade:${state.outcomeId}:${state.sideStr}:buy`)
       .row()
-      .text('Cancel', `outcome:${state.outcomeId}`);
+      .text(t('cancel'), `outcome:${state.outcomeId}`);
 
     userStates.set(chatId, {
       ...state,
@@ -344,24 +354,25 @@ export function createTradeMarketFeature(_deps) {
   }
 
   async function showSellConfirmation(ctx, state, shares) {
+    const t = await getT();
     const chatId = ctx.chat?.id || ctx.callbackQuery?.message?.chat?.id;
     const price = state.bestBid || state.midPrice || 0;
     const estimatedUsdc = price > 0 ? shares * price : 0;
 
     const confirmText =
-      `Confirm Market SELL\n\n` +
-      `Side: ${state.sideLabel}\n` +
-      `Shares: ${shares.toFixed(4)}\n` +
-      `Est. price: ${price > 0 ? formatPrice(price) : 'N/A'}\n` +
-      `Est. proceeds: ~$${estimatedUsdc.toFixed(2)} USDC\n` +
-      `Order type: Market (IOC)\n\n` +
-      `Proceed?`;
+      `${t('confirm_market_sell')}\n\n` +
+      `${t('side')}: ${state.sideLabel}\n` +
+      `${t('shares')}: ${shares.toFixed(4)}\n` +
+      `${t('est_price')}: ${price > 0 ? formatPrice(price) : t('na')}\n` +
+      `${t('est_proceeds')}: ~$${estimatedUsdc.toFixed(2)} USDC\n` +
+      `${t('order_type')}: ${t('market_ioc')}\n\n` +
+      t('proceed');
 
     const keyboard = new InlineKeyboard()
-      .text('Confirm', 'confirm_market_sell')
-      .text('Edit shares', `trade:${state.outcomeId}:${state.sideStr}:sell`)
+      .text(t('confirm'), 'confirm_market_sell')
+      .text(t('edit_shares'), `trade:${state.outcomeId}:${state.sideStr}:sell`)
       .row()
-      .text('Cancel', `positions:refresh`);
+      .text(t('cancel'), `positions:refresh`);
 
     userStates.set(chatId, {
       ...state,
@@ -375,16 +386,17 @@ export function createTradeMarketFeature(_deps) {
   async function executeConfirmedMarketBuy(ctx) {
     const chatId = ctx.chat.id;
     const state = userStates.get(chatId);
+    const t = await getT();
 
     if (!state || state.state !== 'CONFIRMING_MARKET_BUY') {
-      await replaceOrReply(ctx, 'Session expired. Please start again.', { reply_markup: mainMenuKeyboard() });
+      await replaceOrReply(ctx, t('session_expired'), { reply_markup: mainMenuKeyboard() });
       userStates.delete(chatId);
       return;
     }
 
     busyLocks.set(chatId, true);
     try {
-      await replaceOrReply(ctx, 'Checking funding...');
+      await replaceOrReply(ctx, t('checking_funding'));
 
       const client = await getHLClient();
 
@@ -392,13 +404,13 @@ export function createTradeMarketFeature(_deps) {
       const requiredUsdc = (state.usdcAmount || (state.amount * (state.bestAsk || state.midPrice || 1))) * 1.1;
       const funded = await client.ensureOutcomeFunding(requiredUsdc);
       if (!funded) {
-        await replaceOrReply(ctx, 'Insufficient funds. Please deposit USDC first.', { reply_markup: mainMenuKeyboard() });
+        await replaceOrReply(ctx, t('insufficient_funds_deposit'), { reply_markup: mainMenuKeyboard() });
         userStates.delete(chatId);
         busyLocks.delete(chatId);
         return;
       }
 
-      await replaceOrReply(ctx, 'Placing market buy order...');
+      await replaceOrReply(ctx, t('placing_market_buy'));
 
       const result = await client.placeMarketOrder(state.coin, true, state.amount);
 
@@ -410,22 +422,22 @@ export function createTradeMarketFeature(_deps) {
       let resultText;
       if (filled) {
         resultText =
-          `Market BUY executed!\n\n` +
-          `Side: ${state.sideLabel}\n` +
-          `Spent: $${state.usdcAmount.toFixed(2)} USDC\n` +
-          `Filled: ${filled.filled.totalSz} shares\n` +
-          `Avg price: ${formatPrice(filled.filled.avgPx)}`;
+          `${t('market_buy_executed')}\n\n` +
+          `${t('side')}: ${state.sideLabel}\n` +
+          `${t('spent')}: $${state.usdcAmount.toFixed(2)} USDC\n` +
+          `${t('filled')}: ${filled.filled.totalSz} ${t('shares').toLowerCase()}\n` +
+          `${t('avg_price')}: ${formatPrice(filled.filled.avgPx)}`;
       } else if (resting) {
-        resultText = `Order is resting on the book.\nOID: ${resting.resting.oid}`;
+        resultText = t('order_resting', { oid: resting.resting.oid });
       } else if (errStatus) {
-        resultText = `Order rejected.\n${normalizeHlError(errStatus.error)}`;
+        resultText = t('order_rejected', { error: normalizeHlError(errStatus.error, t) });
       } else {
-        resultText = 'Order submitted.';
+        resultText = t('order_submitted');
       }
 
       await replaceOrReply(ctx, resultText, { reply_markup: mainMenuKeyboard() });
     } catch (error) {
-      await replaceOrReply(ctx, `Order failed.\n${normalizeHlError(error)}`, { reply_markup: mainMenuKeyboard() });
+      await replaceOrReply(ctx, t('order_failed_short', { error: normalizeHlError(error, t) }), { reply_markup: mainMenuKeyboard() });
     } finally {
       userStates.delete(chatId);
       busyLocks.delete(chatId);
@@ -435,16 +447,17 @@ export function createTradeMarketFeature(_deps) {
   async function executeConfirmedMarketSell(ctx) {
     const chatId = ctx.chat.id;
     const state = userStates.get(chatId);
+    const t = await getT();
 
     if (!state || state.state !== 'CONFIRMING_MARKET_SELL') {
-      await replaceOrReply(ctx, 'Session expired. Please start again.', { reply_markup: mainMenuKeyboard() });
+      await replaceOrReply(ctx, t('session_expired'), { reply_markup: mainMenuKeyboard() });
       userStates.delete(chatId);
       return;
     }
 
     busyLocks.set(chatId, true);
     try {
-      await replaceOrReply(ctx, 'Placing market sell order...');
+      await replaceOrReply(ctx, t('placing_market_sell'));
 
       const client = await getHLClient();
       const result = await client.placeMarketOrder(state.coin, false, state.amount);
@@ -457,22 +470,22 @@ export function createTradeMarketFeature(_deps) {
       let resultText;
       if (filled) {
         resultText =
-          `Market SELL executed!\n\n` +
-          `Side: ${state.sideLabel}\n` +
-          `Sold: ${filled.filled.totalSz} shares\n` +
-          `Avg price: ${formatPrice(filled.filled.avgPx)}\n` +
-          `Proceeds: ~$${(Number(filled.filled.totalSz) * Number(filled.filled.avgPx)).toFixed(2)} USDC`;
+          `${t('market_sell_executed')}\n\n` +
+          `${t('side')}: ${state.sideLabel}\n` +
+          `${t('sold')}: ${filled.filled.totalSz} ${t('shares').toLowerCase()}\n` +
+          `${t('avg_price')}: ${formatPrice(filled.filled.avgPx)}\n` +
+          `${t('proceeds')}: ~$${(Number(filled.filled.totalSz) * Number(filled.filled.avgPx)).toFixed(2)} USDC`;
       } else if (resting) {
-        resultText = `Order is resting on the book.\nOID: ${resting.resting.oid}`;
+        resultText = t('order_resting', { oid: resting.resting.oid });
       } else if (errStatus) {
-        resultText = `Order rejected.\n${normalizeHlError(errStatus.error)}`;
+        resultText = t('order_rejected', { error: normalizeHlError(errStatus.error, t) });
       } else {
-        resultText = 'Order submitted.';
+        resultText = t('order_submitted');
       }
 
       await replaceOrReply(ctx, resultText, { reply_markup: mainMenuKeyboard() });
     } catch (error) {
-      await replaceOrReply(ctx, `Order failed.\n${normalizeHlError(error)}`, { reply_markup: mainMenuKeyboard() });
+      await replaceOrReply(ctx, t('order_failed_short', { error: normalizeHlError(error, t) }), { reply_markup: mainMenuKeyboard() });
     } finally {
       userStates.delete(chatId);
       busyLocks.delete(chatId);
@@ -481,22 +494,23 @@ export function createTradeMarketFeature(_deps) {
 
   async function cancelTradeFlow(ctx, outcomeId, sideStr, action) {
     const chatId = ctx.chat.id;
+    const t = await getT();
     userStates.delete(chatId);
 
     if (action === 'sell') {
-      await replaceOrReply(ctx, 'Sell cancelled.', {
+      await replaceOrReply(ctx, t('sell_cancelled'), {
         reply_markup: new InlineKeyboard()
-          .text('Back to positions', 'positions:refresh')
-          .text('Back to market', `outcome:${outcomeId}`),
+          .text(t('back_to_positions'), 'positions:refresh')
+          .text(t('back_to_market'), `outcome:${outcomeId}`),
       });
       return;
     }
 
-    await replaceOrReply(ctx, 'Trade cancelled.', {
+    await replaceOrReply(ctx, t('trade_cancelled'), {
       reply_markup: new InlineKeyboard()
-        .text('Back to market', `outcome:${outcomeId}`)
+        .text(t('back_to_market'), `outcome:${outcomeId}`)
         .row()
-        .text('Main menu', 'back_menu'),
+        .text(t('main_menu_btn'), 'back_menu'),
     });
   }
 

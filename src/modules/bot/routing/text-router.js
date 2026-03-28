@@ -8,17 +8,21 @@
 import { loadConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
 import { createContext, safeLogError } from '../../logger.js';
-import { busyLocks, userStates } from '../runtime.js';
+import { busyLocks, userStates, hlClient } from '../runtime.js';
 import { mainMenuKeyboard, getMainMenuKeyboard } from '../ui/keyboards.js';
 
 // Feature imports
 import { createTradeMarketFeature } from '../features/trade-market.js';
 import { createTradeLimitFeature } from '../features/trade-limit.js';
 import { handleExportConfirmation } from '../features/security.js';
+import { createSearchFeature } from '../features/search.js';
+import { createWithdrawFeature } from '../features/withdraw.js';
+import { handleCustomThresholdInput } from '../features/settings.js';
 
 // Instantiate features
 const tradeMarket = createTradeMarketFeature({});
 const tradeLimit = createTradeLimitFeature({});
+const withdrawFeature = createWithdrawFeature({});
 
 // ─── Confirmation states that bypass the busy lock ──────────────
 
@@ -77,6 +81,27 @@ export async function handleTextMessage(ctx) {
       // ── Wallet export confirmation ──
       case 'AWAITING_EXPORT_CONFIRMATION':
         await handleExportConfirmation(ctx, state, text);
+        break;
+
+      // ── Search markets ──
+      case 'AWAITING_SEARCH_QUERY': {
+        const search = createSearchFeature({ hlClient });
+        await search.handleSearchQuery(ctx, state, text);
+        break;
+      }
+
+      // ── Notification custom threshold ──
+      case 'AWAITING_NOTIF_THRESHOLD':
+        await handleCustomThresholdInput(ctx, text);
+        break;
+
+      // ── Withdraw ──
+      case 'AWAITING_WITHDRAW_ADDRESS':
+        await withdrawFeature.handleWithdrawAddress(ctx, state, text);
+        break;
+
+      case 'AWAITING_WITHDRAW_AMOUNT':
+        await withdrawFeature.handleWithdrawAmount(ctx, state, text);
         break;
 
       // ── Fallback ──

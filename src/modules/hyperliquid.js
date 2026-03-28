@@ -385,10 +385,13 @@ export class HLClient {
     try {
       if (!requiredUsdc || requiredUsdc <= 0) return true;
 
-      const perpBal = await this.getPerpBalance();
-      process.stderr.write(`[ensureOutcomeFunding] required=${requiredUsdc}, perpBal=${perpBal}\n`);
+      // Round required to 2dp to avoid floating-point dust (e.g. 110.00000000000001)
+      const required = Math.ceil(requiredUsdc * 100) / 100;
 
-      if (perpBal >= requiredUsdc) {
+      const perpBal = await this.getPerpBalance();
+      process.stderr.write(`[ensureOutcomeFunding] required=${required}, perpBal=${perpBal}\n`);
+
+      if (perpBal >= required - 0.01) {
         process.stderr.write(`[ensureOutcomeFunding] already funded\n`);
         return true;
       }
@@ -396,7 +399,7 @@ export class HLClient {
       const spotBal = await this.getSpotUsdcBalance();
       process.stderr.write(`[ensureOutcomeFunding] spotBal=${spotBal}\n`);
 
-      const deficit = requiredUsdc - perpBal;
+      const deficit = required - perpBal;
 
       if (spotBal <= 0) {
         process.stderr.write(`[ensureOutcomeFunding] no spot USDC available, cannot fund\n`);
@@ -407,7 +410,8 @@ export class HLClient {
       const transferAmt = Math.min(spotBal, Math.max(deficit, 0));
       if (transferAmt < 0.01) {
         process.stderr.write(`[ensureOutcomeFunding] transfer amount too small: ${transferAmt}\n`);
-        return perpBal >= requiredUsdc;
+        // Already close enough — floating point dust
+        return perpBal >= required - 0.01;
       }
 
       // Round to 2 decimal places (USDC precision)
@@ -420,7 +424,7 @@ export class HLClient {
       // Verify the transfer landed
       const newPerpBal = await this.getPerpBalance();
       process.stderr.write(`[ensureOutcomeFunding] new perpBal=${newPerpBal}\n`);
-      return newPerpBal >= requiredUsdc * 0.95; // 5% tolerance for rounding
+      return newPerpBal >= required * 0.95; // 5% tolerance for rounding
     } catch (err) {
       process.stderr.write(`[ensureOutcomeFunding] error: ${err.message}\n`);
       return false;
@@ -572,18 +576,28 @@ export class HLClient {
       throw new Error('Cannot determine market price — orderbook is empty');
     }
 
-    // For outcomes (price 0-1), use aggressive limit at best price.
-    // IOC with slippage hits HL's "80% from reference" check because
-    // outcome markPx in spotMeta is stale/wrong.
-    // Instead: place a GTC limit at best ask (buy) or best bid (sell).
-    // It fills immediately if liquidity is there, and sits on book if not.
+    // Use IOC (Immediate-Or-Cancel) with generous slippage for true market orders.
+    // Price is clamped to [0.00001, 0.99999] for outcome markets.
     const limitPrice = isBuy
       ? Math.min(refPrice * (1 + slippagePct / 100), 0.99999)
       : Math.max(refPrice * (1 - slippagePct / 100), 0.00001);
 
     const roundedPrice = Number(limitPrice.toFixed(5));
 
-    return this.placeOrder(coin, isBuy, roundedPrice, size, 'Limit');
+    try {
+      return await this.placeOrder(coin, isBuy, roundedPrice, size, 'Market');
+    } catch (err) {
+      // Fallback: if IOC fails, retry as GTC limit (will rest on book).
+      // Known IOC rejection reasons:
+      // - "80% from reference price" — stale markPx
+      // - "could not immediately match" — no resting orders at this price
+      const msg = String(err?.message || '').toLowerCase();
+      if (msg.includes('80%') || msg.includes('reference price') || msg.includes('could not immediately match')) {
+        process.stderr.write(`[placeMarketOrder] IOC rejected (${msg}), falling back to GTC limit\n`);
+        return this.placeOrder(coin, isBuy, roundedPrice, size, 'Limit');
+      }
+      throw err;
+    }
   }
 
   async transferUsdClass(amount, toPerp) {
@@ -617,6 +631,41 @@ export class HLClient {
 
   async transferBetweenSpotAndPerp(amount, toPerp) {
     return this.transferUsdClass(amount, toPerp);
+  }
+
+  /**
+   * Withdraw USDC from spot account to an external address on HyperLiquid L1.
+   * @param {string} destination - 0x-prefixed destination address
+   * @param {number|string} amount - USDC amount to withdraw
+   * @returns {Promise<object>} Exchange response
+   */
+  async withdraw(destination, amount) {
+    if (!this.wallet) throw new Error('No wallet configured for signing');
+
+    const nonce = this._nonce();
+    const action = {
+      type: 'withdraw3',
+      hyperliquidChain: this.isMainnet ? 'Mainnet' : 'Testnet',
+      signatureChainId: this.isMainnet ? '0xa4b1' : '0x66eee',
+      amount: String(amount),
+      time: nonce,
+      destination,
+    };
+
+    const signature = await signUserSignedAction(
+      this.wallet,
+      action,
+      [
+        { name: 'hyperliquidChain', type: 'string' },
+        { name: 'destination', type: 'string' },
+        { name: 'amount', type: 'string' },
+        { name: 'time', type: 'uint64' },
+      ],
+      'HyperliquidTransaction:Withdraw',
+      this.isMainnet,
+    );
+
+    return this._exchangeRequest({ action, nonce, signature });
   }
 
   /**

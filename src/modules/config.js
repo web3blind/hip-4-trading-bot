@@ -175,6 +175,27 @@ export async function updateConfig(field, value) {
   return config;
 }
 
+// Get notification settings with defaults
+export async function getNotificationSettings() {
+  const config = await loadConfig();
+  const defaults = DEFAULT_CONFIG.notifications;
+  const notif = config.notifications || {};
+  return {
+    priceChangePercent: notif.priceChangePercent ?? defaults.priceChangePercent,
+    priceRepeatStepPercent: notif.priceRepeatStepPercent ?? defaults.priceRepeatStepPercent,
+    alertCooldownSeconds: notif.alertCooldownSeconds ?? defaults.alertCooldownSeconds,
+  };
+}
+
+// Update a single notification setting
+export async function setNotificationSetting(key, value) {
+  const config = await loadConfig();
+  if (!config.notifications) config.notifications = {};
+  config.notifications[key] = value;
+  await saveConfig(config);
+  return config;
+}
+
 // Check if language is configured
 export async function isLanguageConfigured() {
   try {

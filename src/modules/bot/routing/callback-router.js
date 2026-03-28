@@ -18,16 +18,19 @@ import { createTradeMarketFeature } from '../features/trade-market.js';
 import { createTradeLimitFeature } from '../features/trade-limit.js';
 import { createPositionsFeature } from '../features/positions.js';
 import { createOrdersFeature } from '../features/orders.js';
-import { showSettings, handleSettingsCallback } from '../features/settings.js';
+import { showSettings, handleSettingsCallback, showNotificationSettings, handleNotificationCallback } from '../features/settings.js';
 import { showWalletInfo, handleWalletCallback } from '../features/security.js';
 import {
   handleLanguageSelectionAction,
   showLanguageSettingsMenu,
   handleSettingsLanguageChangeAction,
 } from '../features/language.js';
+import { createSearchFeature } from '../features/search.js';
+import { createWithdrawFeature } from '../features/withdraw.js';
 
 const tradeMarket = createTradeMarketFeature({});
 const tradeLimit = createTradeLimitFeature({});
+const withdraw = createWithdrawFeature({});
 
 async function editOrReply(ctx, text, extra = {}) {
   try {
@@ -80,7 +83,7 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
-    const isCancelAction = data === 'cancel_confirmation' || data === 'cancel_export_pk' || data.startsWith('trade_cancel:');
+    const isCancelAction = data === 'cancel_confirmation' || data === 'cancel_export_pk' || data.startsWith('trade_cancel:') || data === 'cancel_withdraw';
     if (busyLocks.get(chatId) && !isCancelAction) {
       await ack(t('error_busy'));
       return;
@@ -93,6 +96,12 @@ export async function handleCallbackQuery(ctx) {
       await editOrReply(ctx, t('main_menu'), {
         reply_markup: await getMainMenuKeyboard(lang),
       });
+      return;
+    }
+
+    if (data === 'search_markets') {
+      const search = createSearchFeature({ hlClient });
+      await search.handleSearchStart(ctx);
       return;
     }
 
@@ -180,6 +189,18 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
+    if (data.startsWith('lim_buy_pct:')) {
+      const pct = parseInt(data.split(':')[1], 10);
+      await tradeLimit.handleBuyPctCallback(ctx, pct);
+      return;
+    }
+
+    if (data.startsWith('lim_sell_pct:')) {
+      const pct = parseInt(data.split(':')[1], 10);
+      await tradeLimit.handleSellPctCallback(ctx, pct);
+      return;
+    }
+
     if (data === 'confirm_limit_order') {
       await tradeLimit.executeConfirmedLimit(ctx);
       return;
@@ -256,8 +277,20 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
+    if (data === 'settings:notifications') {
+      userStates.delete(chatId);
+      await showNotificationSettings(ctx);
+      return;
+    }
+
     if (data.startsWith('settings:')) {
       await handleSettingsCallback(ctx, data);
+      return;
+    }
+
+    if (data.startsWith('notif_threshold:') || data.startsWith('notif_repeat:') || data.startsWith('notif_cooldown:')) {
+      userStates.delete(chatId);
+      await handleNotificationCallback(ctx, data);
       return;
     }
 
@@ -278,6 +311,31 @@ export async function handleCallbackQuery(ctx) {
 
     if (data === 'start_export_pk' || data === 'confirm_export_pk' || data === 'cancel_export_pk') {
       await handleWalletCallback(ctx, data);
+      return;
+    }
+
+    // ── Withdraw ───────────────────────────────────────────────
+
+    if (data === 'withdraw_start') {
+      await withdraw.handleWithdrawStart(ctx);
+      return;
+    }
+
+    if (data.startsWith('withdraw_pct:')) {
+      const pct = parseInt(data.split(':')[1], 10);
+      if (!Number.isNaN(pct)) {
+        await withdraw.handleWithdrawPct(ctx, pct);
+      }
+      return;
+    }
+
+    if (data === 'confirm_withdraw') {
+      await withdraw.executeWithdraw(ctx);
+      return;
+    }
+
+    if (data === 'cancel_withdraw') {
+      await withdraw.cancelWithdraw(ctx);
       return;
     }
 

@@ -21,3 +21,16 @@ backup/
 migration-bundle-*.json
 request-*.json
 request-*.private.pem
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temp / debug scripts (keep only production scripts)
+scripts/check-*.cjs
+scripts/check-*.mjs

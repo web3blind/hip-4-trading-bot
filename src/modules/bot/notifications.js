@@ -5,6 +5,8 @@
  */
 
 import { createContext, safeLogWarn } from '../logger.js';
+import { loadConfig } from '../config.js';
+import { getTranslator } from '../i18n.js';
 
 /**
  * Send a generic notification message to a chat.
@@ -41,23 +43,26 @@ export async function sendNotification(bot, chatId, message, options = {}) {
 export async function notifyOrderFilled(bot, chatId, order) {
   if (!bot || !chatId) return;
 
-  const question = order.question || order.coin || 'Unknown';
-  const side = order.side || 'Unknown';
-  const price = order.price || 'N/A';
-  const size = order.size || 'N/A';
+  const config = await loadConfig();
+  const t = await getTranslator(config.language || 'en');
+
+  const question = order.question || order.coin || t('unknown');
+  const side = order.side || t('unknown');
+  const price = order.price || t('na');
+  const size = order.size || t('na');
   const oid = order.oid ? String(order.oid).slice(0, 12) + '...' : '';
 
   const message =
-    `Order Filled!\n\n` +
+    `${t('notif_order_filled')}\n\n` +
     `${question}\n` +
-    `${side} | Price: ${price} | Size: ${size}\n` +
+    `${side} | ${t('price')}: ${price} | ${t('size')}: ${size}\n` +
     (oid ? `OID: ${oid}\n` : '');
 
   const replyMarkup = {
     inline_keyboard: [
       [
-        { text: 'Positions', callback_data: 'positions:refresh' },
-        { text: 'Orders', callback_data: 'orders:refresh' },
+        { text: t('menu_positions'), callback_data: 'positions:refresh' },
+        { text: t('menu_orders'), callback_data: 'orders:refresh' },
       ],
     ],
   };
@@ -80,21 +85,25 @@ export async function notifyOrderFilled(bot, chatId, order) {
 export async function notifyPositionChange(bot, chatId, position) {
   if (!bot || !chatId) return;
 
-  const question = position.question || position.coin || 'Unknown';
-  const side = position.side || 'Unknown';
-  const oldSize = parseFloat(position.oldSize || '0').toFixed(2);
-  const newSize = parseFloat(position.newSize || '0').toFixed(2);
+  const config = await loadConfig();
+  const t = await getTranslator(config.language || 'en');
 
-  const direction = parseFloat(position.newSize) > parseFloat(position.oldSize) ? 'Increased' : 'Decreased';
+  const question = position.question || position.coin || t('unknown');
+  const side = position.side || t('unknown');
+  const oldSize = parseFloat(position.oldSize || '0').toFixed(4);
+  const newSize = parseFloat(position.newSize || '0').toFixed(4);
+
+  const increased = parseFloat(position.newSize) > parseFloat(position.oldSize);
+  const direction = increased ? t('notif_position_increased') : t('notif_position_decreased');
 
   const message =
-    `Position ${direction}\n\n` +
+    `${direction}\n\n` +
     `${question}\n` +
-    `${side} | ${oldSize} -> ${newSize}`;
+    `${side} | ${oldSize} → ${newSize}`;
 
   const replyMarkup = {
     inline_keyboard: [
-      [{ text: 'View Positions', callback_data: 'positions:refresh' }],
+      [{ text: t('notif_view_positions'), callback_data: 'positions:refresh' }],
     ],
   };
 

@@ -7,6 +7,8 @@
  */
 
 import { getOutcomeById } from '../../database.js';
+import { loadConfig } from '../../config.js';
+import { getTranslator } from '../../i18n.js';
 import { outcomeDetailKeyboard, backKeyboard } from '../ui/keyboards.js';
 import { formatOutcomeDetail } from '../ui/formatters.js';
 import { toCoin } from '../../hl-encoding.js';
@@ -70,10 +72,6 @@ export async function fetchOutcomeDetails(hlClient, outcomeId) {
   const yesCoin = toCoin(outcomeId, 0);
   const noCoin = toCoin(outcomeId, 1);
 
-  // HIP-4 outcome coins (#xx) always have asset ID = 100M + encoding.
-  // No need to check spot universe — outcomes are a separate asset class.
-  // Only check: does the orderbook have liquidity?
-
   try {
     const yesBook = await hlClient.getOrderbook(yesCoin);
     if (yesBook?.levels) {
@@ -109,9 +107,12 @@ export async function fetchOutcomeDetails(hlClient, outcomeId) {
  * @param {number} outcomeId - Outcome ID
  */
 export async function showOutcomeDetail(ctx, hlClient, outcomeId) {
+  const config = await loadConfig();
+  const t = await getTranslator(config.language || 'en');
+
   try {
     try {
-      await ctx.editMessageText('Loading outcome details...');
+      await ctx.editMessageText(t('loading_outcome_details'));
     } catch {
       // First message — edit may fail
     }
@@ -119,20 +120,20 @@ export async function showOutcomeDetail(ctx, hlClient, outcomeId) {
     const details = await fetchOutcomeDetails(hlClient, outcomeId);
 
     if (!details) {
-      const text = `Outcome #${outcomeId} not found.`;
-      await ctx.editMessageText(text, { reply_markup: backKeyboard('outcomes:page:1') });
+      const text = t('outcome_not_found', { id: outcomeId });
+      await ctx.editMessageText(text, { reply_markup: backKeyboard('outcomes:page:1', t) });
       return;
     }
 
     const { outcome, orderbook, prices, tradeable } = details;
-    const text = formatOutcomeDetail(outcome, orderbook, prices);
-    const keyboard = outcomeDetailKeyboard(outcomeId, null, tradeable);
+    const text = formatOutcomeDetail(outcome, orderbook, prices, t);
+    const keyboard = outcomeDetailKeyboard(outcomeId, t, tradeable);
 
     await ctx.editMessageText(text, { reply_markup: keyboard });
   } catch (error) {
-    const errorText = 'Error loading outcome details. Please try again.';
+    const errorText = t('error_loading_outcome');
     try {
-      await ctx.editMessageText(errorText, { reply_markup: backKeyboard('outcomes:page:1') });
+      await ctx.editMessageText(errorText, { reply_markup: backKeyboard('outcomes:page:1', t) });
     } catch {
       // Best effort
     }

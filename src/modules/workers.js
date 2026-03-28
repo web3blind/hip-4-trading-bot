@@ -17,6 +17,8 @@ import {
   getOrderByOid,
   deleteOrder,
   getOutcomeByCoin,
+  getPriceAlertState,
+  updatePriceAlertState,
 } from './database.js';
 import { createContext, safeLogError, safeLogWarn, safeLogInfo } from './logger.js';
 import { notifyOrderFilled, notifyPositionChange } from './bot/notifications.js';
@@ -26,6 +28,7 @@ import { notifyOrderFilled, notifyPositionChange } from './bot/notifications.js'
 const MINUTE_MS = 60 * 1000;
 const DEFAULT_SYNC_POSITIONS_MS = 2 * MINUTE_MS;
 const DEFAULT_MONITOR_ORDERS_MS = 30 * 1000;
+const DEFAULT_MONITOR_PRICES_MS = 60 * 1000;
 
 const workerTimers = new Map();
 const workerRunning = new Set();
@@ -115,12 +118,14 @@ async function syncPositionsWorker() {
       const hold = parseFloat(bal.hold || '0');
       const entryPrice = bal.entryPx || bal.avgPrice || '0';
 
-      // Determine side from DB
-      const outcome = getOutcomeByCoin(coin);
+      // Determine side from DB — normalize coin (+110 / @110 → #110)
+      const normCoin = (coin.startsWith('+') || coin.startsWith('@')) ? '#' + coin.slice(1) : coin;
+      const outcome = getOutcomeByCoin(coin) || getOutcomeByCoin(normCoin);
       let side = 'unknown';
       if (outcome?.sides) {
         for (const s of outcome.sides) {
-          if (s.coin === coin) {
+          const sCoin = (s.coin?.startsWith('+') || s.coin?.startsWith('@')) ? '#' + s.coin.slice(1) : s.coin;
+          if (s.coin === coin || sCoin === normCoin) {
             side = s.side === 0 ? 'YES' : 'NO';
             break;
           }
@@ -260,6 +265,107 @@ async function monitorOrdersWorker() {
   }
 }
 
+// ─── monitorPricesWorker ──────────────────────────────────────────
+
+async function monitorPricesWorker() {
+  if (!hlClient || !notifyChatId) return;
+
+  const ctx = createContext('workers', 'monitorPrices');
+
+  try {
+    const config = await loadConfig();
+    const notifications = config?.notifications || {};
+    const thresholdPercent = Number(notifications.priceChangePercent ?? 10);
+    const repeatStepPercent = Number(notifications.priceRepeatStepPercent ?? 2);
+    const cooldownMs = Number(notifications.alertCooldownSeconds ?? 300) * 1000;
+
+    // Get current positions from DB
+    const positions = getDbPositions();
+    if (!positions || positions.length === 0) return;
+
+    // Get current prices
+    let mids = {};
+    try {
+      mids = await hlClient.getAllMids();
+    } catch { return; }
+
+    for (const pos of positions) {
+      const coin = pos.coin;
+      if (!coin) continue;
+
+      const size = parseFloat(pos.size || '0');
+      if (size <= 0.01) continue; // skip dust
+
+      // Normalize coin for mids lookup (+ or @ -> #)
+      const normCoin = coin.startsWith('+') || coin.startsWith('@') ? '#' + coin.slice(1) : coin;
+
+      const currentPriceStr = mids[normCoin];
+      if (!currentPriceStr) continue;
+      const currentPrice = parseFloat(currentPriceStr);
+      if (!currentPrice || currentPrice <= 0) continue;
+
+      const entryPrice = parseFloat(pos.entry_price || '0');
+      // Use entry price as reference, or skip if no entry price
+      if (!entryPrice || entryPrice <= 0) continue;
+
+      // Calculate percentage change from entry
+      const changePercent = Math.abs((currentPrice - entryPrice) / entryPrice) * 100;
+      if (changePercent < thresholdPercent) continue;
+
+      // Check cooldown and repeat step
+      const alertState = getPriceAlertState(normCoin);
+      const now = Date.now();
+
+      if (alertState) {
+        // Cooldown check
+        if (alertState.last_alert_time && (now - alertState.last_alert_time < cooldownMs)) continue;
+
+        // Repeat step: only notify again if price moved further
+        const lastAlertPrice = parseFloat(alertState.last_price || '0');
+        if (lastAlertPrice > 0) {
+          const stepChange = Math.abs((currentPrice - lastAlertPrice) / lastAlertPrice) * 100;
+          if (stepChange < repeatStepPercent) continue;
+        }
+      }
+
+      // Send notification
+      const direction = currentPrice >= entryPrice ? '+' : '-';
+      const value = (size * currentPrice).toFixed(2);
+      const { formatPrice } = await import('./bot/ui/formatters.js');
+
+      // Resolve outcome name
+      let outcomeName = normCoin;
+      try {
+        const outcome = getOutcomeByCoin(normCoin);
+        if (outcome?.question) outcomeName = outcome.question;
+      } catch {}
+
+      const message =
+        `Price Alert\n\n` +
+        `${outcomeName}\n` +
+        `Price: ${formatPrice(currentPrice)}\n` +
+        `Entry: ${formatPrice(entryPrice)}\n` +
+        `Change: ${direction}${changePercent.toFixed(1)}%\n` +
+        `Value: $${value}\n` +
+        `Shares: ${size.toFixed(4)}`;
+
+      try {
+        await botInstance.api.sendMessage(notifyChatId, message, {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: 'Positions', callback_data: 'positions' }, { text: 'Orders', callback_data: 'orders' }]
+            ]
+          }
+        });
+      } catch {}
+
+      updatePriceAlertState(normCoin, currentPrice, now);
+    }
+  } catch (error) {
+    safeLogError(ctx, error);
+  }
+}
+
 // ─── Public API ──────────────────────────────────────────────────
 
 /**
@@ -285,9 +391,11 @@ export function startWorkers(options = {}) {
 
   const syncMs = options.syncPositionsMs || DEFAULT_SYNC_POSITIONS_MS;
   const monitorMs = options.monitorOrdersMs || DEFAULT_MONITOR_ORDERS_MS;
+  const monitorPricesMs = options.monitorPricesMs || DEFAULT_MONITOR_PRICES_MS;
 
   scheduleWorker('syncPositions', syncMs, syncPositionsWorker);
   scheduleWorker('monitorOrders', monitorMs, monitorOrdersWorker);
+  scheduleWorker('monitorPrices', monitorPricesMs, monitorPricesWorker);
 
   workersStarted = true;
 
@@ -295,6 +403,7 @@ export function startWorkers(options = {}) {
   safeLogInfo(ctx, 'All workers started', {
     syncPositionsMs: syncMs,
     monitorOrdersMs: monitorMs,
+    monitorPricesMs,
     notifyChatConfigured: Boolean(notifyChatId),
   });
 }

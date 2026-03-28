@@ -3,7 +3,13 @@
  *
  * All formatters output plain text (no Markdown/HTML) for
  * maximum Telegram + TalkBack accessibility.
+ *
+ * Functions accept an optional `t` translation function.
+ * When t is provided, labels are translated; otherwise English fallbacks.
  */
+
+// Helper
+const L = (t, key, fallback) => (t ? t(key) : fallback);
 
 // ─── Price / USDC helpers ──────────────────────────────────────
 
@@ -44,23 +50,19 @@ export function formatUSDC(amount) {
 
 /**
  * Format a paginated list of outcomes for the browse view.
- * @param {Array} outcomes - array of outcome objects with question, prices
- * @param {number} page - current page (1-based)
- * @param {number} totalPages - total pages
- * @returns {string}
  */
-export function formatOutcomeList(outcomes, page, totalPages) {
+export function formatOutcomeList(outcomes, page, totalPages, t) {
   if (!outcomes || outcomes.length === 0) {
-    return 'No outcomes found.';
+    return L(t, 'no_outcomes', 'No outcomes found.');
   }
 
-  let text = `Outcomes (page ${page}/${totalPages})\n\n`;
+  let text = L(t, 'outcomes_page', `Outcomes (page ${page}/${totalPages})`).replace('{{page}}', page).replace('{{total}}', totalPages) + '\n\n';
 
   outcomes.forEach((outcome, index) => {
     const num = (page - 1) * 5 + index + 1;
-    const question = outcome.question || outcome.description || 'Unknown outcome';
-    const yesPrice = outcome.yesPrice != null ? formatPricePercent(outcome.yesPrice) : 'N/A';
-    const noPrice = outcome.noPrice != null ? formatPricePercent(outcome.noPrice) : 'N/A';
+    const question = outcome.question || outcome.description || L(t, 'unknown', 'Unknown outcome');
+    const yesPrice = outcome.yesPrice != null ? formatPricePercent(outcome.yesPrice) : L(t, 'na', 'N/A');
+    const noPrice = outcome.noPrice != null ? formatPricePercent(outcome.noPrice) : L(t, 'na', 'N/A');
 
     const s0 = outcome.side0Name || 'YES';
     const s1 = outcome.side1Name || 'NO';
@@ -73,26 +75,28 @@ export function formatOutcomeList(outcomes, page, totalPages) {
 
 // ─── Events list (Level 1) ──────────────────────────────────────
 
-export function formatEventsList(events, page, totalPages) {
+export function formatEventsList(events, page, totalPages, t) {
   if (!events || events.length === 0) {
-    return 'No markets available.';
+    return L(t, 'no_markets_available', 'No markets available.');
   }
 
-  let text = `Markets (page ${page}/${totalPages})\n\n`;
+  let text = L(t, 'markets_page', `Markets (page ${page}/${totalPages})`).replace('{{page}}', page).replace('{{total}}', totalPages) + '\n\n';
 
   events.forEach((event, index) => {
     const num = (page - 1) * 5 + index + 1;
 
     if (event.type === 'question') {
       text += `${num}. ${event.name}\n`;
-      text += `   ${event.outcomeCount} outcomes\n\n`;
+      text += `   ${event.outcomeCount} ${L(t, 'outcomes_label', 'outcomes')}\n\n`;
     } else {
-      // Standalone outcome
-      const yesPrice = event.yesPrice != null ? formatPricePercent(event.yesPrice) : 'N/A';
-      const noPrice = event.noPrice != null ? formatPricePercent(event.noPrice) : 'N/A';
+      // Standalone outcome — use parsed priceBinary or raw name
+      const parsed = formatPriceBinaryDescription(event.description);
+      const title = parsed ? parsed.split('\n')[0] : event.name;
+      const yesPrice = event.yesPrice != null ? formatPricePercent(event.yesPrice) : L(t, 'na', 'N/A');
+      const noPrice = event.noPrice != null ? formatPricePercent(event.noPrice) : L(t, 'na', 'N/A');
       const s0 = event.side0Name || 'YES';
       const s1 = event.side1Name || 'NO';
-      text += `${num}. ${event.name}\n`;
+      text += `${num}. ${title}\n`;
       text += `   ${s0}: ${yesPrice}  |  ${s1}: ${noPrice}\n\n`;
     }
   });
@@ -102,16 +106,16 @@ export function formatEventsList(events, page, totalPages) {
 
 // ─── Event outcomes (Level 2) ───────────────────────────────────
 
-export function formatEventOutcomes(event) {
+export function formatEventOutcomes(event, t) {
   let text = `${event.name}\n`;
   if (event.description) {
     text += `${event.description}\n`;
   }
-  text += '\nOutcomes:\n\n';
+  text += `\n${L(t, 'outcomes_label', 'Outcomes')}:\n\n`;
 
   for (const o of event.outcomes) {
-    const yesPrice = o.yesPrice != null ? formatPricePercent(o.yesPrice) : 'N/A';
-    const noPrice = o.noPrice != null ? formatPricePercent(o.noPrice) : 'N/A';
+    const yesPrice = o.yesPrice != null ? formatPricePercent(o.yesPrice) : L(t, 'na', 'N/A');
+    const noPrice = o.noPrice != null ? formatPricePercent(o.noPrice) : L(t, 'na', 'N/A');
     const s0 = o.side0Name || 'YES';
     const s1 = o.side1Name || 'NO';
     text += `${o.name}\n`;
@@ -121,56 +125,101 @@ export function formatEventOutcomes(event) {
   return text.trimEnd();
 }
 
+// ─── priceBinary description parser ────────────────────────────
+
+/**
+ * Parse a priceBinary description into human-readable lines.
+ * Input:  "class:priceBinary|underlying:BTC|expiry:20260329-0300|targetPrice:66220|period:1d"
+ * Output: "BTC > $66,220\nExpiry: Mar 29, 2026 03:00 UTC\nPeriod: 1d"
+ */
+function formatPriceBinaryDescription(description) {
+  if (!description || !description.startsWith('class:priceBinary')) return null;
+
+  const parts = {};
+  for (const seg of description.split('|')) {
+    const idx = seg.indexOf(':');
+    if (idx > 0) parts[seg.slice(0, idx)] = seg.slice(idx + 1);
+  }
+
+  if (!parts.underlying || !parts.targetPrice) return null;
+
+  const lines = [];
+  const price = Number(parts.targetPrice).toLocaleString('en-US');
+  lines.push(`${parts.underlying} > $${price}`);
+
+  if (parts.expiry) {
+    // Parse "20260329-0300" → "Mar 29, 2026 03:00 UTC"
+    const m = parts.expiry.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})$/);
+    if (m) {
+      const d = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00Z`);
+      if (!isNaN(d.getTime())) {
+        lines.push(`Expiry: ${d.toUTCString().replace(' GMT', ' UTC')}`);
+      } else {
+        lines.push(`Expiry: ${parts.expiry}`);
+      }
+    } else {
+      lines.push(`Expiry: ${parts.expiry}`);
+    }
+  }
+
+  if (parts.period) {
+    lines.push(`Period: ${parts.period}`);
+  }
+
+  return lines.join('\n');
+}
+
 // ─── Outcome detail ────────────────────────────────────────────
 
 /**
  * Format detailed view of a single outcome with orderbook.
- * @param {object} outcome - outcome data (question, description, sides)
- * @param {object} orderbook - { bids: [[price, size], ...], asks: [[price, size], ...] }
- * @param {object} prices - { yes: string|number, no: string|number }
- * @returns {string}
  */
-export function formatOutcomeDetail(outcome, orderbook, prices) {
-  const question = outcome.question || outcome.description || 'Unknown outcome';
+export function formatOutcomeDetail(outcome, orderbook, prices, t) {
+  const question = outcome.question || outcome.description || L(t, 'unknown', 'Unknown outcome');
   const description = outcome.description || '';
 
   let text = `${question}\n`;
-  if (description && description !== question) {
+
+  // Format priceBinary descriptions nicely, show raw for others
+  const parsed = formatPriceBinaryDescription(description);
+  if (parsed) {
+    text += `${parsed}\n`;
+  } else if (description && description !== question) {
     text += `${description}\n`;
   }
   text += '\n';
 
   // Prices
-  const yesPrice = prices?.yes != null ? formatPrice(prices.yes) : 'N/A';
-  const noPrice = prices?.no != null ? formatPrice(prices.no) : 'N/A';
+  const yesPrice = prices?.yes != null ? formatPrice(prices.yes) : L(t, 'na', 'N/A');
+  const noPrice = prices?.no != null ? formatPrice(prices.no) : L(t, 'na', 'N/A');
   text += `YES: ${yesPrice}\n`;
   text += `NO: ${noPrice}\n`;
 
   // Spread
   if (prices?.yes != null && prices?.no != null) {
     const spread = Math.abs(1 - Number(prices.yes) - Number(prices.no));
-    text += `Spread: ${(spread * 100).toFixed(2)}%\n`;
+    text += `${L(t, 'spread', 'Spread')}: ${(spread * 100).toFixed(2)}%\n`;
   }
 
   text += '\n';
 
   // Mini orderbook (YES side)
   if (orderbook && (orderbook.bids?.length || orderbook.asks?.length)) {
-    text += 'Orderbook (YES):\n';
+    text += `${L(t, 'orderbook_yes', 'Orderbook (YES)')}:\n`;
 
     if (orderbook.asks?.length) {
-      text += 'Asks:\n';
+      text += `${L(t, 'asks_label', 'Asks')}:\n`;
       const asks = orderbook.asks.slice(0, 3);
       asks.forEach(([price, size]) => {
-        text += `  ${formatPrice(price)}  size: ${Number(size).toFixed(2)}\n`;
+        text += `  ${formatPrice(price)}  ${L(t, 'size', 'size')}: ${Number(size).toFixed(2)}\n`;
       });
     }
 
     if (orderbook.bids?.length) {
-      text += 'Bids:\n';
+      text += `${L(t, 'bids_label', 'Bids')}:\n`;
       const bids = orderbook.bids.slice(0, 3);
       bids.forEach(([price, size]) => {
-        text += `  ${formatPrice(price)}  size: ${Number(size).toFixed(2)}\n`;
+        text += `  ${formatPrice(price)}  ${L(t, 'size', 'size')}: ${Number(size).toFixed(2)}\n`;
       });
     }
   }
@@ -183,29 +232,29 @@ export function formatOutcomeDetail(outcome, orderbook, prices) {
 /**
  * Format a single position.
  */
-export function formatPosition(position) {
-  const coin = position.coin || 'Unknown';
+export function formatPosition(position, t) {
+  const coin = position.coin || L(t, 'unknown', 'Unknown');
   const side = (position.side || '').toUpperCase();
   const size = position.size || '0';
   const entry = position.entry_price || position.entryPrice || '0';
 
   let text = `${coin} ${side}\n`;
-  text += `  Size: ${size}\n`;
-  text += `  Entry: ${formatPrice(entry)}`;
+  text += `  ${L(t, 'size', 'Size')}: ${size}\n`;
+  text += `  ${L(t, 'entry', 'Entry')}: ${formatPrice(entry)}`;
   return text;
 }
 
 /**
  * Format all positions.
  */
-export function formatPositionsList(positions) {
+export function formatPositionsList(positions, t) {
   if (!positions || positions.length === 0) {
-    return 'No open positions.';
+    return L(t, 'no_open_positions', 'No open positions.');
   }
 
-  let text = `Positions (${positions.length})\n\n`;
+  let text = L(t, 'positions_count', `Positions (${positions.length})`).replace('{{count}}', positions.length) + '\n\n';
   positions.forEach((pos, index) => {
-    text += `${index + 1}. ${formatPosition(pos)}\n\n`;
+    text += `${index + 1}. ${formatPosition(pos, t)}\n\n`;
   });
   return text.trimEnd();
 }
@@ -215,8 +264,8 @@ export function formatPositionsList(positions) {
 /**
  * Format a single order.
  */
-export function formatOrder(order) {
-  const coin = order.coin || 'Unknown';
+export function formatOrder(order, t) {
+  const coin = order.coin || L(t, 'unknown', 'Unknown');
   const side = (order.side || '').toUpperCase();
   const type = order.order_type || order.orderType || 'Limit';
   const price = order.price || '0';
@@ -224,9 +273,9 @@ export function formatOrder(order) {
   const status = order.status || 'open';
 
   let text = `${coin} ${side} ${type}\n`;
-  text += `  Price: ${formatPrice(price)}\n`;
-  text += `  Size: ${size}\n`;
-  text += `  Status: ${status}`;
+  text += `  ${L(t, 'price', 'Price')}: ${formatPrice(price)}\n`;
+  text += `  ${L(t, 'size', 'Size')}: ${size}\n`;
+  text += `  ${L(t, 'status', 'Status')}: ${status}`;
 
   if (order.oid) {
     text += `\n  OID: ${order.oid}`;
@@ -238,14 +287,14 @@ export function formatOrder(order) {
 /**
  * Format all orders.
  */
-export function formatOrdersList(orders) {
+export function formatOrdersList(orders, t) {
   if (!orders || orders.length === 0) {
-    return 'No orders.';
+    return L(t, 'no_orders_short', 'No orders.');
   }
 
-  let text = `Orders (${orders.length})\n\n`;
+  let text = L(t, 'orders_count', `Orders (${orders.length})`).replace('{{count}}', orders.length) + '\n\n';
   orders.forEach((ord, index) => {
-    text += `${index + 1}. ${formatOrder(ord)}\n\n`;
+    text += `${index + 1}. ${formatOrder(ord, t)}\n\n`;
   });
   return text.trimEnd();
 }

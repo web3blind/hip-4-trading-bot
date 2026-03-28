@@ -7,6 +7,8 @@
 
 import { OUTCOMES_PAGE_SIZE } from '../constants.js';
 import { upsertOutcome } from '../../database.js';
+import { loadConfig } from '../../config.js';
+import { getTranslator } from '../../i18n.js';
 import { outcomesListKeyboard, eventOutcomesKeyboard, backKeyboard } from '../ui/keyboards.js';
 import { formatEventsList, formatEventOutcomes } from '../ui/formatters.js';
 
@@ -26,10 +28,6 @@ function isExpired(outcome) {
   const expiry = parseExpiry(outcome.description);
   if (!expiry) return false;
   return expiry < new Date();
-}
-
-function friendlyLoadError(scope) {
-  return `Could not load ${scope} right now. Please try again.`;
 }
 
 export async function fetchAndCacheOutcomes(hlClient) {
@@ -113,8 +111,8 @@ export async function fetchAndCacheOutcomes(hlClient) {
         if (k && v !== undefined) parts[k] = v;
       }
       if (parts.underlying && parts.targetPrice) {
-        displayName = `${parts.underlying} > $${parts.targetPrice}`;
-        if (parts.expiry) displayName += ` by ${parts.expiry}`;
+        // Button label: short, no expiry (e.g. "BTC > $66220 (1d)")
+        displayName = `${parts.underlying} > $${Number(parts.targetPrice).toLocaleString('en-US')}`;
         if (parts.period) displayName += ` (${parts.period})`;
       }
     }
@@ -149,17 +147,20 @@ export async function fetchAndCacheOutcomes(hlClient) {
 }
 
 export async function showOutcomesList(ctx, hlClient, page = 1) {
+  const config = await loadConfig();
+  const t = await getTranslator(config.language || 'en');
+
   try {
-    try { await ctx.editMessageText('Loading markets...'); } catch {}
+    try { await ctx.editMessageText(t('loading_markets')); } catch {}
 
     const events = await fetchAndCacheOutcomes(hlClient);
 
     if (events.length === 0) {
-      const text = 'No active markets are available right now.';
+      const text = t('no_active_markets');
       try {
-        await ctx.editMessageText(text, { reply_markup: backKeyboard('back_menu') });
+        await ctx.editMessageText(text, { reply_markup: backKeyboard('back_menu', t) });
       } catch {
-        await ctx.reply(text, { reply_markup: backKeyboard('back_menu') });
+        await ctx.reply(text, { reply_markup: backKeyboard('back_menu', t) });
       }
       return;
     }
@@ -169,8 +170,8 @@ export async function showOutcomesList(ctx, hlClient, page = 1) {
     const startIndex = (safePage - 1) * PAGE_SIZE;
     const pageEvents = events.slice(startIndex, startIndex + PAGE_SIZE);
 
-    const text = formatEventsList(pageEvents, safePage, totalPages);
-    const keyboard = outcomesListKeyboard(pageEvents, safePage, totalPages);
+    const text = formatEventsList(pageEvents, safePage, totalPages, t);
+    const keyboard = outcomesListKeyboard(pageEvents, safePage, totalPages, t);
 
     try {
       await ctx.editMessageText(text, { reply_markup: keyboard });
@@ -178,16 +179,19 @@ export async function showOutcomesList(ctx, hlClient, page = 1) {
       await ctx.reply(text, { reply_markup: keyboard });
     }
   } catch {
-    const errorText = friendlyLoadError('markets');
+    const errorText = t('could_not_load', { scope: t('menu_markets') });
     try {
-      await ctx.editMessageText(errorText, { reply_markup: backKeyboard('back_menu') });
+      await ctx.editMessageText(errorText, { reply_markup: backKeyboard('back_menu', t) });
     } catch {
-      try { await ctx.reply(errorText, { reply_markup: backKeyboard('back_menu') }); } catch {}
+      try { await ctx.reply(errorText, { reply_markup: backKeyboard('back_menu', t) }); } catch {}
     }
   }
 }
 
 export async function showEventOutcomes(ctx, hlClient, questionId) {
+  const config = await loadConfig();
+  const t = await getTranslator(config.language || 'en');
+
   try {
     if (cachedEvents.length === 0) {
       await fetchAndCacheOutcomes(hlClient);
@@ -196,13 +200,13 @@ export async function showEventOutcomes(ctx, hlClient, questionId) {
     const event = cachedEvents.find(e => e.type === 'question' && e.questionId === questionId);
     if (!event) {
       try {
-        await ctx.editMessageText('This event no longer has active markets.', { reply_markup: backKeyboard('outcomes:page:1') });
+        await ctx.editMessageText(t('event_no_markets'), { reply_markup: backKeyboard('outcomes:page:1', t) });
       } catch {}
       return;
     }
 
-    const text = formatEventOutcomes(event);
-    const keyboard = eventOutcomesKeyboard(event);
+    const text = formatEventOutcomes(event, t);
+    const keyboard = eventOutcomesKeyboard(event, t);
 
     try {
       await ctx.editMessageText(text, { reply_markup: keyboard });
@@ -210,13 +214,17 @@ export async function showEventOutcomes(ctx, hlClient, questionId) {
       await ctx.reply(text, { reply_markup: keyboard });
     }
   } catch {
-    const errorText = friendlyLoadError('event markets');
+    const errorText = t('could_not_load', { scope: t('menu_markets') });
     try {
-      await ctx.editMessageText(errorText, { reply_markup: backKeyboard('outcomes:page:1') });
+      await ctx.editMessageText(errorText, { reply_markup: backKeyboard('outcomes:page:1', t) });
     } catch {}
   }
 }
 
 export function getCachedOutcome(outcomeId) {
   return cachedOutcomeMap.get(outcomeId) || null;
+}
+
+export function getCachedEvents() {
+  return cachedEvents;
 }
