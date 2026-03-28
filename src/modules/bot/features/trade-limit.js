@@ -210,9 +210,23 @@ export function createTradeLimitFeature(_deps) {
 
     busyLocks.set(chatId, true);
     try {
-      await ctx.editMessageText('Placing limit order...');
-
       const client = await getHLClient();
+
+      // Auto-fund for limit buys (sells don't need perp funding)
+      if (state.isBuy) {
+        try { await ctx.editMessageText('Checking funding...'); } catch {}
+        const requiredUsdc = state.limitPrice * state.size * 1.1;
+        const funded = await client.ensureOutcomeFunding(requiredUsdc);
+        if (!funded) {
+          await ctx.editMessageText('Insufficient funds. Please deposit USDC first.', { reply_markup: mainMenuKeyboard() });
+          userStates.delete(chatId);
+          busyLocks.delete(chatId);
+          return;
+        }
+      }
+
+      try { await ctx.editMessageText('Placing limit order...'); } catch {}
+
       const result = await client.placeOrder(
         state.coin,
         state.isBuy,

@@ -75,15 +75,12 @@ async function replaceOrReply(ctx, text, extra = {}) {
   }
 }
 
-/** Get USDC balance from spot clearinghouse */
+/** Get total available USDC (spot + perp) since auto-funding bridges both */
 async function getUsdcBalance(client, address) {
   try {
-    const data = await client.getUserBalances(address);
-    const balances = data?.balances || [];
-    const usdc = balances.find(b =>
-      b.coin === 'USDC' || b.coin === 'USD' || b.coin === 'USDH'
-    );
-    return usdc ? parseFloat(usdc.total || usdc.available || '0') : 0;
+    const spotBal = await client.getSpotUsdcBalance();
+    const perpBal = await client.getPerpBalance();
+    return spotBal + perpBal;
   } catch {
     return 0;
   }
@@ -387,9 +384,22 @@ export function createTradeMarketFeature(_deps) {
 
     busyLocks.set(chatId, true);
     try {
-      await replaceOrReply(ctx, 'Placing market buy order...');
+      await replaceOrReply(ctx, 'Checking funding...');
 
       const client = await getHLClient();
+
+      // Auto-fund: ensure perp account has enough USDC for this buy
+      const requiredUsdc = (state.usdcAmount || (state.amount * (state.bestAsk || state.midPrice || 1))) * 1.1;
+      const funded = await client.ensureOutcomeFunding(requiredUsdc);
+      if (!funded) {
+        await replaceOrReply(ctx, 'Insufficient funds. Please deposit USDC first.', { reply_markup: mainMenuKeyboard() });
+        userStates.delete(chatId);
+        busyLocks.delete(chatId);
+        return;
+      }
+
+      await replaceOrReply(ctx, 'Placing market buy order...');
+
       const result = await client.placeMarketOrder(state.coin, true, state.amount);
 
       const statuses = result?.response?.data?.statuses || [];

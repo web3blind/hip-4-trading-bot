@@ -332,6 +332,101 @@ export class HLClient {
     return Math.floor(size * factor) / factor;
   }
 
+  // ─── Balance & Funding helpers ──────────────────────────────────
+
+  /**
+   * Get perp/USD-class withdrawable balance.
+   * @returns {Promise<number>} withdrawable USDC in perp account
+   */
+  async getPerpBalance() {
+    try {
+      const addr = this.address;
+      if (!addr) return 0;
+      const state = await this._infoRequest({ type: 'clearinghouseState', user: addr });
+      const withdrawable = parseFloat(state?.withdrawable || '0');
+      return Number.isFinite(withdrawable) ? withdrawable : 0;
+    } catch (err) {
+      process.stderr.write(`[getPerpBalance] error: ${err.message}\n`);
+      return 0;
+    }
+  }
+
+  /**
+   * Get spot USDC balance.
+   * @returns {Promise<number>} total USDC in spot account
+   */
+  async getSpotUsdcBalance() {
+    try {
+      const addr = this.address;
+      if (!addr) return 0;
+      const data = await this._infoRequest({ type: 'spotClearinghouseState', user: addr });
+      const balances = data?.balances || [];
+      const usdc = balances.find(b =>
+        b.coin === 'USDC' || b.coin === 'USD' || b.coin === 'USDH'
+      );
+      const total = parseFloat(usdc?.total || usdc?.available || '0');
+      return Number.isFinite(total) ? total : 0;
+    } catch (err) {
+      process.stderr.write(`[getSpotUsdcBalance] error: ${err.message}\n`);
+      return 0;
+    }
+  }
+
+  /**
+   * Ensure the perp/USD-class account has enough funding for an outcome trade.
+   *
+   * Checks perp withdrawable first; if insufficient, transfers from spot USDC.
+   * NEVER throws — returns false if funding is impossible.
+   *
+   * @param {number} requiredUsdc — minimum USDC needed in perp account
+   * @returns {Promise<boolean>} true if funded, false if not enough funds
+   */
+  async ensureOutcomeFunding(requiredUsdc) {
+    try {
+      if (!requiredUsdc || requiredUsdc <= 0) return true;
+
+      const perpBal = await this.getPerpBalance();
+      process.stderr.write(`[ensureOutcomeFunding] required=${requiredUsdc}, perpBal=${perpBal}\n`);
+
+      if (perpBal >= requiredUsdc) {
+        process.stderr.write(`[ensureOutcomeFunding] already funded\n`);
+        return true;
+      }
+
+      const spotBal = await this.getSpotUsdcBalance();
+      process.stderr.write(`[ensureOutcomeFunding] spotBal=${spotBal}\n`);
+
+      const deficit = requiredUsdc - perpBal;
+
+      if (spotBal <= 0) {
+        process.stderr.write(`[ensureOutcomeFunding] no spot USDC available, cannot fund\n`);
+        return perpBal > 0; // true if perp has *something* (partial), false if zero
+      }
+
+      // Transfer what we need (or all available if spot < deficit)
+      const transferAmt = Math.min(spotBal, Math.max(deficit, 0));
+      if (transferAmt < 0.01) {
+        process.stderr.write(`[ensureOutcomeFunding] transfer amount too small: ${transferAmt}\n`);
+        return perpBal >= requiredUsdc;
+      }
+
+      // Round to 2 decimal places (USDC precision)
+      const roundedAmt = Math.floor(transferAmt * 100) / 100;
+      process.stderr.write(`[ensureOutcomeFunding] transferring ${roundedAmt} USDC spot -> perp\n`);
+
+      await this.transferUsdClass(roundedAmt, true);
+      process.stderr.write(`[ensureOutcomeFunding] transfer successful\n`);
+
+      // Verify the transfer landed
+      const newPerpBal = await this.getPerpBalance();
+      process.stderr.write(`[ensureOutcomeFunding] new perpBal=${newPerpBal}\n`);
+      return newPerpBal >= requiredUsdc * 0.95; // 5% tolerance for rounding
+    } catch (err) {
+      process.stderr.write(`[ensureOutcomeFunding] error: ${err.message}\n`);
+      return false;
+    }
+  }
+
   // ─── Info endpoints ─────────────────────────────────────────────
 
   async getOutcomeMeta() {
