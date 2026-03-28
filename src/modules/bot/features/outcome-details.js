@@ -70,60 +70,33 @@ export async function fetchOutcomeDetails(hlClient, outcomeId) {
   const yesCoin = toCoin(outcomeId, 0);
   const noCoin = toCoin(outcomeId, 1);
 
-  // Check if coins are in spot universe (required for trading)
-  let yesInUniverse = false, noInUniverse = false;
-  try { await hlClient._resolveSpotAssetIndex(yesCoin); yesInUniverse = true; } catch {}
-  try { await hlClient._resolveSpotAssetIndex(noCoin); noInUniverse = true; } catch {}
+  // HIP-4 outcome coins (#xx) always have asset ID = 100M + encoding.
+  // No need to check spot universe — outcomes are a separate asset class.
+  // Only check: does the orderbook have liquidity?
 
-  // Check reference price (markPx) to determine if HL will accept orders.
-  // If markPx is >80% away from mid, HL rejects ALL orders on that side.
-  let yesRefOk = false, noRefOk = false;
   try {
-    const metaCtx = await hlClient._infoRequest({ type: 'spotMetaAndAssetCtxs' });
-    const uniArr = metaCtx?.[0]?.universe || [];
-    const ctxArr = metaCtx?.[1] || [];
-    const yesMid = prices.yes != null ? parseFloat(prices.yes) : null;
-    const noMid = prices.no != null ? parseFloat(prices.no) : null;
-
-    for (let i = 0; i < uniArr.length; i++) {
-      const name = uniArr[i]?.name || '';
-      const markPx = ctxArr[i]?.markPx ? parseFloat(ctxArr[i].markPx) : 0;
-      if (name === '@' + (10 * outcomeId + 0) && yesMid && markPx > 0) {
-        yesRefOk = Math.abs(yesMid - markPx) / markPx < 0.8;
-      }
-      if (name === '@' + (10 * outcomeId + 1) && noMid && markPx > 0) {
-        noRefOk = Math.abs(noMid - markPx) / markPx < 0.8;
-      }
+    const yesBook = await hlClient.getOrderbook(yesCoin);
+    if (yesBook?.levels) {
+      const [rawBids, rawAsks] = yesBook.levels;
+      orderbook.bids = (rawBids || []).slice(0, ORDERBOOK_DEPTH).map(e => [e.px, e.sz]);
+      orderbook.asks = (rawAsks || []).slice(0, ORDERBOOK_DEPTH).map(e => [e.px, e.sz]);
+      if (rawAsks?.length > 0) tradeable.yesBuy = true;
+      if (rawBids?.length > 0) tradeable.yesSell = true;
     }
   } catch {}
 
-  if (yesInUniverse && yesRefOk) {
-    try {
-      const yesBook = await hlClient.getOrderbook(yesCoin);
-      if (yesBook?.levels) {
-        const [rawBids, rawAsks] = yesBook.levels;
-        orderbook.bids = (rawBids || []).slice(0, ORDERBOOK_DEPTH).map(e => [e.px, e.sz]);
-        orderbook.asks = (rawAsks || []).slice(0, ORDERBOOK_DEPTH).map(e => [e.px, e.sz]);
-        if (rawAsks?.length > 0) tradeable.yesBuy = true;
-        if (rawBids?.length > 0) tradeable.yesSell = true;
-      }
-    } catch {}
-  }
+  try {
+    const noBook = await hlClient.getOrderbook(noCoin);
+    if (noBook?.levels) {
+      const [rawBids, rawAsks] = noBook.levels;
+      if (rawAsks?.length > 0) tradeable.noBuy = true;
+      if (rawBids?.length > 0) tradeable.noSell = true;
+    }
+  } catch {}
 
-  if (noInUniverse && noRefOk) {
-    try {
-      const noBook = await hlClient.getOrderbook(noCoin);
-      if (noBook?.levels) {
-        const [rawBids, rawAsks] = noBook.levels;
-        if (rawAsks?.length > 0) tradeable.noBuy = true;
-        if (rawBids?.length > 0) tradeable.noSell = true;
-      }
-    } catch {}
-  }
-
-  // Expose universe + reference status for limit buttons
-  tradeable.yesInUniverse = yesInUniverse && yesRefOk;
-  tradeable.noInUniverse = noInUniverse && noRefOk;
+  // Limit orders always available for outcome coins
+  tradeable.yesInUniverse = true;
+  tradeable.noInUniverse = true;
 
   return { outcome, orderbook, prices, tradeable };
 }
