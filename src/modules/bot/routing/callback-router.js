@@ -27,10 +27,12 @@ import {
 } from '../features/language.js';
 import { createSearchFeature } from '../features/search.js';
 import { createWithdrawFeature } from '../features/withdraw.js';
+import { createSplitBuyFeature } from '../features/split-buy.js';
 
 const tradeMarket = createTradeMarketFeature({});
 const tradeLimit = createTradeLimitFeature({});
 const withdraw = createWithdrawFeature({});
+const splitBuy = createSplitBuyFeature({});
 
 async function editOrReply(ctx, text, extra = {}) {
   try {
@@ -203,6 +205,32 @@ export async function handleCallbackQuery(ctx) {
 
     if (data === 'confirm_limit_order') {
       await tradeLimit.executeConfirmedLimit(ctx);
+      return;
+    }
+
+    // ── Split Buy (Arbitrage) ─────────────────────────────────────
+    if (data.startsWith('split:')) {
+      const outcomeId = parseInt(data.split(':')[1], 10);
+      if (!hlClient || Number.isNaN(outcomeId)) {
+        await editOrReply(ctx, 'This market is no longer available.', {
+          reply_markup: new InlineKeyboard().text('Back', 'outcomes:page:1'),
+        });
+        return;
+      }
+      await splitBuy.handleSplitStart(ctx, outcomeId);
+      return;
+    }
+
+    if (data.startsWith('split_pct:')) {
+      const pct = parseInt(data.split(':')[1], 10);
+      if (!Number.isNaN(pct)) {
+        await splitBuy.handleSplitPct(ctx, pct);
+      }
+      return;
+    }
+
+    if (data === 'confirm_split_buy') {
+      await splitBuy.executeSplitBuy(ctx);
       return;
     }
 

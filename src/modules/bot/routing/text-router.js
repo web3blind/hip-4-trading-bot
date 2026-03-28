@@ -17,12 +17,14 @@ import { createTradeLimitFeature } from '../features/trade-limit.js';
 import { handleExportConfirmation } from '../features/security.js';
 import { createSearchFeature } from '../features/search.js';
 import { createWithdrawFeature } from '../features/withdraw.js';
+import { createSplitBuyFeature } from '../features/split-buy.js';
 import { handleCustomThresholdInput } from '../features/settings.js';
 
 // Instantiate features
 const tradeMarket = createTradeMarketFeature({});
 const tradeLimit = createTradeLimitFeature({});
 const withdrawFeature = createWithdrawFeature({});
+const splitBuyFeature = createSplitBuyFeature({});
 
 // ─── Confirmation states that bypass the busy lock ──────────────
 
@@ -102,6 +104,11 @@ export async function handleTextMessage(ctx) {
 
       case 'AWAITING_WITHDRAW_AMOUNT':
         await withdrawFeature.handleWithdrawAmount(ctx, state, text);
+        break;
+
+      // ── Split Buy (Arbitrage) ──
+      case 'AWAITING_SPLIT_AMOUNT':
+        await splitBuyFeature.handleSplitAmount(ctx, state, text);
         break;
 
       // ── Fallback ──

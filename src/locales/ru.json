@@ -304,5 +304,22 @@
   "notif_position_decreased": "Позиция уменьшилась",
   "notif_view_positions": "Посмотреть позиции",
   "notif_price_alert": "Изменение цены",
-  "size": "Размер"
+  "size": "Размер",
+
+  "split_buy_btn": "🔀 Парный ордер (прибыль {{profit}}%)",
+  "split_buy_title": "🔀 Арбитраж парной покупки",
+  "split_yes_ask": "Аск ДА",
+  "split_no_ask": "Аск НЕТ",
+  "split_total_cost": "Общая стоимость пары",
+  "split_guaranteed_profit": "Гарантированная прибыль при settlement",
+  "split_max_pairs": "Макс. пар",
+  "split_enter_amount": "Введите сумму в USDC",
+  "split_confirm_title": "Подтвердите парную покупку",
+  "split_buy_yes": "Покупка ДА",
+  "split_buy_no": "Покупка НЕТ",
+  "split_settlement_value": "Стоимость при settlement",
+  "split_no_arb": "Арбитражная возможность больше недоступна.",
+  "split_executed": "✅ Парная покупка выполнена!",
+  "split_partial": "⚠️ Парная покупка частично выполнена",
+  "split_limited_by": "ограничено стороной {{side}}"
 }

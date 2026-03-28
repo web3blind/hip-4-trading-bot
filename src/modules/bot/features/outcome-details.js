@@ -83,18 +83,51 @@ export async function fetchOutcomeDetails(hlClient, outcomeId) {
     }
   } catch {}
 
+  let noBookData = null;
   try {
     const noBook = await hlClient.getOrderbook(noCoin);
     if (noBook?.levels) {
       const [rawBids, rawAsks] = noBook.levels;
       if (rawAsks?.length > 0) tradeable.noBuy = true;
       if (rawBids?.length > 0) tradeable.noSell = true;
+      noBookData = noBook;
     }
   } catch {}
 
   // Limit orders always available for outcome coins
   tradeable.yesInUniverse = true;
   tradeable.noInUniverse = true;
+
+  // ── Split Buy arb detection ──
+  let splitArb = null;
+  try {
+    // Re-use already fetched YES orderbook asks, and NO orderbook asks
+    const yesAsks = orderbook.asks; // already mapped to [px, sz]
+    const noAsks = noBookData?.levels?.[1] || [];
+
+    if (yesAsks.length > 0 && noAsks.length > 0) {
+      // yesAsks are [px, sz] arrays; noAsks are {px, sz} objects
+      const askYes = Number(yesAsks[0][0]);
+      const askNo = Number(noAsks[0].px);
+      const szYes = Number(yesAsks[0][1]);
+      const szNo = Number(noAsks[0].sz);
+      const totalCost = askYes + askNo;
+
+      if (totalCost < 0.999 && szYes >= 10 && szNo >= 10) {
+        splitArb = {
+          askYes,
+          askNo,
+          szYes,
+          szNo,
+          totalCost,
+          profitPct: ((1.0 - totalCost) / totalCost * 100),
+          maxPairs: Math.min(szYes, szNo),
+        };
+      }
+    }
+  } catch {}
+
+  tradeable.splitArb = splitArb;
 
   return { outcome, orderbook, prices, tradeable };
 }

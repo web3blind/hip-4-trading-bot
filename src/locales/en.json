@@ -304,5 +304,22 @@
   "notif_position_decreased": "Position Decreased",
   "notif_view_positions": "View Positions",
   "notif_price_alert": "Price Alert",
-  "size": "Size"
+  "size": "Size",
+
+  "split_buy_btn": "🔀 Split Buy (profit {{profit}}%)",
+  "split_buy_title": "🔀 Split Buy Arbitrage",
+  "split_yes_ask": "YES ask",
+  "split_no_ask": "NO ask",
+  "split_total_cost": "Total cost per pair",
+  "split_guaranteed_profit": "Guaranteed profit at settlement",
+  "split_max_pairs": "Max pairs",
+  "split_enter_amount": "Enter USDC amount to spend",
+  "split_confirm_title": "Confirm Split Buy",
+  "split_buy_yes": "Buy YES",
+  "split_buy_no": "Buy NO",
+  "split_settlement_value": "Settlement value",
+  "split_no_arb": "Arbitrage opportunity no longer available.",
+  "split_executed": "✅ Split Buy executed!",
+  "split_partial": "⚠️ Split Buy partially executed",
+  "split_limited_by": "limited by {{side}} side"
 }

@@ -130,6 +130,13 @@ export function outcomeDetailKeyboard(outcomeId, t, tradeable) {
     kb.row();
   }
 
+  // Split Buy (arbitrage) button — only if arb exists
+  if (tr.splitArb) {
+    const profitLabel = tr.splitArb.profitPct.toFixed(1);
+    const splitLabel = t ? t('split_buy_btn', { profit: profitLabel }) : `Split Buy (profit ${profitLabel}%)`;
+    kb.text(splitLabel, `split:${outcomeId}`).row();
+  }
+
   kb.text(label(t, 'back_to_list', 'Back to list'), 'outcomes:page:1');
   return kb;
 }
