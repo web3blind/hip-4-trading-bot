@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from 'fs/promises';
-import { basename, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { generateKeyPairSync, randomUUID } from 'crypto';
 
 import {
@@ -23,7 +23,8 @@ async function main() {
     : `${requestPath}.private.pem`;
   const privateKeyPath = args['private-key'] ? resolvePathFromCwd(args['private-key']) : defaultPrivateKeyPath;
 
-  await mkdir(MIGRATION_DIR, { recursive: true });
+  await mkdir(dirname(requestPath), { recursive: true, mode: 0o700 });
+  await mkdir(dirname(privateKeyPath), { recursive: true, mode: 0o700 });
 
   const { publicKey, privateKey } = generateKeyPairSync('rsa', {
     modulusLength: 4096,
@@ -46,8 +47,8 @@ async function main() {
     privateKeyFile: basename(privateKeyPath)
   };
 
-  await writeFile(privateKeyPath, privateKey, { encoding: 'utf8', mode: 0o600 });
-  await writeFile(requestPath, JSON.stringify(request, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  await writeFile(privateKeyPath, privateKey, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  await writeFile(requestPath, JSON.stringify(request, null, 2) + '\n', { encoding: 'utf8', mode: 0o600, flag: 'wx' });
 
   console.log('Migration request created.');
   console.log(`Request file: ${requestPath}`);

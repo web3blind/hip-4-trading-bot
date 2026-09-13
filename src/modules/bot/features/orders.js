@@ -3,17 +3,12 @@ import { loadConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
 import { getOutcomeByCoin } from '../../database.js';
 import { createContext, safeLogError } from '../../logger.js';
-import { busyLocks } from '../runtime.js';
+import { busyLocks, userStates, confirmationCallback, invalidateUserState, runtimeBinding } from '../runtime.js';
+import { isOutcomeCoin as isOutcomeToken, normalizeOutcomeCoin } from '../../hl-encoding.js';
 
 /**
  * Check if a coin is an outcome token (HIP-4).
  */
-function isOutcomeToken(coin) {
-  if (!coin) return false;
-  const c = String(coin).trim();
-  return c.startsWith('#') || c.startsWith('+') || c.startsWith('@');
-}
-
 /**
  * Resolve side label from coin and DB.
  */
@@ -36,11 +31,11 @@ function resolveSide(coin, outcome) {
 export function createOrdersFeature(deps) {
   const { hlClient } = deps;
 
-  async function showOrders(ctx) {
+  async function showOrders(ctx, page = 1) {
     const config = await loadConfig();
     const t = await getTranslator(config.language || 'en');
 
-    if (!config.walletAddress) {
+    if (!hlClient?.address) {
       await ctx.editMessageText(t('wallet_not_configured_setup'), {
         reply_markup: new InlineKeyboard().text(t('back'), 'back_menu'),
       });
@@ -50,12 +45,14 @@ export function createOrdersFeature(deps) {
     await ctx.editMessageText(t('loading_orders'));
 
     const chatId = ctx.chat.id;
+    if (busyLocks.get(chatId)) return;
     busyLocks.set(chatId, true);
 
     try {
       // Fetch open orders from HL
-      const allOrders = await hlClient.getOpenOrders(config.walletAddress);
-      const ordersList = Array.isArray(allOrders) ? allOrders : [];
+      const allOrders = await hlClient.getOpenOrders(hlClient.address);
+      if (!Array.isArray(allOrders)) throw new Error('Open orders unavailable');
+      const ordersList = allOrders;
 
       // Filter for outcome orders
       const outcomeOrders = ordersList.filter((o) => isOutcomeToken(o.coin));
@@ -72,25 +69,28 @@ export function createOrdersFeature(deps) {
       let text = `${t('open_orders_title')}\n\n`;
       const keyboard = new InlineKeyboard();
 
-      for (let i = 0; i < outcomeOrders.length; i++) {
+      const pages = Math.ceil(outcomeOrders.length / 8);
+      page = Math.min(pages, Math.max(1, Number.isSafeInteger(page) ? page : 1));
+      text += `${page}/${pages}\n`;
+      for (let i = (page - 1) * 8; i < Math.min(page * 8, outcomeOrders.length); i++) {
         const order = outcomeOrders[i];
         const coin = order.coin;
         const oid = order.oid || order.orderId || order.id || '';
 
         // Look up outcome from DB
         const outcome = getOutcomeByCoin(coin);
-        const question = outcome?.question || coin;
+        const question = String(outcome?.question || coin).slice(0, 160);
         const side = resolveSide(coin, outcome);
 
-        const orderSide = order.side === 'B' ? 'BUY' : order.side === 'A' ? 'SELL' : (order.side || 'Unknown');
-        const price = order.limitPx || order.px || order.price || t('na');
-        const size = order.sz || order.size || order.origSz || t('na');
-        const orderType = order.orderType || 'Limit';
+        const orderSide = order.side === 'B' ? 'BUY' : order.side === 'A' ? 'SELL' : 'Unknown';
+        const price = String(order.limitPx || order.px || order.price || t('na')).slice(0, 32);
+        const size = String(order.sz || order.size || order.origSz || t('na')).slice(0, 32);
+        const orderType = String(order.orderType || 'Limit').slice(0, 32);
 
         text += `${i + 1}. ${question}\n`;
         text += `   ${side} ${orderSide} | ${orderType}\n`;
         text += `   ${t('price')}: ${price} | ${t('size')}: ${size}\n`;
-        if (oid) text += `   OID: ${String(oid).slice(0, 12)}...\n`;
+        if (oid) text += `   OID: ${oid}\n`;
         text += '\n';
 
         // Cancel button per order
@@ -99,6 +99,9 @@ export function createOrdersFeature(deps) {
         if ((i + 1) % 2 === 0) keyboard.row();
       }
 
+      keyboard.row();
+      if (page > 1) keyboard.text('←', `orders:page:${page - 1}`);
+      if (page < pages) keyboard.text('→', `orders:page:${page + 1}`);
       keyboard.row();
       if (outcomeOrders.length > 1) {
         keyboard.text(t('cancel_all'), 'orders:cancelall');
@@ -120,86 +123,85 @@ export function createOrdersFeature(deps) {
     }
   }
 
-  async function cancelOrder(ctx, oid) {
-    const config = await loadConfig();
-    const t = await getTranslator(config.language || 'en');
-
-    if (!config.walletAddress) {
-      await ctx.editMessageText(t('wallet_not_configured_setup'), {
-        reply_markup: new InlineKeyboard().text(t('back'), 'back_menu'),
-      });
-      return;
+  // Bound messages independently of the number of reviewed OIDs.
+  async function sendLines(ctx, lines, keyboard) {
+    const chunks = []; let chunk = '';
+    for (const line of lines) {
+      if (chunk.length + line.length > 3000) { chunks.push(chunk); chunk = ''; }
+      chunk += line + '\n';
     }
-
-    const chatId = ctx.chat.id;
-    busyLocks.set(chatId, true);
-
-    try {
-      await ctx.editMessageText(t('cancelling_order'));
-      const orders = await hlClient.getOpenOrders(config.walletAddress);
-      const order = Array.isArray(orders)
-        ? orders.find((entry) => String(entry.oid) === String(oid))
-        : null;
-      if (!order?.coin) {
-        throw new Error('Order not found in open orders');
-      }
-      await hlClient.cancelOrder(order.coin, oid);
-      await ctx.editMessageText(t('order_cancelled_short', { oid: String(oid).slice(0, 16) }), {
-        reply_markup: new InlineKeyboard()
-          .text(t('view_orders'), 'orders:refresh')
-          .text(t('back'), 'back_menu'),
-      });
-    } catch (error) {
-      const logCtx = createContext('bot', 'cancelOrder');
-      safeLogError(logCtx, error);
-      await ctx.editMessageText(t('cancel_order_failed'), {
-        reply_markup: new InlineKeyboard()
-          .text(t('try_again'), `order:cancel:${encodeURIComponent(oid)}`)
-          .text(t('back'), 'orders:refresh'),
-      });
-    } finally {
-      busyLocks.delete(chatId);
+    if (chunk) chunks.push(chunk);
+    for (let i = 0; i < chunks.length; i++) {
+      const extra = i === chunks.length - 1 ? { reply_markup: keyboard } : {};
+      if (i === 0) await ctx.editMessageText(chunks[i], extra);
+      else await ctx.reply(chunks[i], extra);
     }
   }
 
-  async function cancelAllOrders(ctx) {
-    const config = await loadConfig();
-    const t = await getTranslator(config.language || 'en');
-
-    if (!config.walletAddress) {
-      await ctx.editMessageText(t('wallet_not_configured_setup'), {
-        reply_markup: new InlineKeyboard().text(t('back'), 'back_menu'),
-      });
-      return;
-    }
-
+  async function reviewCancellation(ctx, oid = null) {
     const chatId = ctx.chat.id;
+    if (!hlClient?.address || busyLocks.get(chatId)) return;
     busyLocks.set(chatId, true);
-
+    let ru = false;
+    const binding = runtimeBinding();
     try {
-      await ctx.editMessageText(t('cancelling_all_orders'));
-      await hlClient.cancelAllOrders();
-      await ctx.editMessageText(t('all_orders_cancelled'), {
-        reply_markup: new InlineKeyboard()
-          .text(t('view_orders'), 'orders:refresh')
-          .text(t('back'), 'back_menu'),
-      });
+      ru = (await loadConfig()).language === 'ru';
+      const open = await hlClient.getOpenOrders(hlClient.address);
+      if (!Array.isArray(open)) throw new Error('Open orders unavailable');
+      const reviewed = open.filter(o => isOutcomeToken(o.coin) && (oid === null || String(o.oid) === oid))
+        .map(o => ({ coin: normalizeOutcomeCoin(o.coin), oid: Number(o.oid) }));
+      if (!reviewed.length || reviewed.some(o => !Number.isSafeInteger(o.oid) || o.oid <= 0)) throw new Error('No valid open orders');
+      if (binding !== runtimeBinding()) throw new Error('Account changed');
+      const callback = confirmationCallback(chatId, 'confirm_cancel_orders', { state: 'CONFIRMING_CANCEL_ORDERS', reviewed, binding });
+      await sendLines(ctx, [ru ? 'Проверка отмены: только перечисленные ордера.' : 'Review cancellation: only the listed orders.',
+        `${hlClient.network}: ${hlClient.address}`, ...reviewed.map(o => `${o.coin} — OID: ${o.oid}`),
+        ru ? 'Новые ордера не затрагиваются. Подтверждение действует 2 минуты.' : 'New orders are excluded. Confirmation expires in 2 minutes.'],
+      new InlineKeyboard().text(ru ? 'Подтвердить' : 'Confirm', callback).text(ru ? 'Назад' : 'Back', 'orders:refresh'));
     } catch (error) {
-      const logCtx = createContext('bot', 'cancelAllOrders');
-      safeLogError(logCtx, error);
-      await ctx.editMessageText(t('cancel_all_failed'), {
-        reply_markup: new InlineKeyboard()
-          .text(t('try_again'), 'orders:cancelall')
-          .text(t('back'), 'orders:refresh'),
+      await invalidateUserState(chatId);
+      safeLogError(createContext('bot', 'reviewCancellation'), error);
+      await ctx.editMessageText(ru ? 'Не удалось проверить ордера. Обновите список.' : 'Cannot review orders. Refresh the list.', {
+        reply_markup: new InlineKeyboard().text(ru ? 'Обновить' : 'Refresh', 'orders:refresh'),
       });
-    } finally {
-      busyLocks.delete(chatId);
-    }
+    } finally { busyLocks.delete(chatId); }
+  }
+
+  async function executeCancellation(ctx) {
+    const chatId = ctx.chat.id;
+    const state = userStates.get(chatId);
+    if (!state || state.state !== 'CONFIRMING_CANCEL_ORDERS' || state.binding !== runtimeBinding() || busyLocks.get(chatId)) return;
+    busyLocks.set(chatId, true);
+    const reviewed = structuredClone(state.reviewed);
+    await invalidateUserState(chatId);
+    try {
+      const ru = (await loadConfig()).language === 'ru';
+      const lines = [ru ? 'Результаты отмены:' : 'Cancellation results:'];
+      // Each client's cancellation checks the exchange status AND exact OID readback.
+      // Never retry an uncertain request or fetch new orders for cancellation.
+      for (const order of reviewed) {
+        let status;
+        try {
+          const result = await hlClient.cancelOrder(order.coin, order.oid);
+          status = result?.verifiedCancelled?.some(oid => Number(oid) === order.oid)
+            ? (ru ? 'отмена подтверждена' : 'cancellation verified')
+            : (ru ? 'результат неизвестен; проверьте ордер' : 'unknown; inspect order');
+        } catch (error) {
+          const rejected = error.cancelErrors?.find(e => Number(e.oid) === order.oid);
+          status = rejected
+            ? (ru ? 'отмена отклонена; проверьте ордер' : 'cancellation rejected; inspect order')
+            : (ru ? 'отмена не подтверждена; проверьте ордер, без автоповтора' : 'cancellation not verified; inspect order, no automatic retry');
+          safeLogError(createContext('bot', 'executeCancellation'), error);
+        }
+        lines.push(`OID: ${order.oid} — ${status}`);
+      }
+      await sendLines(ctx, lines, new InlineKeyboard().text(ru ? 'Обновить' : 'Refresh', 'orders:refresh'));
+    } finally { busyLocks.delete(chatId); await invalidateUserState(chatId); }
   }
 
   return {
     showOrders,
-    cancelOrder,
-    cancelAllOrders,
+    cancelOrder: (ctx, oid) => reviewCancellation(ctx, oid),
+    cancelAllOrders: ctx => reviewCancellation(ctx),
+    executeCancellation,
   };
 }

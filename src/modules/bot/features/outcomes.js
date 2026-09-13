@@ -10,16 +10,30 @@ import { upsertOutcome } from '../../database.js';
 import { loadConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
 import { outcomesListKeyboard, eventOutcomesKeyboard, backKeyboard } from '../ui/keyboards.js';
-import { formatEventsList, formatEventOutcomes } from '../ui/formatters.js';
+import { formatEventsList, formatEventOutcomes, getPriceBucketOutcomeLabel, formatTemplateTitle } from '../ui/formatters.js';
 
 const PAGE_SIZE = OUTCOMES_PAGE_SIZE;
 
 let cachedEvents = [];
 let cachedOutcomeMap = new Map();
+export const OUTCOME_CACHE_TTL_MS = 30_000;
+let cachedAt = 0;
+let cachedClient = null;
+let cachedNetwork = null;
+let generation = 0;
+export function resetOutcomeCache() {
+  cachedEvents = []; cachedOutcomeMap = new Map(); cachedAt = 0;
+  cachedClient = null; cachedNetwork = null; generation += 1;
+}
+function cacheValid(client) {
+  return cachedClient === client && cachedNetwork === client?.network && Date.now() - cachedAt < OUTCOME_CACHE_TTL_MS
+    && ![...cachedOutcomeMap.values()].some(o => o.status === 'active' && (isExpired(o) || isExpired({ description: o.parentDescription })));
+}
+
 
 function parseExpiry(description) {
   if (!description) return null;
-  const match = description.match(/expiry:(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/);
+  const match = String(description).match(/(?:^|\|)(?:expiry|time|decisionDeadline|resolutionDeadline):(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(?:\||$)/);
   if (!match) return null;
   return new Date(`${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:00Z`);
 }
@@ -27,12 +41,17 @@ function parseExpiry(description) {
 function isExpired(outcome) {
   const expiry = parseExpiry(outcome.description);
   if (!expiry) return false;
-  return expiry < new Date();
+  return expiry.getTime() <= Date.now();
 }
 
 export async function fetchAndCacheOutcomes(hlClient) {
+  if (cacheValid(hlClient)) return cachedEvents;
+  resetOutcomeCache();
+  const fetchGeneration = generation;
+  const fetchNetwork = hlClient.network;
   const meta = await hlClient.getOutcomeMeta();
-  const rawOutcomes = meta?.outcomes || [];
+  if (!Array.isArray(meta?.outcomes) || !Array.isArray(meta?.questions)) throw new Error('Invalid outcome metadata');
+  const rawOutcomes = meta.outcomes;
   const questions = meta?.questions || [];
 
   let mids = {};
@@ -45,45 +64,60 @@ export async function fetchAndCacheOutcomes(hlClient) {
   const outcomeMap = new Map();
   for (const entry of rawOutcomes) {
     const oid = entry.outcome;
-    if (oid == null) continue;
+    if (!Number.isSafeInteger(oid) || oid < 0) continue;
 
     const sideSpecs = entry.sideSpecs || [{ name: 'Yes' }, { name: 'No' }];
     const coin0 = '#' + (10 * oid + 0);
     const coin1 = '#' + (10 * oid + 1);
 
     const outcome = {
+      ...entry,
       outcomeId: oid,
-      question: entry.name || `Outcome #${oid}`,
-      name: entry.name || `Outcome #${oid}`,
+      rawName: entry.name,
+      question: formatTemplateTitle(entry.name, entry.description) || entry.name || `Outcome #${oid}`,
+      name: formatTemplateTitle(entry.name, entry.description) || entry.name || `Outcome #${oid}`,
       description: entry.description || '',
-      side0Name: sideSpecs[0]?.name || 'Yes',
-      side1Name: sideSpecs[1]?.name || 'No',
+      side0Name: (sideSpecs[0]?.name || 'Yes').replace(/^template:/, ''),
+      side1Name: (sideSpecs[1]?.name || 'No').replace(/^template:/, ''),
       coin0,
       coin1,
       status: isExpired({ description: entry.description || '' }) ? 'expired' : 'active',
       yesPrice: mids[coin0] != null ? parseFloat(mids[coin0]) : null,
       noPrice: mids[coin1] != null ? parseFloat(mids[coin1]) : null,
       sides: [
-        { side: 0, name: sideSpecs[0]?.name || 'Yes', coin: coin0, token: `@${10 * oid + 0}` },
-        { side: 1, name: sideSpecs[1]?.name || 'No', coin: coin1, token: `@${10 * oid + 1}` },
+        { side: 0, name: (sideSpecs[0]?.name || 'Yes').replace(/^template:/, ''), coin: coin0, token: `+${10 * oid + 0}` },
+        { side: 1, name: (sideSpecs[1]?.name || 'No').replace(/^template:/, ''), coin: coin1, token: `+${10 * oid + 1}` },
       ],
     };
 
     outcomeMap.set(oid, outcome);
-    try { upsertOutcome(outcome); } catch {}
+
   }
 
   const events = [];
   const claimedOutcomeIds = new Set();
 
   for (const q of questions) {
-    const memberIds = [...(q.namedOutcomes || [])];
+    const settledIds = new Set((q.settledNamedOutcomes || []).map(o => typeof o === 'object' ? o.outcome : o));
+    const memberIds = [...new Set([...(q.namedOutcomes || []), ...settledIds])];
     if (q.fallbackOutcome != null) memberIds.push(q.fallbackOutcome);
 
     const members = memberIds
-      .map(id => outcomeMap.get(id))
+      .map(id => {
+        const outcome = outcomeMap.get(id);
+        if (!outcome) return null;
+        if (settledIds.has(id) || isExpired(q)) {
+          outcome.status = settledIds.has(id) ? 'settled' : 'expired';
+        }
+        outcome.parentDescription = q.description || '';
+        const bucketLabel = getPriceBucketOutcomeLabel(q.description || '', outcome.description || '');
+        if (!bucketLabel) return outcome;
+        const enriched = { ...outcome, displayName: bucketLabel };
+        outcomeMap.set(id, enriched);
+        return enriched;
+      })
       .filter(Boolean)
-      .filter(o => !isExpired(o));
+      .filter(o => o.status === 'active' && !isExpired(o));
 
     for (const id of memberIds) claimedOutcomeIds.add(id);
 
@@ -91,7 +125,8 @@ export async function fetchAndCacheOutcomes(hlClient) {
       events.push({
         type: 'question',
         questionId: q.question,
-        name: q.name,
+        name: formatTemplateTitle(q.name, q.description) || q.name,
+        rawName: q.name,
         description: q.description || '',
         outcomeCount: members.length,
         outcomes: members,
@@ -141,8 +176,13 @@ export async function fetchAndCacheOutcomes(hlClient) {
     return 0;
   });
 
+  if (fetchGeneration !== generation || hlClient.network !== fetchNetwork) throw new Error('Catalog refresh superseded');
+  for (const outcome of outcomeMap.values()) {
+    try { upsertOutcome(outcome); } catch {}
+  }
   cachedEvents = events;
   cachedOutcomeMap = outcomeMap;
+  cachedAt = Date.now(); cachedClient = hlClient; cachedNetwork = hlClient.network;
   return events;
 }
 
@@ -193,9 +233,7 @@ export async function showEventOutcomes(ctx, hlClient, questionId) {
   const t = await getTranslator(config.language || 'en');
 
   try {
-    if (cachedEvents.length === 0) {
-      await fetchAndCacheOutcomes(hlClient);
-    }
+    await fetchAndCacheOutcomes(hlClient);
 
     const event = cachedEvents.find(e => e.type === 'question' && e.questionId === questionId);
     if (!event) {
@@ -205,8 +243,12 @@ export async function showEventOutcomes(ctx, hlClient, questionId) {
       return;
     }
 
-    const text = formatEventOutcomes(event, t);
-    const keyboard = eventOutcomesKeyboard(event, t);
+    const requestedPage = Number(ctx.callbackQuery?.data?.split(':')[2]) || 1;
+    const totalPages = Math.max(1, Math.ceil(event.outcomes.length / PAGE_SIZE));
+    const page = Math.min(totalPages, Math.max(1, Math.floor(requestedPage)));
+    const view = { ...event, page, totalPages, outcomes: event.outcomes.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE) };
+    const text = formatEventOutcomes(view, t);
+    const keyboard = eventOutcomesKeyboard(view, t);
 
     try {
       await ctx.editMessageText(text, { reply_markup: keyboard });
@@ -222,9 +264,12 @@ export async function showEventOutcomes(ctx, hlClient, questionId) {
 }
 
 export function getCachedOutcome(outcomeId) {
-  return cachedOutcomeMap.get(outcomeId) || null;
+  if (Date.now() - cachedAt >= OUTCOME_CACHE_TTL_MS) return null;
+  const outcome = cachedOutcomeMap.get(outcomeId);
+  if (!outcome || cachedNetwork !== cachedClient?.network || isExpired(outcome) || isExpired({ description: outcome.parentDescription })) return null;
+  return outcome;
 }
 
 export function getCachedEvents() {
-  return cachedEvents;
+  return Date.now() - cachedAt < OUTCOME_CACHE_TTL_MS ? cachedEvents : [];
 }

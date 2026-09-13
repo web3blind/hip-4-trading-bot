@@ -26,7 +26,7 @@ import {
   rateLimits,
   busyLocks,
   hlClient as runtimeHLClient,
-  setHLClient,
+  setHLClient, isAuthorizedPrivateContext, invalidateUserState, runtimeTransitioning,
 } from './runtime.js';
 import { mainMenuKeyboard, getMainMenuKeyboard } from './ui/keyboards.js';
 import {
@@ -68,7 +68,7 @@ export async function initBot(token, allowedUserId) {
   // ── Auth middleware ──────────────────────────────────────────
   botInstance.use(async (ctx, next) => {
     const userId = ctx.from?.id;
-    if (!userId || userId.toString() !== runtimeAllowedUserId.toString()) {
+    if (!isAuthorizedPrivateContext(ctx)) {
       const config = await loadConfig();
       const t = await getTranslator(config.language || 'en');
       if (ctx.callbackQuery) {
@@ -79,6 +79,8 @@ export async function initBot(token, allowedUserId) {
       return;
     }
 
+    if (runtimeTransitioning || busyLocks.get(ctx.chat.id)) return;
+    if (ctx.message?.text?.startsWith('/')) await invalidateUserState(ctx.chat.id);
     // Rate limiting
     const now = Date.now();
     const last = rateLimits.get(userId) || 0;
@@ -183,29 +185,39 @@ async function handleStartCommand(ctx) {
 
 // ── Start / Stop ──────────────────────────────────────────────
 
-export function startBot() {
+let pollingTask = null;
+let pollingReady = null;
+export function startBot({ onFatal } = {}) {
   const b = runtimeBot;
   if (!b) throw new Error('Bot not initialised. Call initBot() first.');
-  if (pollingStarted) return;
-
-  const logCtx = createContext('bot', 'startBot');
-  safeLogInfo(logCtx, 'Starting long polling');
-  b.start({
-    onStart: () => {
-      const ctx2 = createContext('bot', 'onStart');
-      safeLogInfo(ctx2, 'Bot polling started');
-    },
-  });
+  if (pollingStarted) return pollingReady;
   pollingStarted = true;
+  let resolveReady, rejectReady;
+  let ready = false;
+  pollingReady = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+  // Keep the lifetime promise separate from verified startup readiness.
+  pollingTask = Promise.resolve().then(() => b.start({ onStart: () => {
+    ready = true;
+    safeLogInfo(createContext('bot', 'startBot'), 'Bot polling started');
+    resolveReady();
+  } })).then(() => {
+    if (!ready) rejectReady(new Error('Polling stopped before initialization'));
+  }).catch(error => {
+    rejectReady(error);
+    safeLogError(createContext('bot', 'polling'), error);
+    // Do not await cleanup here: stopBot drains this same lifetime promise.
+    if (ready && onFatal) Promise.resolve().then(() => onFatal(error)).catch(cleanupError => {
+      safeLogError(createContext('bot', 'pollingCleanup'), cleanupError);
+    });
+  }).finally(() => { pollingStarted = false; });
+  return pollingReady;
 }
 
-export function stopBot() {
+export async function stopBot() {
   const b = runtimeBot;
-  if (!b) return;
+  if (!b || !pollingStarted) { await pollingTask; return; }
   try {
-    b.stop();
-  } catch {
-    // already stopped
-  }
-  pollingStarted = false;
+    await b.stop();
+    await pollingTask;
+  } finally { pollingStarted = false; }
 }

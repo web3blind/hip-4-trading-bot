@@ -8,7 +8,7 @@ import { getTranslator } from '../../i18n.js';
 import { getDecryptedPrivateKey, initializeWallet } from '../../auth.js';
 import { createContext, safeLogError, safeLogInfo } from '../../logger.js';
 import { HLClient } from '../../hyperliquid.js';
-import { busyLocks, userStates, hlClient, setHLClient } from '../runtime.js';
+import { busyLocks, userStates, hlClient, activateHLClient, createConfiguredHLClient, confirmationCallback, runtimeBinding, invalidateUserState, scheduleMessageDeletion, isAuthorizedPrivateContext } from '../runtime.js';
 import { getMainMenuKeyboard } from '../ui/keyboards.js';
 
 export async function showWalletInfo(ctx) {
@@ -51,17 +51,15 @@ export async function showWalletInfo(ctx) {
     `\n${t('network_label')}: ${config.hlNetwork || 'testnet'}`;
 
   const keyboard = new InlineKeyboard();
-  if (spotUsdc > 0.01) {
+  if (config.authMode !== 'agent' && spotUsdc > 0.01) {
     keyboard.text(`${t('fund_predictions')} ($${spotUsdc.toFixed(2)})`, 'wallet:fund_predictions').row();
   }
   const totalUsdc = spotUsdc + perpUsdc;
-  if (totalUsdc >= 1) {
+  if (config.authMode !== 'agent' && totalUsdc >= 1) {
     keyboard.text(t('withdraw_btn'), 'withdraw_start').row();
   }
-  keyboard
-    .text(t('settings_export_pk') || t('export_key'), 'start_export_pk')
-    .row()
-    .text(t('back') || 'Back', 'back_menu');
+  if (config.authMode !== 'agent') keyboard.text(t('settings_export_pk') || t('export_key'), 'start_export_pk').row();
+  keyboard.text(t('back') || 'Back', 'back_menu');
 
   try {
     await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: keyboard });
@@ -71,6 +69,8 @@ export async function showWalletInfo(ctx) {
 }
 
 export async function handleWalletCallback(ctx, data) {
+  if (!isAuthorizedPrivateContext(ctx)) return;
+  if (data === 'confirm_fund_predictions') { await executeFundPredictions(ctx); return; }
   if (data === 'wallet') {
     await showWalletInfo(ctx);
     return;
@@ -105,56 +105,29 @@ export async function handleWalletCallback(ctx, data) {
 }
 
 async function handleFundPredictions(ctx) {
-  const chatId = ctx.chat.id;
   const config = await loadConfig();
   const t = await getTranslator(config.language || 'en');
-  busyLocks.set(chatId, true);
-
-  try {
-    if (!hlClient) {
-      try { await ctx.editMessageText(t('trading_not_ready'), {
-        reply_markup: new InlineKeyboard().text(t('back'), 'back_menu'),
-      }); } catch {}
-      return;
-    }
-
-    try { await ctx.editMessageText(t('transferring_to_predictions')); } catch {}
-
-    const spotBal = await hlClient.getSpotUsdcBalance();
-    if (spotBal < 0.01) {
-      try { await ctx.editMessageText(t('no_spot_usdc'), {
-        reply_markup: new InlineKeyboard().text(t('back'), 'wallet'),
-      }); } catch {}
-      return;
-    }
-
-    const transferAmt = Math.floor(spotBal * 100) / 100;
-    process.stderr.write(`[fundPredictions] transferring ${transferAmt} USDC to perp\n`);
-    await hlClient.transferUsdClass(transferAmt, true);
-
-    const newPerp = await hlClient.getPerpBalance();
-    const newSpot = await hlClient.getSpotUsdcBalance();
-
-    const text =
-      `${t('funded_title')}\n\n` +
-      `${t('transferred')}: $${transferAmt.toFixed(2)} USDC\n` +
-      `${t('prediction_funding')}: $${newPerp.toFixed(2)}\n` +
-      `${t('remaining_spot')}: $${newSpot.toFixed(2)}`;
-
-    try { await ctx.editMessageText(text, {
-      reply_markup: new InlineKeyboard()
-        .text(t('back_to_wallet'), 'wallet')
-        .row()
-        .text(t('main_menu_btn'), 'back_menu'),
-    }); } catch {}
-  } catch (err) {
-    process.stderr.write(`[fundPredictions] error: ${err.message}\n`);
-    try { await ctx.editMessageText(t('transfer_failed', { error: err.message }), {
-      reply_markup: new InlineKeyboard().text(t('back'), 'wallet'),
-    }); } catch {}
-  } finally {
-    busyLocks.delete(chatId);
+  if (!hlClient || config.authMode === 'agent') {
+    await ctx.editMessageText(t('owner_transfer_required')); return;
   }
+  const amount = Math.floor((await hlClient.getSpotUsdcBalance()) * 100) / 100;
+  if (!Number.isFinite(amount) || amount < 0.01) { await ctx.editMessageText(t('no_spot_usdc')); return; }
+  const callback = confirmationCallback(ctx.chat.id, 'confirm_fund_predictions', { state: 'CONFIRMING_FUND_PREDICTIONS', amount });
+  await ctx.editMessageText(`${t('fund_predictions')}: $${amount.toFixed(2)} USDC\n${t('network_label')}: ${hlClient.network}\n${config.walletAddress}`, {
+    reply_markup: new InlineKeyboard().text(t('confirm'), callback).text(t('cancel'), 'wallet'),
+  });
+}
+async function executeFundPredictions(ctx) {
+  const state = userStates.get(ctx.chat.id);
+  const config = await loadConfig();
+  const t = await getTranslator(config.language || 'en');
+  if (state?.state !== 'CONFIRMING_FUND_PREDICTIONS' || !hlClient || config.authMode === 'agent') return;
+  userStates.delete(ctx.chat.id);
+  busyLocks.set(ctx.chat.id, true);
+  try {
+    await hlClient.transferUsdClass(state.amount, true);
+    await ctx.editMessageText(`${t('transferred')}: $${state.amount.toFixed(2)} USDC`, { reply_markup: new InlineKeyboard().text(t('back'), 'wallet') });
+  } finally { busyLocks.delete(ctx.chat.id); }
 }
 
 async function handleInitWallet(ctx) {
@@ -169,11 +142,12 @@ async function handleInitWallet(ctx) {
     const result = await initializeWallet();
 
     try {
-      const privateKey = await getDecryptedPrivateKey();
       const updatedConfig = await loadConfig();
       const network = updatedConfig.hlNetwork || 'testnet';
-      const client = await HLClient.create(privateKey, network);
-      setHLClient(client);
+      const client = await createConfiguredHLClient(updatedConfig);
+      // Setup is not a financial operation; activation drains workers itself.
+      busyLocks.delete(chatId);
+      await activateHLClient(client);
       const logCtx = createContext('security', 'handleInitWallet');
       safeLogInfo(logCtx, 'HLClient initialised after wallet creation', { network });
     } catch (hlErr) {
@@ -204,94 +178,48 @@ async function handleInitWallet(ctx) {
 async function handleStartExportPk(ctx) {
   const config = await loadConfig();
   const t = await getTranslator(config.language || 'en');
-
-  if (!config.walletAddress) {
-    await ctx.editMessageText(t('export_pk_wallet_missing'), {
-      reply_markup: new InlineKeyboard().text(t('back'), 'settings'),
-    });
-    return;
+  if (config.authMode === 'agent' || !config.encrypted?.privateKey) {
+    await ctx.editMessageText(t('export_pk_wallet_missing')); return;
   }
-
-  const keyboard = new InlineKeyboard()
-    .text(t('export_pk_confirm'), 'confirm_export_pk')
-    .text(t('export_pk_cancel'), 'cancel_export_pk');
-
-  await ctx.editMessageText(t('export_pk_warning'), { reply_markup: keyboard });
+  const state = { state: 'EXPORT_REVIEW', binding: runtimeBinding(), expiresAt: Date.now() + 120000 };
+  const callback = confirmationCallback(ctx.chat.id, 'confirm_export_pk', state);
+  await ctx.editMessageText(t('export_pk_warning'), { reply_markup: new InlineKeyboard()
+    .text(t('export_pk_confirm'), callback).text(t('cancel'), 'cancel_export_pk') });
 }
-
 async function handleConfirmExportPk(ctx) {
+  const state = userStates.get(ctx.chat.id);
+  if (state?.state !== 'EXPORT_REVIEW' || state.expiresAt <= Date.now() || state.binding !== runtimeBinding()) return;
   const config = await loadConfig();
   const t = await getTranslator(config.language || 'en');
-  const chatId = ctx.chat.id;
-
-  if (busyLocks.get(chatId)) {
-    try { await ctx.answerCallbackQuery(t('error_busy')); } catch {}
-    return;
-  }
-
-  busyLocks.set(chatId, true);
-
-  try {
-    userStates.set(chatId, {
-      state: 'AWAITING_EXPORT_CONFIRMATION',
-      warningMessageId: ctx.callbackQuery?.message?.message_id,
-    });
-
-    await ctx.editMessageText(t('export_pk_enter_password'), {
-      reply_markup: new InlineKeyboard().text(t('cancel'), 'cancel_export_pk'),
-    });
-  } catch (error) {
-    const logCtx = createContext('security', 'handleConfirmExportPk');
-    safeLogError(logCtx, error);
-    busyLocks.delete(chatId);
-    userStates.delete(chatId);
-    try {
-      await ctx.editMessageText(t('error_generic'), {
-        reply_markup: new InlineKeyboard().text(t('back'), 'settings'),
-      });
-    } catch {}
-  }
+  const warningMessageId = ctx.callbackQuery?.message?.message_id;
+  userStates.set(ctx.chat.id, { ...state, state: 'AWAITING_EXPORT_CONFIRMATION', warningMessageId });
+  scheduleMessageDeletion(ctx, [warningMessageId], 120000);
+  await ctx.editMessageText(t('export_pk_enter_password'), { reply_markup: new InlineKeyboard().text(t('cancel'), 'cancel_export_pk') });
 }
-
 async function handleCancelExportPk(ctx) {
+  await invalidateUserState(ctx.chat.id);
   const config = await loadConfig();
   const t = await getTranslator(config.language || 'en');
-  const chatId = ctx.chat.id;
-
-  userStates.delete(chatId);
-  busyLocks.delete(chatId);
-
-  await ctx.editMessageText(t('cancel'), {
-    reply_markup: await getMainMenuKeyboard(config.language || 'en'),
-  });
+  await ctx.reply(t('cancel'), { reply_markup: await getMainMenuKeyboard(config.language || 'en') });
 }
-
 export async function handleExportConfirmation(ctx, state, text) {
-  const config = await loadConfig();
-  const t = await getTranslator(config.language || 'en');
+  if (!isAuthorizedPrivateContext(ctx)) return;
   const chatId = ctx.chat.id;
-
+  if (state !== userStates.get(chatId) || state?.state !== 'AWAITING_EXPORT_CONFIRMATION') return;
+  // One attempt only, and remove the user's confirmation/password-like text immediately.
+  userStates.delete(chatId);
+  busyLocks.set(chatId, true);
   try {
-    const privateKey = await getDecryptedPrivateKey(text);
-    if (!privateKey) {
-      await ctx.reply(t('error_generic') || 'Could not export private key.');
-      return;
+    try { await ctx.api.deleteMessage(chatId, ctx.message?.message_id); } catch {}
+    await invalidateUserState(chatId);
+    const config = await loadConfig();
+    const t = await getTranslator(config.language || 'en');
+    if (text !== 'CONFIRM' || Date.now() >= state.expiresAt || state.binding !== runtimeBinding() || config.authMode === 'agent') {
+      await ctx.reply(t('export_confirmation_invalid')); return;
     }
-
-    userStates.delete(chatId);
-    busyLocks.delete(chatId);
-
-    await ctx.reply(`<code>${privateKey}</code>`, { parse_mode: 'HTML' });
-    await ctx.reply(t('warning_exported_pk'), {
-      reply_markup: await getMainMenuKeyboard(config.language || 'en'),
-    });
-  } catch (error) {
-    const logCtx = createContext('security', 'handleExportConfirmation');
-    safeLogError(logCtx, error, { state });
-    userStates.delete(chatId);
-    busyLocks.delete(chatId);
-    await ctx.reply(t('error_generic') || 'Could not export private key.', {
-      reply_markup: await getMainMenuKeyboard(config.language || 'en'),
-    });
-  }
+    const privateKey = await getDecryptedPrivateKey();
+    const message = await ctx.reply(`<code>${privateKey}</code>`, { parse_mode: 'HTML' });
+    scheduleMessageDeletion(ctx, [state.warningMessageId, message?.message_id], 30000);
+    await ctx.reply(t('warning_exported_pk'), { reply_markup: await getMainMenuKeyboard(config.language || 'en') });
+  } finally { busyLocks.delete(chatId); }
 }

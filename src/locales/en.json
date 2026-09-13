@@ -127,7 +127,6 @@
   "order_cancel": "Cancel",
   "order_cancelled": "Order cancelled: {{orderId}}",
   "settings_backup_warning": "Backup reminder: export your private key. Reinstalling OS or moving to another device may cause wallet access loss.",
-
   "buy_yes": "Buy YES",
   "buy_no": "Buy NO",
   "sell_yes": "Sell YES",
@@ -140,7 +139,6 @@
   "notifications_btn": "Notifications",
   "search_btn": "Search",
   "wallet_btn": "Wallet",
-
   "markets_page": "Markets (page {{page}}/{{total}})",
   "outcomes_label": "Outcomes",
   "outcomes_page": "Outcomes (page {{page}}/{{total}})",
@@ -152,7 +150,6 @@
   "no_orders_short": "No orders.",
   "orders_count": "Orders ({{count}})",
   "entry": "Entry",
-
   "could_not_load": "Could not load {{scope}} right now. Please try again.",
   "sell_num": "Sell #{{num}}",
   "limit_num": "Limit #{{num}}",
@@ -165,7 +162,6 @@
   "cancelling_all_orders": "Cancelling all orders...",
   "all_orders_cancelled": "All orders cancelled.",
   "cancel_all_failed": "Failed to cancel orders. Try again.",
-
   "no_asks_available": "No asks are available right now, so a market buy cannot be placed.\nTry a limit order instead.",
   "no_bids_available": "No bids are available right now, so a market sell cannot be placed.\nTry a limit order instead.",
   "limit_order_btn": "Limit order",
@@ -201,7 +197,6 @@
   "sell_cancelled": "Sell cancelled.",
   "trade_cancelled": "Trade cancelled.",
   "back_to_market": "Back to market",
-
   "current_mid": "Current mid",
   "enter_limit_price": "Enter your limit price (0-1):",
   "invalid_limit_price": "Invalid price. Enter a value between 0 and 1 (e.g. 0.65).",
@@ -218,7 +213,6 @@
   "order_failed_with_msg": "Order failed: {{error}}",
   "insufficient_usdc_min": "Insufficient USDC balance (min $10)",
   "no_shares_to_sell": "No shares to sell",
-
   "export_key": "Export Key",
   "wallet_title": "Wallet",
   "spot_usdc": "Spot USDC",
@@ -236,13 +230,11 @@
   "creating_wallet": "Creating wallet...",
   "wallet_created": "Wallet created! You can now browse markets and trade.",
   "warning_exported_pk": "Private key exported. Delete this message after saving it securely.",
-
   "enter_search_query": "Enter search query:",
   "please_enter_search": "Please enter a search term.",
   "no_markets_for_query": "No markets found for \"{{query}}\". Try a different search term.",
   "search_again": "Search again",
   "search_results": "Search: '{{query}}'\nFound {{count}} market{{plural}}:",
-
   "withdraw_title": "Withdraw USDC",
   "available_balance": "Available balance",
   "total": "Total",
@@ -271,7 +263,6 @@
   "wallet_not_ready": "Wallet not ready. Please create a wallet first.",
   "trading_client_not_ready": "Trading client not ready.",
   "pct_of_balance": "{{pct}}% of balance = ${{amount}} USDC",
-
   "notification_settings": "Notification Settings",
   "price_change_threshold": "Price change threshold",
   "alert_when_moves": "(Alert when position price moves this much from entry)",
@@ -288,8 +279,7 @@
   "select_cooldown": "Select alert cooldown (current: {{value}})",
   "enter_custom_threshold": "Enter a custom price change threshold (number, e.g. 7.5):",
   "invalid_threshold": "Please enter a valid number between 0 and 100.",
-  "network_switched": "Network switched to: {{network}}\n\nRestart the bot for the change to take full effect.",
-
+  "network_switched": "Network switched to: {{network}}",
   "hl_min_10": "HyperLiquid requires at least $10 notional.",
   "hl_insufficient": "Insufficient balance for this order.",
   "hl_reference_price": "This market has a stale reference price on HyperLiquid testnet.\nTrading is temporarily unavailable for this side.\nTry a different market or the other side.",
@@ -304,14 +294,12 @@
   "notif_position_decreased": "Position Decreased",
   "notif_view_positions": "View Positions",
   "notif_price_alert": "Price Alert",
-  "size": "Size",
-
-  "split_buy_btn": "🔀 Split Buy (profit {{profit}}%)",
+  "split_buy_btn": "🔀 Paired buy (estimate {{profit}}%)",
   "split_buy_title": "🔀 Split Buy Arbitrage",
   "split_yes_ask": "YES ask",
   "split_no_ask": "NO ask",
   "split_total_cost": "Total cost per pair",
-  "split_guaranteed_profit": "Guaranteed profit at settlement",
+  "split_guaranteed_profit": "Estimated paired result before fees",
   "split_max_pairs": "Max pairs",
   "split_enter_amount": "Enter USDC amount to spend",
   "split_confirm_title": "Confirm Split Buy",
@@ -321,5 +309,20 @@
   "split_no_arb": "Arbitrage opportunity no longer available.",
   "split_executed": "✅ Split Buy executed!",
   "split_partial": "⚠️ Split Buy partially executed",
-  "split_limited_by": "limited by {{side}} side"
+  "split_limited_by": "limited by {{side}} side",
+  "agent_reconnect_network": "An API agent is authorized for one network. Stop this session and connect again for another network.",
+  "before_fees": "before fees",
+  "execution_unknown": "The exchange result is unknown. Check orders and fills before retrying.",
+  "export_confirmation_invalid": "Confirmation expired or does not match. Export cancelled.",
+  "network_review": "Switch network to {{network}}? Pending actions will expire. Mainnet uses real funds.",
+  "outcome_rewards": "Outcome rewards",
+  "owner_transfer_required": "This action requires your main wallet. Transfer or withdraw through Hyperliquid; the bot agent cannot sign it.",
+  "review_limit_caps": "The price and size below are the exact rounded order limits. Fees are additional.",
+  "review_market_caps": "Execution is limited by the reviewed price and budget. Unfilled quantity may remain as a limit order only when the stated fallback applies.",
+  "rewards_eligibility_unknown": "Builder code is not a guarantee of eligibility. Rewards depend on campaign and approved-interface rules. This screen shows payout history, not an eligibility check.",
+  "rewards_mainnet_only": "USDC reward history is available for mainnet accounts.",
+  "rewards_totals": "Paid: {{paid}} USDC\nPending: {{pending}} USDC\nAwarded: {{awarded}} USDC",
+  "rewards_unavailable": "Reward data is unavailable. Try again later.",
+  "split_nonatomic_risk": "The two orders are not atomic: one side can fill while the other rests or fails. A payout estimate applies only to equal, fully acquired opposite positions; fees and settlement rules affect the result.",
+  "split_review_total": "Maximum total including fee reserve"
 }

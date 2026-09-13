@@ -11,20 +11,16 @@ import { InlineKeyboard } from 'grammy';
 import { loadConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
 import { toCoin, SIDES } from '../../hl-encoding.js';
-import { HLClient } from '../../hyperliquid.js';
-import { getDecryptedPrivateKey } from '../../auth.js';
-import { userStates, busyLocks, hlClient as runtimeHLClient } from '../runtime.js';
+import { orderStatuses } from '../../hyperliquid.js';
+import { userStates, busyLocks, confirmationCallback, hlClient as runtimeHLClient } from '../runtime.js';
 import { mainMenuKeyboard } from '../ui/keyboards.js';
 import { formatPrice } from '../ui/formatters.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
 async function getHLClient() {
-  if (runtimeHLClient) return runtimeHLClient;
-  const config = await loadConfig();
-  const pk = await getDecryptedPrivateKey();
-  if (!pk) throw new Error('Wallet not configured');
-  return await HLClient.create(pk, config.hlNetwork || 'testnet');
+  if (!runtimeHLClient) throw new Error('Wallet not configured');
+  return runtimeHLClient;
 }
 
 async function getT() {
@@ -84,9 +80,7 @@ async function replaceOrReply(ctx, text, extra = {}) {
 /** Get total available USDC (spot + perp) since auto-funding bridges both */
 async function getUsdcBalance(client, address) {
   try {
-    const spotBal = await client.getSpotUsdcBalance();
-    const perpBal = await client.getPerpBalance();
-    return spotBal + perpBal;
+    return await client.getAvailableUsdc();
   } catch {
     return 0;
   }
@@ -97,12 +91,12 @@ async function getSharesBalance(client, address, coin) {
   try {
     const data = await client.getUserBalances(address);
     const balances = data?.balances || [];
-    const spotName = coin.replace('#', '@');
     const tokenName = coin.replace('#', '+');
     const entry = balances.find(b =>
-      b.coin === coin || b.coin === spotName || b.coin === tokenName
+      b.coin === coin || b.coin === tokenName
     );
-    return entry ? parseFloat(entry.total || entry.available || '0') : 0;
+    const total = Number(entry?.total || 0), hold = Number(entry?.hold || 0);
+    return Number.isFinite(total) && Number.isFinite(hold) ? Math.max(0, total - hold) : 0;
   } catch {
     return 0;
   }
@@ -295,7 +289,7 @@ export function createTradeMarketFeature(_deps) {
       });
       return;
     }
-    if (state.usdcBalance > 0 && usdcAmount > state.usdcBalance) {
+    if (usdcAmount > state.usdcBalance) {
       await ctx.reply(t('insufficient_balance', { balance: state.usdcBalance.toFixed(2) }), {
         reply_markup: buyAmountKeyboard(state.outcomeId, state.usdcBalance, state.sideStr, t),
       });
@@ -313,7 +307,7 @@ export function createTradeMarketFeature(_deps) {
       });
       return;
     }
-    if (state.sharesBalance > 0 && shares > state.sharesBalance * 1.001) {
+    if (shares > state.sharesBalance) {
       await ctx.reply(t('insufficient_shares', { shares: state.sharesBalance.toFixed(4) }), {
         reply_markup: sellAmountKeyboard(state.outcomeId, state.sharesBalance, state.sideStr, t),
       });
@@ -325,30 +319,30 @@ export function createTradeMarketFeature(_deps) {
   async function showBuyConfirmation(ctx, state, usdcAmount) {
     const t = await getT();
     const chatId = ctx.chat?.id || ctx.callbackQuery?.message?.chat?.id;
-    const price = state.bestAsk || state.midPrice || 0;
-    const estimatedShares = price > 0 ? (usdcAmount / price) : 0;
+    const client = await getHLClient();
+    const reviewed = await client.prepareMarketOrder(state.coin, true, usdcAmount);
+    const price = reviewed.price;
+    const estimatedShares = reviewed.size;
+    const callback = confirmationCallback(chatId, 'confirm_market_buy', {
+      ...state, state: 'CONFIRMING_MARKET_BUY', usdcAmount: reviewed.maxSpend, amount: reviewed.size, reviewed,
+    });
 
     const confirmText =
       `${t('confirm_market_buy')}\n\n` +
       `${t('side')}: ${state.sideLabel}\n` +
-      `${t('spend')}: $${usdcAmount.toFixed(2)} USDC\n` +
+      `${t('spend')}: $${reviewed.maxSpend.toFixed(6)} USDC\n` +
       `${t('est_price')}: ${price > 0 ? formatPrice(price) : t('na')}\n` +
       `${t('est_shares')}: ${estimatedShares.toFixed(4)}\n` +
-      `${t('order_type')}: ${t('market_ioc')}\n\n` +
+      `${t('order_type')}: ${t('market_ioc')}\n${t('review_market_caps')}\n\n` +
       t('proceed');
 
     const keyboard = new InlineKeyboard()
-      .text(t('confirm'), 'confirm_market_buy')
+      .text(t('confirm'), callback)
       .text(t('edit_amount'), `trade:${state.outcomeId}:${state.sideStr}:buy`)
       .row()
       .text(t('cancel'), `outcome:${state.outcomeId}`);
 
-    userStates.set(chatId, {
-      ...state,
-      state: 'CONFIRMING_MARKET_BUY',
-      usdcAmount,
-      amount: estimatedShares,
-    });
+
 
     await replaceOrReply(ctx, confirmText, { reply_markup: keyboard });
   }
@@ -356,8 +350,14 @@ export function createTradeMarketFeature(_deps) {
   async function showSellConfirmation(ctx, state, shares) {
     const t = await getT();
     const chatId = ctx.chat?.id || ctx.callbackQuery?.message?.chat?.id;
-    const price = state.bestBid || state.midPrice || 0;
-    const estimatedUsdc = price > 0 ? shares * price : 0;
+    const client = await getHLClient();
+    const reviewed = await client.prepareMarketOrder(state.coin, false, shares);
+    shares = reviewed.size;
+    const price = reviewed.price;
+    const estimatedUsdc = shares * price;
+    const callback = confirmationCallback(chatId, 'confirm_market_sell', {
+      ...state, state: 'CONFIRMING_MARKET_SELL', amount: shares, reviewed,
+    });
 
     const confirmText =
       `${t('confirm_market_sell')}\n\n` +
@@ -365,20 +365,16 @@ export function createTradeMarketFeature(_deps) {
       `${t('shares')}: ${shares.toFixed(4)}\n` +
       `${t('est_price')}: ${price > 0 ? formatPrice(price) : t('na')}\n` +
       `${t('est_proceeds')}: ~$${estimatedUsdc.toFixed(2)} USDC\n` +
-      `${t('order_type')}: ${t('market_ioc')}\n\n` +
+      `${t('order_type')}: ${t('market_ioc')}\n${t('review_market_caps')}\n\n` +
       t('proceed');
 
     const keyboard = new InlineKeyboard()
-      .text(t('confirm'), 'confirm_market_sell')
+      .text(t('confirm'), callback)
       .text(t('edit_shares'), `trade:${state.outcomeId}:${state.sideStr}:sell`)
       .row()
       .text(t('cancel'), `positions:refresh`);
 
-    userStates.set(chatId, {
-      ...state,
-      state: 'CONFIRMING_MARKET_SELL',
-      amount: shares,
-    });
+
 
     await replaceOrReply(ctx, confirmText, { reply_markup: keyboard });
   }
@@ -394,6 +390,7 @@ export function createTradeMarketFeature(_deps) {
       return;
     }
 
+    if (busyLocks.get(chatId)) return;
     busyLocks.set(chatId, true);
     try {
       await replaceOrReply(ctx, t('checking_funding'));
@@ -401,8 +398,8 @@ export function createTradeMarketFeature(_deps) {
       const client = await getHLClient();
 
       // Auto-fund: ensure perp account has enough USDC for this buy
-      const requiredUsdc = (state.usdcAmount || (state.amount * (state.bestAsk || state.midPrice || 1))) * 1.1;
-      const funded = await client.ensureOutcomeFunding(requiredUsdc);
+      const requiredUsdc = state.reviewed.maxSpend;
+      const funded = await client.ensureOutcomeFunding(requiredUsdc, state.coin);
       if (!funded) {
         await replaceOrReply(ctx, t('insufficient_funds_deposit'), { reply_markup: mainMenuKeyboard() });
         userStates.delete(chatId);
@@ -412,9 +409,9 @@ export function createTradeMarketFeature(_deps) {
 
       await replaceOrReply(ctx, t('placing_market_buy'));
 
-      const result = await client.placeMarketOrder(state.coin, true, state.amount);
+      const result = await client.placeMarketOrder(state.coin, true, state.amount, undefined, { reviewed: state.reviewed, allowRestingFallback: true });
 
-      const statuses = result?.response?.data?.statuses || [];
+      const statuses = orderStatuses(result, 1);
       const filled = statuses.find(s => s.filled);
       const resting = statuses.find(s => s.resting);
       const errStatus = statuses.find(s => s.error);
@@ -424,7 +421,7 @@ export function createTradeMarketFeature(_deps) {
         resultText =
           `${t('market_buy_executed')}\n\n` +
           `${t('side')}: ${state.sideLabel}\n` +
-          `${t('spent')}: $${state.usdcAmount.toFixed(2)} USDC\n` +
+          `${t('spent')}: $${(Number(filled.filled.totalSz) * Number(filled.filled.avgPx)).toFixed(6)} USDC (${t('before_fees')})\n` +
           `${t('filled')}: ${filled.filled.totalSz} ${t('shares').toLowerCase()}\n` +
           `${t('avg_price')}: ${formatPrice(filled.filled.avgPx)}`;
       } else if (resting) {
@@ -432,7 +429,7 @@ export function createTradeMarketFeature(_deps) {
       } else if (errStatus) {
         resultText = t('order_rejected', { error: normalizeHlError(errStatus.error, t) });
       } else {
-        resultText = t('order_submitted');
+        resultText = t('execution_unknown');
       }
 
       await replaceOrReply(ctx, resultText, { reply_markup: mainMenuKeyboard() });
@@ -455,14 +452,15 @@ export function createTradeMarketFeature(_deps) {
       return;
     }
 
+    if (busyLocks.get(chatId)) return;
     busyLocks.set(chatId, true);
     try {
       await replaceOrReply(ctx, t('placing_market_sell'));
 
       const client = await getHLClient();
-      const result = await client.placeMarketOrder(state.coin, false, state.amount);
+      const result = await client.placeMarketOrder(state.coin, false, state.amount, undefined, { reviewed: state.reviewed, allowRestingFallback: true });
 
-      const statuses = result?.response?.data?.statuses || [];
+      const statuses = orderStatuses(result, 1);
       const filled = statuses.find(s => s.filled);
       const resting = statuses.find(s => s.resting);
       const errStatus = statuses.find(s => s.error);
@@ -480,7 +478,7 @@ export function createTradeMarketFeature(_deps) {
       } else if (errStatus) {
         resultText = t('order_rejected', { error: normalizeHlError(errStatus.error, t) });
       } else {
-        resultText = t('order_submitted');
+        resultText = t('execution_unknown');
       }
 
       await replaceOrReply(ctx, resultText, { reply_markup: mainMenuKeyboard() });

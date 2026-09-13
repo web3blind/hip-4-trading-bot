@@ -89,11 +89,14 @@ export function eventOutcomesKeyboard(event, t) {
   if (event.outcomes && event.outcomes.length > 0) {
     for (const o of event.outcomes) {
       const price = o.yesPrice != null ? ` (${(o.yesPrice * 100).toFixed(0)}%)` : '';
-      const lbl = (o.name + price).slice(0, 50);
+      const lbl = ((o.displayName || o.name) + price).slice(0, 50);
       keyboard.text(lbl, `outcome:${o.outcomeId}`).row();
     }
   }
 
+  if (event.page > 1) keyboard.text('‹', `event:${event.questionId}:${event.page - 1}`);
+  if (event.page < event.totalPages) keyboard.text('›', `event:${event.questionId}:${event.page + 1}`);
+  if (event.totalPages > 1) keyboard.row();
   keyboard.text(label(t, 'back_to_markets', 'Back to markets'), 'outcomes:page:1');
   return keyboard;
 }

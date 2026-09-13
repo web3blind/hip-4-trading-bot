@@ -2,7 +2,7 @@
  * Withdraw feature for HIP-4 Telegram bot.
  *
  * Allows users to withdraw USDC from their bot wallet to an external
- * address on HyperLiquid L1.
+ * address on Arbitrum via the Hyperliquid bridge.
  *
  * Flow:
  *  1. User taps "Withdraw" on wallet screen
@@ -11,19 +11,19 @@
  *  4. Bot asks for amount with quick % buttons
  *  5. User enters amount or taps percentage
  *  6. Confirmation screen
- *  7. Execute: transfer perp→spot if needed, then withdraw
+ *  7. Execute: transfer spot→perp if needed, then request bridge withdrawal
  */
 
 import { InlineKeyboard } from 'grammy';
 import { loadConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
-import { busyLocks, userStates, hlClient } from '../runtime.js';
+import { busyLocks, userStates, hlClient, confirmationCallback, invalidateUserState, runtimeBinding } from '../runtime.js';
 import { getMainMenuKeyboard } from '../ui/keyboards.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────
 
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
-const MIN_WITHDRAW = 1;
+const MIN_WITHDRAW = 2; // $1 bridge fee is deducted from the submitted amount
 
 function truncateAddress(addr) {
   if (!addr || addr.length < 12) return addr;
@@ -58,15 +58,22 @@ function amountKeyboard(balance, t) {
   return kb;
 }
 
-function confirmKeyboard(t) {
+function confirmKeyboard(t, callback) {
   return new InlineKeyboard()
-    .text(t ? t('confirm') : 'Confirm', 'confirm_withdraw')
+    .text(t ? t('confirm') : 'Confirm', callback)
     .text(t ? t('cancel') : 'Cancel', 'cancel_withdraw');
 }
 
 // ─── Feature factory ──────────────────────────────────────────────
 
 export function createWithdrawFeature(_deps) {
+  async function balanceRefreshFailed(ctx, t) {
+    await invalidateUserState(ctx.chat.id);
+    const ru = (await loadConfig()).language === 'ru';
+    await editOrReply(ctx, ru ? 'Не удалось обновить баланс. Начните вывод заново.' : 'Balance refresh failed. Start withdrawal again.', {
+      reply_markup: new InlineKeyboard().text(t('try_again'), 'withdraw_start'),
+    });
+  }
 
   /**
    * Step 1: Show balance info and ask for destination address.
@@ -82,10 +89,15 @@ export function createWithdrawFeature(_deps) {
       return;
     }
 
+    if (hlClient.authMode === 'agent') {
+      userStates.delete(chatId);
+      await editOrReply(ctx, t('owner_transfer_required')); return;
+    }
+
     try {
       const spotBal = await hlClient.getSpotUsdcBalance();
       const perpBal = await hlClient.getPerpBalance();
-      const totalBal = spotBal + perpBal;
+      const totalBal = await hlClient.getAvailableUsdc();
 
       if (totalBal < MIN_WITHDRAW) {
         await editOrReply(ctx,
@@ -116,7 +128,6 @@ export function createWithdrawFeature(_deps) {
         { reply_markup: cancelKeyboard(t) },
       );
     } catch (err) {
-      process.stderr.write(`[withdraw] handleWithdrawStart error: ${err.message}\n`);
       await editOrReply(ctx, `Error: ${err.message}`, {
         reply_markup: new InlineKeyboard().text(t('back_to_wallet'), 'wallet'),
       });
@@ -128,10 +139,11 @@ export function createWithdrawFeature(_deps) {
    */
   async function handleWithdrawAddress(ctx, state, text) {
     const chatId = ctx.chat.id;
+    if (userStates.get(chatId) !== state || state?.state !== 'AWAITING_WITHDRAW_ADDRESS') return;
     const t = await getT();
     const address = (text || '').trim();
 
-    if (!ADDRESS_RE.test(address)) {
+    if (!ADDRESS_RE.test(address) || /^0x0{40}$/.test(address)) {
       await ctx.reply(t('invalid_address'), { reply_markup: cancelKeyboard(t) });
       return;
     }
@@ -141,12 +153,13 @@ export function createWithdrawFeature(_deps) {
     try {
       spotBal = await hlClient.getSpotUsdcBalance();
       perpBal = await hlClient.getPerpBalance();
-      totalBal = spotBal + perpBal;
+      totalBal = await hlClient.getAvailableUsdc();
+      if (![spotBal, perpBal, totalBal].every(v => Number.isFinite(v) && v >= 0)) throw new Error('Invalid balance');
     } catch {
-      spotBal = state.spotBal || 0;
-      perpBal = state.perpBal || 0;
-      totalBal = state.totalBal || 0;
+      await balanceRefreshFailed(ctx, t);
+      return;
     }
+    if (userStates.get(chatId) !== state) return;
 
     userStates.set(chatId, {
       state: 'AWAITING_WITHDRAW_AMOUNT',
@@ -170,8 +183,10 @@ export function createWithdrawFeature(_deps) {
    */
   async function handleWithdrawAmount(ctx, state, text) {
     const chatId = ctx.chat.id;
+    if (userStates.get(chatId) !== state || state?.state !== 'AWAITING_WITHDRAW_AMOUNT') return;
     const t = await getT();
-    const amount = parseFloat((text || '').trim());
+    const raw = String(text || '').trim();
+    const amount = /^\d+(?:\.\d{1,6})?$/.test(raw) ? Number(raw) : NaN;
 
     if (!Number.isFinite(amount) || amount < MIN_WITHDRAW) {
       await ctx.reply(
@@ -181,7 +196,13 @@ export function createWithdrawFeature(_deps) {
       return;
     }
 
-    const totalBal = state.totalBal || 0;
+    let totalBal;
+    const binding = runtimeBinding();
+    try {
+      totalBal = await hlClient.getAvailableUsdc();
+      if (!Number.isFinite(totalBal) || totalBal < 0) throw new Error('Invalid balance');
+    } catch { await balanceRefreshFailed(ctx, t); return; }
+    if (userStates.get(chatId) !== state || binding !== runtimeBinding()) return;
     if (amount > totalBal) {
       await ctx.reply(
         t('exceeds_balance', { balance: totalBal.toFixed(2) }),
@@ -197,7 +218,7 @@ export function createWithdrawFeature(_deps) {
     const network = config.hlNetwork || 'testnet';
     const networkDisplay = network === 'mainnet' ? 'HyperLiquid Mainnet' : 'HyperLiquid Testnet';
 
-    userStates.set(chatId, {
+    const callback = confirmationCallback(chatId, 'confirm_withdraw', {
       state: 'CONFIRMING_WITHDRAW',
       destination: state.destination,
       amount: roundedAmount,
@@ -208,11 +229,12 @@ export function createWithdrawFeature(_deps) {
 
     await ctx.reply(
       `${t('confirm_withdrawal')}\n\n` +
-      `${t('to_label')}: ${truncateAddress(state.destination)}\n` +
+      `${t('to_label')}: ${state.destination}\n` +
       `${t('amount')}: $${roundedAmount.toFixed(2)} USDC\n` +
-      `${t('network_label')}: ${networkDisplay}\n\n` +
+      `${t('network_label')}: ${networkDisplay} → Arbitrum\n` +
+      (config.language === 'ru' ? 'Комиссия моста $1 удерживается из суммы. Зачисление не мгновенное. При необходимости: spot → perp.\n\n' : 'Bridge fee $1 deducted from amount. Receipt is not immediate. If needed: spot → perp.\n\n') +
       t('proceed'),
-      { reply_markup: confirmKeyboard(t) },
+      { reply_markup: confirmKeyboard(t, callback) },
     );
   }
 
@@ -220,6 +242,7 @@ export function createWithdrawFeature(_deps) {
    * Handle percentage quick-buttons (25%, 50%, 75%, Max).
    */
   async function handleWithdrawPct(ctx, pct) {
+    if (![25, 50, 75, 100].includes(pct)) return;
     const chatId = ctx.chat.id;
     const t = await getT();
     const state = userStates.get(chatId);
@@ -236,12 +259,13 @@ export function createWithdrawFeature(_deps) {
     try {
       spotBal = await hlClient.getSpotUsdcBalance();
       perpBal = await hlClient.getPerpBalance();
-      totalBal = spotBal + perpBal;
+      totalBal = await hlClient.getAvailableUsdc();
+      if (![spotBal, perpBal, totalBal].every(v => Number.isFinite(v) && v >= 0)) throw new Error('Invalid balance');
     } catch {
-      spotBal = state.spotBal || 0;
-      perpBal = state.perpBal || 0;
-      totalBal = state.totalBal || 0;
+      await balanceRefreshFailed(ctx, t);
+      return;
     }
+    if (userStates.get(chatId) !== state) return;
 
     const rawAmount = (totalBal * pct) / 100;
     const amount = Math.floor(rawAmount * 100) / 100;
@@ -259,7 +283,7 @@ export function createWithdrawFeature(_deps) {
     const network = config.hlNetwork || 'testnet';
     const networkDisplay = network === 'mainnet' ? 'HyperLiquid Mainnet' : 'HyperLiquid Testnet';
 
-    userStates.set(chatId, {
+    const callback = confirmationCallback(chatId, 'confirm_withdraw', {
       state: 'CONFIRMING_WITHDRAW',
       destination: state.destination,
       amount,
@@ -270,17 +294,18 @@ export function createWithdrawFeature(_deps) {
 
     await editOrReply(ctx,
       `${t('confirm_withdrawal')}\n\n` +
-      `${t('to_label')}: ${truncateAddress(state.destination)}\n` +
+      `${t('to_label')}: ${state.destination}\n` +
       `${t('amount')}: $${amount.toFixed(2)} USDC\n` +
-      `${t('network_label')}: ${networkDisplay}\n\n` +
+      `${t('network_label')}: ${networkDisplay} → Arbitrum\n` +
+      (config.language === 'ru' ? 'Комиссия моста $1 удерживается из суммы. Зачисление не мгновенное. При необходимости: spot → perp.\n\n' : 'Bridge fee $1 deducted from amount. Receipt is not immediate. If needed: spot → perp.\n\n') +
       t('proceed'),
-      { reply_markup: confirmKeyboard(t) },
+      { reply_markup: confirmKeyboard(t, callback) },
     );
   }
 
   /**
    * Step 4: Execute the withdrawal.
-   * If funds are in perp account, transfer to spot first, then withdraw.
+   * Standard accounts withdraw from perp; fund from spot if needed.
    */
   async function executeWithdraw(ctx) {
     const chatId = ctx.chat.id;
@@ -302,6 +327,7 @@ export function createWithdrawFeature(_deps) {
       return;
     }
 
+    if (busyLocks.get(chatId)) return;
     busyLocks.set(chatId, true);
 
     try {
@@ -309,81 +335,18 @@ export function createWithdrawFeature(_deps) {
 
       await editOrReply(ctx, t('processing_withdrawal', { amount: amount.toFixed(2) }));
 
-      // Check how much is in spot vs perp
-      const spotBal = await hlClient.getSpotUsdcBalance();
-      const perpBal = await hlClient.getPerpBalance();
-
-      process.stderr.write(`[withdraw] executing: dest=${truncateAddress(destination)} amount=${amount} spot=${spotBal} perp=${perpBal}\n`);
-
-      // If spot balance is insufficient, transfer from perp to spot first
-      if (spotBal < amount && perpBal > 0) {
-        const transferNeeded = Math.min(perpBal, amount - spotBal);
-        const transferAmt = Math.floor(transferNeeded * 100) / 100;
-
-        if (transferAmt >= 0.01) {
-          process.stderr.write(`[withdraw] transferring ${transferAmt} USDC from perp to spot\n`);
-          try {
-            await editOrReply(ctx,
-              t('processing_withdrawal', { amount: amount.toFixed(2) }) + '\n' +
-              t('transferring_perp_to_spot', { amount: transferAmt.toFixed(2) }),
-            );
-            await hlClient.transferUsdClass(transferAmt, false); // toPerp=false → perp to spot
-            // Small delay to let the transfer settle
-            await new Promise(r => setTimeout(r, 1000));
-          } catch (transferErr) {
-            process.stderr.write(`[withdraw] perp→spot transfer failed: ${transferErr.message}\n`);
-            await editOrReply(ctx,
-              t('transfer_perp_failed', { error: transferErr.message }),
-              { reply_markup: new InlineKeyboard().text(t('back_to_wallet'), 'wallet') },
-            );
-            userStates.delete(chatId);
-            return;
-          }
-        }
-      }
-
-      // Verify spot balance after transfer
-      const finalSpot = await hlClient.getSpotUsdcBalance();
-      if (finalSpot < amount - 0.01) {
-        await editOrReply(ctx,
-          t('insufficient_after_transfer', { available: finalSpot.toFixed(2), needed: amount.toFixed(2) }),
-          { reply_markup: new InlineKeyboard().text(t('back_to_wallet'), 'wallet') },
-        );
-        userStates.delete(chatId);
-        return;
-      }
-
-      // Execute the withdrawal
-      process.stderr.write(`[withdraw] calling hlClient.withdraw(${destination}, ${amount})\n`);
+      if (hlClient.authMode === 'agent') throw new Error(t('owner_transfer_required'));
+      if (!await hlClient.ensureWithdrawalFunding(amount)) throw new Error(t('insufficient_funds_deposit'));
       const result = await hlClient.withdraw(destination, amount);
-      process.stderr.write(`[withdraw] result: ${JSON.stringify(result)}\n`);
-
-      // Check for errors in the response
-      if (result?.status === 'err') {
-        throw new Error(result.response || 'Withdrawal failed');
-      }
-
-      const newSpot = await hlClient.getSpotUsdcBalance();
-      const newPerp = await hlClient.getPerpBalance();
-
+      if (result?.status !== 'ok' || result?.response?.type !== 'default') throw new Error(t('execution_unknown'));
+      const config = await loadConfig();
       await editOrReply(ctx,
-        `${t('withdrawal_successful')}\n\n` +
-        `${t('amount')}: $${amount.toFixed(2)} USDC\n` +
-        `${t('to_label')}: ${truncateAddress(destination)}\n\n` +
-        `${t('remaining_balance')}:\n` +
-        `  ${t('spot')}: $${newSpot.toFixed(2)}\n` +
-        `  ${t('perp')}: $${newPerp.toFixed(2)}`,
-        {
-          reply_markup: new InlineKeyboard()
-            .text(t('back_to_wallet'), 'wallet')
-            .row()
-            .text(t('main_menu_btn'), 'back_menu'),
-        },
-      );
+        (config.language === 'ru' ? 'Запрос вывода принят, получение в Arbitrum ещё не подтверждено.' : 'Withdrawal request accepted; receipt on Arbitrum is not yet confirmed.') +
+        `\n${destination}\n${amount.toFixed(2)} USDC; fee $1`,
+        { reply_markup: new InlineKeyboard().text(t('back_to_wallet'), 'wallet') });
 
       userStates.delete(chatId);
     } catch (err) {
-      process.stderr.write(`[withdraw] error: ${err.message}\n`);
       await editOrReply(ctx,
         t('withdrawal_failed', { error: err.message }),
         {
@@ -404,7 +367,7 @@ export function createWithdrawFeature(_deps) {
   async function cancelWithdraw(ctx) {
     const chatId = ctx.chat.id;
     const t = await getT();
-    userStates.delete(chatId);
+    await invalidateUserState(chatId);
     busyLocks.delete(chatId);
 
     await editOrReply(ctx, t('withdrawal_cancelled'), {

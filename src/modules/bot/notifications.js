@@ -17,13 +17,15 @@ import { getTranslator } from '../i18n.js';
  * @param {object} [options] - Extra options (reply_markup, parse_mode, etc.)
  */
 export async function sendNotification(bot, chatId, message, options = {}) {
-  if (!bot || !chatId || !message) return;
+  if (!bot || !chatId || !message) return false;
 
   try {
     await bot.api.sendMessage(chatId, message, options);
+    return true;
   } catch (error) {
     const ctx = createContext('notifications', 'sendNotification');
     safeLogWarn(ctx, 'Failed to send notification', { message: error?.message });
+    return false;
   }
 }
 
@@ -48,8 +50,10 @@ export async function notifyOrderFilled(bot, chatId, order) {
 
   const question = order.question || order.coin || t('unknown');
   const side = order.side || t('unknown');
-  const price = order.price || t('na');
-  const size = order.size || t('na');
+  const price = Number.isFinite(Number(order.price)) && order.price !== ''
+    ? String(Number(Number(order.price).toFixed(8))) : t('na');
+  const size = Number.isFinite(Number(order.size)) && order.size !== ''
+    ? String(Number(Number(order.size).toFixed(8))) : t('na');
   const oid = order.oid ? String(order.oid).slice(0, 12) + '...' : '';
 
   const message =
@@ -67,7 +71,7 @@ export async function notifyOrderFilled(bot, chatId, order) {
     ],
   };
 
-  await sendNotification(bot, chatId, message, { reply_markup: replyMarkup });
+  return sendNotification(bot, chatId, message, { reply_markup: replyMarkup });
 }
 
 /**

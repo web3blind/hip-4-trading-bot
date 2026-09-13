@@ -9,12 +9,14 @@
 import { loadConfig } from './config.js';
 import { HLClient } from './hyperliquid.js';
 import {
+  canonicalOid,
   upsertPosition,
   deletePosition,
   getPositions as getDbPositions,
   upsertOrder,
   getOrders as getDbOrders,
   getOrderByOid,
+  markOrderFillNotificationDelivered,
   deleteOrder,
   getOutcomeByCoin,
   getPriceAlertState,
@@ -32,6 +34,7 @@ const DEFAULT_MONITOR_PRICES_MS = 60 * 1000;
 
 const workerTimers = new Map();
 const workerRunning = new Set();
+const workerTasks = new Set();
 let workersStarted = false;
 
 /** @type {HLClient|null} */
@@ -48,7 +51,7 @@ function scheduleWorker(name, intervalMs, handler) {
     clearInterval(workerTimers.get(name));
   }
 
-  const wrapped = async () => {
+  const run = async () => {
     if (workerRunning.has(name)) {
       const ctx = createContext('workers', name);
       safeLogWarn(ctx, `Skipping — previous run still active`);
@@ -64,6 +67,12 @@ function scheduleWorker(name, intervalMs, handler) {
     } finally {
       workerRunning.delete(name);
     }
+  };
+
+  const wrapped = () => {
+    const task = run(); workerTasks.add(task);
+    task.finally(() => workerTasks.delete(task));
+    return task;
   };
 
   // Run once immediately, then on interval
@@ -82,13 +91,12 @@ function scheduleWorker(name, intervalMs, handler) {
  */
 function isOutcomeToken(coin) {
   if (!coin) return false;
-  const c = String(coin).trim();
-  return c.startsWith('#') || c.startsWith('+');
+  return /^[#+][0-9]*[01]$/.test(String(coin));
 }
 
 // ─── syncPositionsWorker ─────────────────────────────────────────
 
-async function syncPositionsWorker() {
+export async function syncPositionsWorker() {
   const config = await loadConfig();
   if (!config.walletAddress || !hlClient) return;
 
@@ -96,7 +104,13 @@ async function syncPositionsWorker() {
 
   try {
     const balances = await hlClient.getUserBalances(config.walletAddress);
-    const allBalances = Array.isArray(balances?.balances) ? balances.balances : [];
+    if (!Array.isArray(balances?.balances)) throw new Error('Invalid balance response; retaining cache');
+    const allBalances = balances.balances;
+    for (const balance of allBalances.filter(b => isOutcomeToken(b?.coin))) {
+      if (typeof balance.total !== 'string' || !/^\d+(?:\.\d+)?$/.test(balance.total) || !Number.isFinite(Number(balance.total))) {
+        throw new Error('Invalid outcome balance; retaining cache');
+      }
+    }
 
     // Filter for outcome tokens with non-zero balance
     const outcomeBalances = allBalances.filter((b) => {
@@ -111,20 +125,23 @@ async function syncPositionsWorker() {
     const liveCoinSet = new Set();
 
     for (const bal of outcomeBalances) {
-      const coin = bal.coin;
+      const coin = bal.coin.replace(/^\+/, '#');
       liveCoinSet.add(coin);
 
       const total = parseFloat(bal.total || '0');
       const hold = parseFloat(bal.hold || '0');
-      const entryPrice = bal.entryPx || bal.avgPrice || '0';
+      const explicit = Number(bal.entryPx || bal.avgPrice);
+      const entryNtl = Number(bal.entryNtl);
+      const entryPrice = Number.isFinite(explicit) && explicit > 0 ? explicit :
+        Number.isFinite(entryNtl) && entryNtl > 0 && total > 0 ? entryNtl / total : '';
 
-      // Determine side from DB — normalize coin (+110 / @110 → #110)
-      const normCoin = (coin.startsWith('+') || coin.startsWith('@')) ? '#' + coin.slice(1) : coin;
+      // Only the + token spelling aliases a # outcome.
+      const normCoin = coin.startsWith('+') ? '#' + coin.slice(1) : coin;
       const outcome = getOutcomeByCoin(coin) || getOutcomeByCoin(normCoin);
       let side = 'unknown';
       if (outcome?.sides) {
         for (const s of outcome.sides) {
-          const sCoin = (s.coin?.startsWith('+') || s.coin?.startsWith('@')) ? '#' + s.coin.slice(1) : s.coin;
+          const sCoin = s.coin?.startsWith('+') ? '#' + s.coin.slice(1) : s.coin;
           if (s.coin === coin || sCoin === normCoin) {
             side = s.side === 0 ? 'YES' : 'NO';
             break;
@@ -169,100 +186,59 @@ async function syncPositionsWorker() {
 
 // ─── monitorOrdersWorker ─────────────────────────────────────────
 
-async function monitorOrdersWorker() {
+/** Reconcile authoritative status and actual fills; absence is never cancellation. */
+export async function monitorOrdersWorker() {
   const config = await loadConfig();
   if (!config.walletAddress || !hlClient) return;
-
   const ctx = createContext('workers', 'monitorOrders');
-
   try {
-    // Fetch current open orders from HL
-    const allOrders = await hlClient.getOpenOrders(config.walletAddress);
-    const ordersList = Array.isArray(allOrders) ? allOrders : [];
-
-    // Filter for outcome orders
-    const liveOrders = ordersList.filter((o) => isOutcomeToken(o.coin));
-    const liveOidSet = new Set(liveOrders.map((o) => o.oid || o.orderId || o.id).filter(Boolean));
-
-    // Upsert live orders into DB
-    for (const order of liveOrders) {
-      const oid = order.oid || order.orderId || order.id || '';
-      if (!oid) continue;
-
-      const orderSide = order.side === 'B' ? 'BUY' : order.side === 'A' ? 'SELL' : (order.side || 'unknown');
-      const orderType = order.orderType || 'Limit';
-      const price = order.limitPx || order.px || order.price || '';
-      const size = order.sz || order.size || order.origSz || '';
-
-      upsertOrder({
-        coin: order.coin,
-        side: orderSide,
-        orderType,
-        price,
-        size,
-        oid,
-        status: 'open',
-      });
+    const live = await hlClient.getOpenOrders(config.walletAddress);
+    if (!Array.isArray(live)) throw new Error('Invalid open orders response');
+    const tracked = getDbOrders().filter(o => ['open', 'partial', 'unknown'].includes(o.status) || (o.status === 'filled' && o.fill_notification_status === 'pending'));
+    const liveOids = new Set();
+    for (const order of live.filter(o => isOutcomeToken(o.coin))) {
+      const oid = canonicalOid(order.oid ?? order.orderId ?? order.id);
+      const existing = getOrderByOid(oid);
+      // A stale open-order snapshot must not reopen a confirmed terminal fill.
+      if (existing?.status === 'filled') continue;
+      liveOids.add(oid);
+      upsertOrder({ coin: order.coin.replace(/^\+/, '#'), side: order.side === 'B' ? 'BUY' : 'SELL',
+        orderType: order.orderType || 'Limit', price: order.limitPx || order.px,
+        size: order.origSz || existing?.size || order.sz, oid, status: 'open' });
     }
-
-    // Check DB orders that are no longer in live set — they may have been filled or cancelled
-    const dbOrders = getDbOrders('open');
-
-    for (const dbOrder of dbOrders) {
-      if (!dbOrder.oid) continue;
-      if (liveOidSet.has(dbOrder.oid)) continue;
-
-      // Order disappeared from live — check fills to determine if filled
-      let wasFilled = false;
-      try {
-        const fills = await hlClient.getUserFills(config.walletAddress);
-        const fillsList = Array.isArray(fills) ? fills : [];
-        wasFilled = fillsList.some(
-          (f) => f.oid === dbOrder.oid || f.orderId === dbOrder.oid
-        );
-      } catch {
-        // Can't determine — mark as unknown for now
-      }
-
-      if (wasFilled) {
-        // Update DB status
-        upsertOrder({
-          coin: dbOrder.coin,
-          side: dbOrder.side,
-          orderType: dbOrder.order_type,
-          price: dbOrder.price,
-          size: dbOrder.size,
-          oid: dbOrder.oid,
-          status: 'filled',
-        });
-
-        // Notify user
-        if (notifyChatId && botInstance) {
-          const outcome = getOutcomeByCoin(dbOrder.coin);
-          const question = outcome?.question || dbOrder.coin;
-          try {
-            await notifyOrderFilled(botInstance, notifyChatId, {
-              oid: dbOrder.oid,
-              coin: dbOrder.coin,
-              question,
-              side: dbOrder.side,
-              price: dbOrder.price,
-              size: dbOrder.size,
-            });
-          } catch (err) {
-            safeLogWarn(ctx, 'Failed to send fill notification', { message: err?.message });
-          }
-        }
-      } else {
-        // Likely cancelled or expired — remove from tracking
-        deleteOrder(dbOrder.oid);
+    let fills;
+    try { fills = await hlClient.getUserFills(config.walletAddress); } catch { fills = null; }
+    for (const order of tracked) {
+      const oid = canonicalOid(order.oid);
+      if (liveOids.has(oid)) continue;
+      let statusResult = null;
+      try { statusResult = await hlClient.getOrderStatus(oid, config.walletAddress); } catch {}
+      const exchangeStatus = statusResult?.order?.status || (statusResult?.status !== 'order' ? statusResult?.status : null);
+      const matching = Array.isArray(fills) ? fills.filter(f => String(f.oid ?? f.orderId) === oid) : [];
+      // Deduplicate API fills by exchange trade identity (not price/size).
+      const seen = new Set();
+      const unique = matching.filter(f => { const key = f.tid ?? (f.hash ? `${f.hash}:${f.time}:${f.sz}` : null); if (key === null) return true; if (seen.has(key)) return false; seen.add(key); return true; });
+      const filledSize = unique.reduce((n, f) => n + (Number(f.sz) || 0), 0);
+      const fillNtl = unique.reduce((n, f) => n + (Number(f.sz) || 0) * (Number(f.px) || 0), 0);
+      let status = 'unknown';
+      if (order.status === 'filled' || exchangeStatus === 'filled') status = 'filled';
+      else if (/cancel|reject|expired/i.test(exchangeStatus || '')) status = 'cancelled';
+      else if (exchangeStatus === 'open') status = filledSize > 0 ? 'partial' : 'open';
+      else if (filledSize > 0) status = filledSize >= Number(order.size) ? 'filled' : 'partial';
+      upsertOrder({ coin: order.coin, side: order.side, orderType: order.order_type,
+        price: order.price, size: order.size, oid, status, fillNotificationStatus: status === 'filled' ? 'pending' : null });
+      const validFills = unique.length > 0 && unique.every(f =>
+        Number.isFinite(Number(f.sz)) && Number(f.sz) > 0 &&
+        Number.isFinite(Number(f.px)) && Number(f.px) > 0 && Number(f.px) <= 1);
+      if (status === 'filled' && validFills && Number.isFinite(filledSize) && Number.isFinite(fillNtl) &&
+          getOrderByOid(oid).fill_notification_status === 'pending' && botInstance && notifyChatId) {
+        const delivered = await notifyOrderFilled(botInstance, notifyChatId, { oid, coin: order.coin,
+          question: getOutcomeByCoin(order.coin)?.question || order.coin, side: order.side,
+          price: fillNtl / filledSize, size: String(filledSize) });
+        if (delivered) markOrderFillNotificationDelivered(oid);
       }
     }
-
-    safeLogInfo(ctx, `Monitored orders: ${liveOrders.length} open, ${dbOrders.length} tracked`);
-  } catch (error) {
-    safeLogError(ctx, error);
-  }
+  } catch (error) { safeLogError(ctx, error); }
 }
 
 // ─── monitorPricesWorker ──────────────────────────────────────────
@@ -296,8 +272,9 @@ async function monitorPricesWorker() {
       const size = parseFloat(pos.size || '0');
       if (size <= 0.01) continue; // skip dust
 
-      // Normalize coin for mids lookup (+ or @ -> #)
-      const normCoin = coin.startsWith('+') || coin.startsWith('@') ? '#' + coin.slice(1) : coin;
+      // Ordinary @ spot coins must never use outcome prices.
+      if (!isOutcomeToken(coin)) continue;
+      const normCoin = coin.startsWith('+') ? '#' + coin.slice(1) : coin;
 
       const currentPriceStr = mids[normCoin];
       if (!currentPriceStr) continue;
@@ -357,7 +334,7 @@ async function monitorPricesWorker() {
             ]
           }
         });
-      } catch {}
+      } catch { continue; }
 
       updatePriceAlertState(normCoin, currentPrice, now);
     }
@@ -389,9 +366,9 @@ export function startWorkers(options = {}) {
   botInstance = options.bot || null;
   notifyChatId = options.chatId || process.env.WORKERS_NOTIFICATIONS_CHAT_ID || process.env.TELEGRAM_ALLOWED_USER_ID || '';
 
-  const syncMs = options.syncPositionsMs || DEFAULT_SYNC_POSITIONS_MS;
-  const monitorMs = options.monitorOrdersMs || DEFAULT_MONITOR_ORDERS_MS;
-  const monitorPricesMs = options.monitorPricesMs || DEFAULT_MONITOR_PRICES_MS;
+  const syncMs = options.syncPositionsMs || Number(process.env.WORKERS_SYNC_POSITIONS_MS) || DEFAULT_SYNC_POSITIONS_MS;
+  const monitorMs = options.monitorOrdersMs || Number(process.env.WORKERS_MONITOR_ORDERS_MS) || DEFAULT_MONITOR_ORDERS_MS;
+  const monitorPricesMs = options.monitorPricesMs || Number(process.env.WORKERS_MONITOR_PRICES_MS) || DEFAULT_MONITOR_PRICES_MS;
 
   scheduleWorker('syncPositions', syncMs, syncPositionsWorker);
   scheduleWorker('monitorOrders', monitorMs, monitorOrdersWorker);
@@ -411,15 +388,16 @@ export function startWorkers(options = {}) {
 /**
  * Stop all background workers.
  */
-export function stopWorkers() {
+export async function stopWorkers() {
   for (const [name, timer] of workerTimers.entries()) {
     clearInterval(timer);
     const ctx = createContext('workers', 'stopWorkers');
     safeLogInfo(ctx, `Stopped worker: ${name}`);
   }
   workerTimers.clear();
-  workerRunning.clear();
+  await Promise.allSettled([...workerTasks]);
   workersStarted = false;
+  hlClient = null; botInstance = null; notifyChatId = '';
 }
 
 /**

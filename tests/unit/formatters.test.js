@@ -13,6 +13,9 @@ import {
   formatUSDC,
   formatOutcomeList,
   formatOutcomeDetail,
+  formatPriceBucketQuestionDescription,
+  formatEventOutcomes,
+  getPriceBucketOutcomeLabel,
   formatPosition,
   formatPositionsList,
   formatOrder,
@@ -113,6 +116,47 @@ test('formatOutcomeDetail shows question, prices, spread, and orderbook', () => 
   assert.ok(result.includes('Orderbook (YES)'));
   assert.ok(result.includes('Bids'));
   assert.ok(result.includes('Asks'));
+});
+
+test('priceBucket question descriptions and outcome labels are human readable', () => {
+  const description = 'class:priceBucket|underlying:BTC|expiry:20260513-0600|priceThresholds:79558,82805|period:1d';
+
+  assert.equal(
+    formatPriceBucketQuestionDescription(description).split('\n')[0],
+    'BTC price bucket: $79,558 / $82,805',
+  );
+  assert.equal(getPriceBucketOutcomeLabel(description, 'index:0'), '< $79,558');
+  assert.equal(getPriceBucketOutcomeLabel(description, 'index:1'), '$79,558 – $82,805');
+  assert.equal(getPriceBucketOutcomeLabel(description, 'index:2'), '> $82,805');
+  assert.equal(getPriceBucketOutcomeLabel(description, 'other'), 'Other / fallback');
+});
+
+test('formatEventOutcomes uses priceBucket option labels', () => {
+  const event = {
+    name: 'Recurring',
+    description: 'class:priceBucket|underlying:BTC|expiry:20260513-0600|priceThresholds:79558,82805|period:1d',
+    outcomes: [
+      { name: 'Recurring Named Outcome', displayName: '< $79,558', yesPrice: 0.2, noPrice: 0.8 },
+      { name: 'Recurring Named Outcome', displayName: '$79,558 – $82,805', yesPrice: 0.5, noPrice: 0.5 },
+      { name: 'Recurring Named Outcome', displayName: '> $82,805', yesPrice: 0.3, noPrice: 0.7 },
+    ],
+  };
+
+  const result = formatEventOutcomes(event);
+  assert.ok(result.includes('BTC price bucket: $79,558 / $82,805'));
+  assert.ok(result.includes('< $79,558'));
+  assert.ok(result.includes('$79,558 – $82,805'));
+  assert.ok(result.includes('> $82,805'));
+});
+
+test('formatOutcomeDetail prefers displayName for selected multi-option outcome', () => {
+  const result = formatOutcomeDetail(
+    { question: 'Recurring Named Outcome', displayName: '$79,558 – $82,805', description: 'index:1' },
+    null,
+    { yes: 0.5, no: 0.5 },
+  );
+
+  assert.ok(result.startsWith('$79,558 – $82,805'));
 });
 
 test('formatPosition formats a single position', () => {

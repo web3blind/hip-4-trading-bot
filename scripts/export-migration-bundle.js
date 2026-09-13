@@ -3,7 +3,7 @@ import { writeFile } from 'fs/promises';
 import { join } from 'path';
 
 import { loadConfig } from '../src/modules/config.js';
-import { getDecryptedL2Credentials, getDecryptedPrivateKey } from '../src/modules/auth.js';
+import { getDecryptedPrivateKey } from '../src/modules/auth.js';
 import {
   formatFingerprint,
   getPublicKeyFingerprint,
@@ -59,7 +59,7 @@ async function main() {
 
   const config = await loadConfig();
   const privateKey = await getDecryptedPrivateKey();
-  const l2 = await getDecryptedL2Credentials();
+
 
   const { encrypted: _ignoreEncrypted, ...configWithoutSecrets } = config;
   void _ignoreEncrypted;
@@ -70,15 +70,10 @@ async function main() {
     createdAt: new Date().toISOString(),
     walletAddress: config.walletAddress || '',
     privateKey,
-    l2Credentials: {
-      apiKey: l2.apiKey || l2.key || '',
-      secret: l2.secret || '',
-      passphrase: l2.passphrase || ''
-    },
     config: configWithoutSecrets
   };
 
-  if (!payload.privateKey || !payload.l2Credentials.apiKey || !payload.l2Credentials.secret || !payload.l2Credentials.passphrase) {
+  if (!payload.privateKey || !payload.walletAddress) {
     throw new Error('Cannot export migration bundle: wallet credentials are incomplete');
   }
 
@@ -115,7 +110,7 @@ async function main() {
     ? resolvePathFromCwd(args.output)
     : resolvePathFromCwd(join('.', `migration-bundle-${request.requestId}.json`));
 
-  await writeFile(outputPath, JSON.stringify(bundle, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+  await writeFile(outputPath, JSON.stringify(bundle, null, 2) + '\n', { encoding: 'utf8', mode: 0o600, flag: 'wx' });
 
   console.log('Migration bundle created.');
   console.log(`Bundle file: ${outputPath}`);

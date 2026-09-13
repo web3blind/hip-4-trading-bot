@@ -129,7 +129,7 @@ export function redactSensitive(value, depth = 0, seen = new Set()) {
         return '[REDACTED]';
       }
     }
-    return value;
+    return typeof value === 'string' ? redactSensitiveText(value) : value;
   }
   
   // Handle circular references
@@ -145,7 +145,10 @@ export function redactSensitive(value, depth = 0, seen = new Set()) {
   
   // Handle objects
   const redacted = {};
-  for (const [key, val] of Object.entries(value)) {
+  const source = value instanceof Error
+    ? { ...value, name: value.name, message: value.message, stack: value.stack, cause: value.cause }
+    : value;
+  for (const [key, val] of Object.entries(source)) {
     if (isSensitiveField(key)) {
       redacted[key] = '[REDACTED]';
     } else {
@@ -247,10 +250,10 @@ function emitLogEntry(entry) {
     return;
   }
 
-  const logEntry = {
+  const logEntry = redactSensitive({
     timestamp: new Date().toISOString(),
     ...entry
-  };
+  });
 
   // Preserve current behavior: structured logs go to stderr.
   console.error(JSON.stringify(logEntry));
@@ -274,7 +277,7 @@ async function writeLogEntryToFile(logEntry) {
     })
     .catch((error) => {
       loggerRuntime.writeFailures += 1;
-      loggerRuntime.lastWriteError = String(error?.message || error);
+      loggerRuntime.lastWriteError = redactSensitiveText(String(error?.message || error));
     });
 
   await fileWriteQueue;
@@ -478,14 +481,17 @@ function redactSensitiveText(text) {
   }
 
   return text
+    .replace(/https?:\/\/[^\s/@]+:[^\s/@]+@/gi, 'https://[REDACTED]@')
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/=-]+/gi, '$1 [REDACTED]')
+    .replace(/\b\d{5,}:[A-Za-z0-9_-]{20,}\b/g, '[REDACTED_TOKEN]')
     // JSON-like key-value pairs: "KEY":"value"
     .replace(
-      /"([^"]*(?:api[_-]?key|apikey|secret|passphrase|private[_-]?key|privatekey|authorization|cookie|x-api-key|x-secret|x-passphrase|poly_signature|poly_api_key|poly_passphrase)[^"]*)"\s*:\s*"[^"]*"/gi,
+      /"([^"]*(?:password|token|encrypted|signature|nonce|api[_-]?key|apikey|secret|passphrase|private[_-]?key|privatekey|authorization|cookie|x-api-key|x-secret|x-passphrase|poly_signature|poly_api_key|poly_passphrase)[^"]*)"\s*:\s*"[^"]*"/gi,
       '"$1":"[REDACTED]"'
     )
     // Plain key=value / key: value
     .replace(
-      /([A-Za-z0-9_-]*(?:api[_-]?key|apikey|secret|passphrase|private[_-]?key|privatekey|authorization|cookie|x-api-key|x-secret|x-passphrase|poly_signature|poly_api_key|poly_passphrase)[A-Za-z0-9_-]*)\s*[=:]\s*['"]?[^\s'",}]+/gi,
+      /([A-Za-z0-9_-]*(?:password|token|encrypted|signature|nonce|api[_-]?key|apikey|secret|passphrase|private[_-]?key|privatekey|authorization|cookie|x-api-key|x-secret|x-passphrase|poly_signature|poly_api_key|poly_passphrase)[A-Za-z0-9_-]*)\s*[=:]\s*['"]?[^\s'",}]+/gi,
       '$1=[REDACTED]'
     )
     .replace(/0x[a-fA-F0-9]{64}/g, '[REDACTED_HEX]');
@@ -519,6 +525,8 @@ export function patchConsoleForRedaction() {
   const originalWarn = console.warn;
   const originalLog = console.log;
   const originalInfo = console.info;
+  const originalDebug = console.debug;
+  console.debug = function(...args) { return originalDebug.apply(this, args.map(redactConsoleArg)); };
 
   console.error = function(...args) {
     const redactedArgs = args.map(redactConsoleArg);

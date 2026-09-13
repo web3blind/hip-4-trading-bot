@@ -1,4 +1,5 @@
 import { readFile } from 'fs/promises';
+import { DATA_DIR } from '../src/modules/config.js';
 import { createHash, createPublicKey } from 'crypto';
 import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
@@ -7,7 +8,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 export const ROOT = join(__dirname, '..');
-export const MIGRATION_DIR = join(ROOT, 'data', 'migration');
+export const MIGRATION_DIR = join(DATA_DIR, 'migration');
 
 export function parseArgs(argv) {
   const args = {};

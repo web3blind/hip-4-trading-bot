@@ -70,7 +70,7 @@ export function formatOutcomeList(outcomes, page, totalPages, t) {
     text += `   ${s0}: ${yesPrice}  |  ${s1}: ${noPrice}\n\n`;
   });
 
-  return text.trimEnd();
+  return boundTelegramText(text.trimEnd());
 }
 
 // ─── Events list (Level 1) ──────────────────────────────────────
@@ -87,6 +87,10 @@ export function formatEventsList(events, page, totalPages, t) {
 
     if (event.type === 'question') {
       text += `${num}. ${event.name}\n`;
+      const parsed = formatPriceBucketQuestionDescription(event.description);
+      if (parsed) {
+        text += `   ${parsed.split('\n')[0]}\n`;
+      }
       text += `   ${event.outcomeCount} ${L(t, 'outcomes_label', 'outcomes')}\n\n`;
     } else {
       // Standalone outcome — use parsed priceBinary or raw name
@@ -101,14 +105,17 @@ export function formatEventsList(events, page, totalPages, t) {
     }
   });
 
-  return text.trimEnd();
+  return boundTelegramText(text.trimEnd());
 }
 
 // ─── Event outcomes (Level 2) ───────────────────────────────────
 
 export function formatEventOutcomes(event, t) {
-  let text = `${event.name}\n`;
-  if (event.description) {
+  let text = `${event.name}${event.totalPages > 1 ? ` (${event.page}/${event.totalPages})` : ''}\n`;
+  const parsedQuestion = formatPriceBucketQuestionDescription(event.description);
+  if (parsedQuestion) {
+    text += `${parsedQuestion}\n`;
+  } else if (event.description) {
     text += `${event.description}\n`;
   }
   text += `\n${L(t, 'outcomes_label', 'Outcomes')}:\n\n`;
@@ -118,55 +125,120 @@ export function formatEventOutcomes(event, t) {
     const noPrice = o.noPrice != null ? formatPricePercent(o.noPrice) : L(t, 'na', 'N/A');
     const s0 = o.side0Name || 'YES';
     const s1 = o.side1Name || 'NO';
-    text += `${o.name}\n`;
+    text += `${o.displayName || o.name}\n`;
     text += `  ${s0}: ${yesPrice}  |  ${s1}: ${noPrice}\n\n`;
   }
 
-  return text.trimEnd();
+  return boundTelegramText(text.trimEnd());
 }
 
-// ─── priceBinary description parser ────────────────────────────
+// ─── Outcome metadata description parsers ───────────────────────
+
+export function boundTelegramText(text, max = 3800) {
+  const value = String(text ?? '');
+  return value.length <= max ? value : value.slice(0, max - 2) + '…';
+}
+
+// Metadata values remain authoritative; titles never invent resolution operators.
+export function formatTemplateTitle(name, description) {
+  if (!String(name || '').startsWith('template:')) return null;
+  const p = parseKeyValueDescription(description);
+  const kind = name.slice(9);
+  const labels = {
+    policyRateDecision: 'Policy rate decision', policyRateNoChange: 'Policy rate unchanged',
+    policyRateDecrease: 'Policy rate decrease', policyRateIncrease: 'Policy rate increase',
+    sportsTournamentWinner: 'Tournament winner', sportsTournamentParticipant: 'Tournament participant',
+    sportsContestWinner: 'Contest winner', sportsContestParticipant2: 'Contest participant',
+    sportsContestDraw2: 'Contest draw', companyIpoConfirmed: 'IPO confirmed', sportsOverUnderMarket: 'Over/under',
+  };
+  if (kind === 'priceTouch') return `${p.perp || p.priceDescription || 'Price'} touches ${p.target || '?'} by ${formatExpiry(p.time) || '?'}`;
+  if (kind === 'binaryPrice') return `${p.perp || p.priceDescription || 'Price'} — threshold ${p.threshold || '?'} at ${formatExpiry(p.time) || '?'}`;
+  const label = labels[kind] || kind.replace(/([a-z])([A-Z])/g, '$1 $2');
+  const values = Object.entries(p).filter(([k]) => !/Deadline|Source|scheduledDecision/.test(k)).map(([k,v]) => `${k}: ${v}`);
+  return `${label}${values.length ? ' — ' + values.join('; ') : ''}`;
+}
+
+function parseKeyValueDescription(description) {
+  const parts = {};
+  if (!description) return parts;
+  for (const seg of String(description).split('|')) {
+    const idx = seg.indexOf(':');
+    if (idx > 0) parts[seg.slice(0, idx)] = seg.slice(idx + 1);
+  }
+  return parts;
+}
+
+function formatExpiry(expiry) {
+  if (!expiry) return null;
+  const m = String(expiry).match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})$/);
+  if (!m) return expiry;
+  const d = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00Z`);
+  return isNaN(d.getTime()) ? expiry : d.toUTCString().replace(' GMT', ' UTC');
+}
 
 /**
  * Parse a priceBinary description into human-readable lines.
  * Input:  "class:priceBinary|underlying:BTC|expiry:20260329-0300|targetPrice:66220|period:1d"
  * Output: "BTC > $66,220\nExpiry: Mar 29, 2026 03:00 UTC\nPeriod: 1d"
  */
-function formatPriceBinaryDescription(description) {
+export function formatPriceBinaryDescription(description) {
   if (!description || !description.startsWith('class:priceBinary')) return null;
 
-  const parts = {};
-  for (const seg of description.split('|')) {
-    const idx = seg.indexOf(':');
-    if (idx > 0) parts[seg.slice(0, idx)] = seg.slice(idx + 1);
-  }
-
+  const parts = parseKeyValueDescription(description);
   if (!parts.underlying || !parts.targetPrice) return null;
 
   const lines = [];
   const price = Number(parts.targetPrice).toLocaleString('en-US');
   lines.push(`${parts.underlying} > $${price}`);
 
-  if (parts.expiry) {
-    // Parse "20260329-0300" → "Mar 29, 2026 03:00 UTC"
-    const m = parts.expiry.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})$/);
-    if (m) {
-      const d = new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00Z`);
-      if (!isNaN(d.getTime())) {
-        lines.push(`Expiry: ${d.toUTCString().replace(' GMT', ' UTC')}`);
-      } else {
-        lines.push(`Expiry: ${parts.expiry}`);
-      }
-    } else {
-      lines.push(`Expiry: ${parts.expiry}`);
-    }
-  }
-
-  if (parts.period) {
-    lines.push(`Period: ${parts.period}`);
-  }
+  const expiry = formatExpiry(parts.expiry);
+  if (expiry) lines.push(`Expiry: ${expiry}`);
+  if (parts.period) lines.push(`Period: ${parts.period}`);
 
   return lines.join('\n');
+}
+
+export function formatPriceBucketQuestionDescription(description) {
+  if (!description || !description.startsWith('class:priceBucket')) return null;
+
+  const parts = parseKeyValueDescription(description);
+  if (!parts.underlying || !parts.priceThresholds) return null;
+
+  const thresholds = parts.priceThresholds
+    .split(',')
+    .map(value => Number(value.trim()))
+    .filter(Number.isFinite);
+  if (thresholds.length === 0) return null;
+
+  const formattedThresholds = thresholds.map(value => `$${value.toLocaleString('en-US')}`).join(' / ');
+  const lines = [`${parts.underlying} price bucket: ${formattedThresholds}`];
+  const expiry = formatExpiry(parts.expiry);
+  if (expiry) lines.push(`Expiry: ${expiry}`);
+  if (parts.period) lines.push(`Period: ${parts.period}`);
+  return lines.join('\n');
+}
+
+export function getPriceBucketOutcomeLabel(questionDescription, outcomeDescription, fallback = 'Other / fallback') {
+  if (!questionDescription || !questionDescription.startsWith('class:priceBucket')) return null;
+  const questionParts = parseKeyValueDescription(questionDescription);
+  const thresholds = (questionParts.priceThresholds || '')
+    .split(',')
+    .map(value => Number(value.trim()))
+    .filter(Number.isFinite);
+  if (thresholds.length === 0) return null;
+
+  const outcomeParts = parseKeyValueDescription(outcomeDescription || '');
+  if ((outcomeParts.class || '').toLowerCase() === 'other' || outcomeDescription === 'other') {
+    return fallback;
+  }
+
+  const index = Number(outcomeParts.index);
+  if (!Number.isInteger(index) || index < 0 || index > thresholds.length) return null;
+
+  const fmt = value => `$${value.toLocaleString('en-US')}`;
+  if (index === 0) return `< ${fmt(thresholds[0])}`;
+  if (index === thresholds.length) return `> ${fmt(thresholds[thresholds.length - 1])}`;
+  return `${fmt(thresholds[index - 1])} – ${fmt(thresholds[index])}`;
 }
 
 // ─── Outcome detail ────────────────────────────────────────────
@@ -175,7 +247,7 @@ function formatPriceBinaryDescription(description) {
  * Format detailed view of a single outcome with orderbook.
  */
 export function formatOutcomeDetail(outcome, orderbook, prices, t) {
-  const question = outcome.question || outcome.description || L(t, 'unknown', 'Unknown outcome');
+  const question = outcome.displayName || formatTemplateTitle(outcome.rawName || outcome.name, outcome.description) || outcome.question || outcome.description || L(t, 'unknown', 'Unknown outcome');
   const description = outcome.description || '';
 
   let text = `${question}\n`;
@@ -183,17 +255,19 @@ export function formatOutcomeDetail(outcome, orderbook, prices, t) {
   // Format priceBinary descriptions nicely, show raw for others
   const parsed = formatPriceBinaryDescription(description);
   if (parsed) {
-    text += `${parsed}\n`;
+    text += `${parsed}\n${description}\n`;
   } else if (description && description !== question) {
     text += `${description}\n`;
   }
+  if (outcome.parentDescription) text += `${outcome.parentDescription}\n`;
+  if (outcome.quoteToken) text += `Quote: ${outcome.quoteToken}\n`;
   text += '\n';
 
   // Prices
   const yesPrice = prices?.yes != null ? formatPrice(prices.yes) : L(t, 'na', 'N/A');
   const noPrice = prices?.no != null ? formatPrice(prices.no) : L(t, 'na', 'N/A');
-  text += `YES: ${yesPrice}\n`;
-  text += `NO: ${noPrice}\n`;
+  text += `${outcome.side0Name || 'YES'}: ${yesPrice}\n`;
+  text += `${outcome.side1Name || 'NO'}: ${noPrice}\n`;
 
   // Spread
   if (prices?.yes != null && prices?.no != null) {
@@ -224,7 +298,7 @@ export function formatOutcomeDetail(outcome, orderbook, prices, t) {
     }
   }
 
-  return text.trimEnd();
+  return boundTelegramText(text.trimEnd());
 }
 
 // ─── Positions ─────────────────────────────────────────────────
@@ -256,7 +330,7 @@ export function formatPositionsList(positions, t) {
   positions.forEach((pos, index) => {
     text += `${index + 1}. ${formatPosition(pos, t)}\n\n`;
   });
-  return text.trimEnd();
+  return boundTelegramText(text.trimEnd());
 }
 
 // ─── Orders ────────────────────────────────────────────────────
@@ -296,7 +370,7 @@ export function formatOrdersList(orders, t) {
   orders.forEach((ord, index) => {
     text += `${index + 1}. ${formatOrder(ord, t)}\n\n`;
   });
-  return text.trimEnd();
+  return boundTelegramText(text.trimEnd());
 }
 
 // ─── Utility formatters kept from old codebase ─────────────────

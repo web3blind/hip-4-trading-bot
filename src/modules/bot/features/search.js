@@ -9,8 +9,8 @@ import { InlineKeyboard } from 'grammy';
 import { loadConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
 import { userStates } from '../runtime.js';
-import { getCachedEvents, fetchAndCacheOutcomes } from './outcomes.js';
-import { formatPricePercent } from '../ui/formatters.js';
+import { fetchAndCacheOutcomes } from './outcomes.js';
+import { formatPricePercent, boundTelegramText } from '../ui/formatters.js';
 
 // ─── Search helpers ──────────────────────────────────────────
 
@@ -93,7 +93,7 @@ export function createSearchFeature(deps) {
 
     userStates.delete(chatId);
 
-    const query = text.trim();
+    const query = text.trim().slice(0, 160);
     if (!query) {
       await ctx.reply(t('please_enter_search'), {
         reply_markup: new InlineKeyboard().text(t('back_to_markets'), 'outcomes:page:1'),
@@ -101,16 +101,9 @@ export function createSearchFeature(deps) {
       return;
     }
 
-    // Ensure we have cached events
-    let events = getCachedEvents();
-    if (!events || events.length === 0) {
-      if (hlClient) {
-        try {
-          events = await fetchAndCacheOutcomes(hlClient);
-        } catch {
-          events = [];
-        }
-      }
+    let events = [];
+    if (hlClient) {
+      try { events = await fetchAndCacheOutcomes(hlClient); } catch {}
     }
 
     // Search
@@ -161,7 +154,7 @@ export function createSearchFeature(deps) {
     keyboard.text(t('search_again'), 'search_markets').row();
     keyboard.text(t('back_to_markets'), 'outcomes:page:1');
 
-    await ctx.reply(resultText.trimEnd(), { reply_markup: keyboard });
+    await ctx.reply(boundTelegramText(resultText.trimEnd()), { reply_markup: keyboard });
   }
 
   return { handleSearchStart, handleSearchQuery };

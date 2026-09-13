@@ -8,7 +8,7 @@
 import { loadConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
 import { createContext, safeLogError } from '../../logger.js';
-import { busyLocks, userStates, hlClient } from '../runtime.js';
+import { busyLocks, userStates, hlClient, isAuthorizedPrivateContext, runtimeTransitioning, invalidateUserState } from '../runtime.js';
 import { mainMenuKeyboard, getMainMenuKeyboard } from '../ui/keyboards.js';
 
 // Feature imports
@@ -38,6 +38,7 @@ const CONFIRMATION_STATES = new Set([
 // ─── Main text handler ──────────────────────────────────────────
 
 export async function handleTextMessage(ctx) {
+  if (!isAuthorizedPrivateContext(ctx) || runtimeTransitioning) return;
   const chatId = ctx.chat.id;
   const text = ctx.message.text;
   const config = await loadConfig();
@@ -55,7 +56,7 @@ export async function handleTextMessage(ctx) {
   }
 
   // Check busy lock (skip for confirmation states)
-  if (busyLocks.get(chatId) && !CONFIRMATION_STATES.has(state.state)) {
+  if (busyLocks.get(chatId)) {
     await ctx.reply(t('error_busy'));
     return;
   }

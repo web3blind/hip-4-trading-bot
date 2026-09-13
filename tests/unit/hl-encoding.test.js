@@ -99,9 +99,11 @@ describe('hl-encoding', () => {
       assert.deepEqual(result, { outcomeId: 2146, side: 1, sideName: 'NO' });
     });
 
-    it('throws for invalid prefix', () => {
-      assert.throws(() => coinToOutcome('+21460'), /Invalid coin format/);
-      assert.throws(() => coinToOutcome('21460'), /Invalid coin format/);
+    it('accepts outcome token aliases but rejects ordinary spot and malformed coins', () => {
+      assert.deepEqual(coinToOutcome('+21460'), coinToOutcome('#21460'));
+      for (const coin of ['@21460', '#21460abc', '#21462', '21460']) {
+        assert.throws(() => coinToOutcome(coin));
+      }
     });
   });
 
@@ -113,7 +115,9 @@ describe('hl-encoding', () => {
     });
 
     it('returns false for non-outcome coins', () => {
-      assert.equal(isOutcomeCoin('+21460'), false);
+      assert.equal(isOutcomeCoin('+21460'), true);
+      assert.equal(isOutcomeCoin('@21460'), false);
+      assert.equal(isOutcomeCoin('#21462'), false);
       assert.equal(isOutcomeCoin('BTC'), false);
       assert.equal(isOutcomeCoin('#'), false);
       assert.equal(isOutcomeCoin('#abc'), false);

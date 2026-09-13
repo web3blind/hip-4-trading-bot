@@ -10,8 +10,10 @@
 
 import { InlineKeyboard } from 'grammy';
 import { loadConfig, updateConfig, getNotificationSettings, setNotificationSetting } from '../../config.js';
+import { getDecryptedPrivateKey } from '../../auth.js';
+import { HLClient } from '../../hyperliquid.js';
 import { getTranslator } from '../../i18n.js';
-import { userStates } from '../runtime.js';
+import { userStates, activateHLClient, createConfiguredHLClient, confirmationCallback } from '../runtime.js';
 import { mainMenuKeyboard, getMainMenuKeyboard } from '../ui/keyboards.js';
 
 // ─── Show settings menu ─────────────────────────────────────────
@@ -34,10 +36,11 @@ export async function showSettings(ctx) {
   keyboard.text(t('settings_language') || 'Language', 'change_language').row();
   keyboard.text(`${t('network_label')}: ${network}`, 'settings:network').row();
   keyboard.text(t('notifications_btn'), 'settings:notifications').row();
+  keyboard.text(t('outcome_rewards'), 'rewards').row();
 
   if (!config.walletAddress) {
     keyboard.text(t('settings_init_wallet') || 'Init Wallet', 'init_wallet').row();
-  } else {
+  } else if (config.authMode !== 'agent') {
     keyboard.text(t('settings_export_pk') || 'Export Key', 'start_export_pk').row();
   }
 
@@ -57,19 +60,22 @@ export async function handleSettingsCallback(ctx, data) {
   const t = await getTranslator(config.language || 'en');
 
   if (data === 'settings:network') {
+    if (config.authMode === 'agent') { await ctx.editMessageText(t('agent_reconnect_network')); return; }
     const current = config.hlNetwork || 'testnet';
-    const newNetwork = current === 'testnet' ? 'mainnet' : 'testnet';
-    await updateConfig('hlNetwork', newNetwork);
-
-    const text = t('network_switched', { network: newNetwork });
-    const keyboard = new InlineKeyboard()
-      .text(t('back_to_settings'), 'settings');
-
-    try {
-      await ctx.editMessageText(text, { reply_markup: keyboard });
-    } catch {
-      await ctx.reply(text, { reply_markup: keyboard });
-    }
+    const network = current === 'testnet' ? 'mainnet' : 'testnet';
+    const callback = confirmationCallback(ctx.chat.id, 'confirm_network', { state: 'CONFIRMING_NETWORK', network });
+    await ctx.editMessageText(t('network_review', { network }), { reply_markup: new InlineKeyboard()
+      .text(t('confirm'), callback).text(t('cancel'), 'settings') });
+    return;
+  }
+  if (data === 'confirm_network') {
+    const state = userStates.get(ctx.chat.id);
+    if (state?.state !== 'CONFIRMING_NETWORK' || config.authMode === 'agent') return;
+    const next = { ...config, hlNetwork: state.network };
+    const client = config.encrypted?.privateKey ? await createConfiguredHLClient(next) : null;
+    await activateHLClient(client, { persist: () => updateConfig('hlNetwork', state.network) });
+    await ctx.editMessageText(t('network_switched', { network: state.network }), {
+      reply_markup: new InlineKeyboard().text(t('back_to_settings'), 'settings') });
     return;
   }
 

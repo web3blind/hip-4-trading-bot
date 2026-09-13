@@ -9,6 +9,52 @@
 import { ethers } from 'ethers';
 import { encode as msgpackEncode } from '@msgpack/msgpack';
 import { HL_API, DEFAULTS } from './constants.js';
+import { isOutcomeCoin, normalizeOutcomeCoin, coinToOutcome } from './hl-encoding.js';
+
+const signerNonces = new Map();
+// Reserve one percent of notional for fees. Never use the reserve as price
+// slippage; order caps are immutable. Higher published fee rates fail closed.
+export const FEE_RESERVE = 0.01;
+function quantize(value, decimals, up = false) {
+  const text = Number(value).toFixed(12);
+  const [whole, fraction] = text.split('.');
+  const scale = 10n ** BigInt(decimals);
+  let units = BigInt(whole) * scale + BigInt((fraction.slice(0, decimals) || '0'));
+  if (up && /[1-9]/.test(fraction.slice(decimals))) units++;
+  return Number(units) / Number(scale);
+}
+export class UnknownExecutionError extends Error {
+  constructor(message = 'Execution unknown. Check orders, fills and ledger before any retry.') {
+    super(message); this.name = 'UnknownExecutionError'; this.executionUnknown = true;
+  }
+}
+function positive(value, label) {
+  if (!['number', 'string'].includes(typeof value) || (typeof value === 'string' && !/^(?:[0-9]+)(?:\.[0-9]+)?$/.test(value))) throw new Error(`Invalid ${label}`);
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0 || n > Number.MAX_SAFE_INTEGER) throw new Error(`Invalid ${label}`);
+  return n;
+}
+function assertExchange(result) {
+  if (result?.status === 'err') throw new Error(typeof result.response === 'string' ? result.response : 'Exchange rejected action');
+  if (result?.status !== 'ok') throw new UnknownExecutionError();
+  return result;
+}
+export function orderStatuses(result, count) {
+  assertExchange(result);
+  const statuses = result?.response?.data?.statuses;
+  if (result?.response?.type !== 'order' || !Array.isArray(statuses) || statuses.length !== count) {
+    const e = new UnknownExecutionError('Incomplete order response. Check all orders and fills before retrying.'); e.hlResult = result; throw e;
+  }
+  for (const s of statuses) {
+    if (!s || typeof s !== 'object' || Object.keys(s).length !== 1) throw new UnknownExecutionError();
+    if (typeof s.error === 'string' && s.error) continue;
+    if (!Object.hasOwn(s, 'filled') && !Object.hasOwn(s, 'resting')) throw new UnknownExecutionError();
+    const v = s.filled || s.resting;
+    if (!v || !Number.isSafeInteger(v.oid) || v.oid <= 0) throw new UnknownExecutionError();
+    if (s.filled && !(Number.isFinite(Number(v.totalSz)) && Number(v.totalSz) > 0 && Number.isFinite(Number(v.avgPx)) && Number(v.avgPx) > 0 && Number(v.avgPx) < 1)) throw new UnknownExecutionError();
+  }
+  return statuses;
+}
 
 const USER_SIGNED_DOMAIN_BY_NETWORK = {
   testnet: {
@@ -96,7 +142,7 @@ function getFirstOrderError(result) {
 
 function normalizeOpenOrderCoin(coin) {
   if (typeof coin !== 'string') return coin;
-  return coin.startsWith('@') ? `#${coin.slice(1)}` : coin;
+  return normalizeOutcomeCoin(coin);
 }
 
 /**
@@ -197,7 +243,15 @@ export class HLClient {
    * @param {string} privateKey - Hex private key (with or without 0x prefix)
    * @param {string} network - 'testnet' or 'mainnet'
    */
-  constructor(privateKey, network = 'testnet') {
+  constructor(privateKey, network = 'testnet', options = {}) {
+    if (!['testnet', 'mainnet'].includes(network)) throw new Error('Invalid network');
+    this.authMode = options.authMode || 'wallet';
+    if (!['agent', 'wallet'].includes(this.authMode)) throw new Error('Invalid auth mode');
+    if (this.authMode === 'agent' && !options.accountAddress) throw new Error('Agent requires owner accountAddress');
+    this.requestTimeoutMs = 15000;
+    const builder = typeof options.builder === 'string' ? options.builder : options.builder?.b;
+    if (options.builder && (!builder || !ethers.utils.isAddress(builder) || (options.builder.f != null && options.builder.f !== 0))) throw new Error('Builder requires address and zero fee');
+    this.builder = builder ? { b: builder.toLowerCase(), f: 0 } : null;
     this.network = network;
     this.isMainnet = network === 'mainnet';
 
@@ -208,6 +262,11 @@ export class HLClient {
     } else {
       this.wallet = null;
       this.address = null;
+    }
+
+    if (options.accountAddress) {
+      this.address = ethers.utils.getAddress(options.accountAddress);
+      if (this.authMode === 'wallet' && this.wallet && this.address !== this.wallet.address) throw new Error('Wallet owner/signer mismatch');
     }
 
     // Caches
@@ -225,40 +284,39 @@ export class HLClient {
     return this.isMainnet ? HL_API.MAINNET_EXCHANGE : HL_API.TESTNET_EXCHANGE;
   }
 
-  async _infoRequest(body) {
-    const response = await fetch(this._infoUrl(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) throw new Error(`HL API error: ${response.status} ${response.statusText}`);
-    return response.json();
+  async _request(url, body, write = false) {
+    const controller = new AbortController();
+    let timer;
+    try {
+      const timeout = new Promise((_, reject) => { timer = setTimeout(() => {
+        controller.abort(); reject(write ? new UnknownExecutionError() : new Error('Info request timed out'));
+      }, this.requestTimeoutMs); });
+      const request = (async () => {
+        const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
+        if (!response.ok) throw write ? new UnknownExecutionError() : new Error(`HL API HTTP ${response.status}`);
+        return await response.json();
+      })();
+      return await Promise.race([request, timeout]);
+    } catch (error) {
+      if (write && !error.executionUnknown) throw new UnknownExecutionError();
+      throw error;
+    } finally { clearTimeout(timer); }
   }
 
+  async _infoRequest(body) { return this._request(this._infoUrl(), body); }
+
   async _exchangeRequest(payload) {
-    const response = await fetch(this._exchangeUrl(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) {
-      const text = await response.text().catch(() => '');
-      throw new Error(`HL Exchange error ${response.status}: ${text}`);
-    }
-    return response.json();
+    return assertExchange(await this._request(this._exchangeUrl(), payload, true));
   }
 
   /**
    * Generate a unique monotonic nonce (millisecond timestamp).
    */
   _nonce() {
-    const ts = Date.now();
-    if (!this._lastNonce || ts > this._lastNonce) {
-      this._lastNonce = ts;
-    } else {
-      this._lastNonce++;
-    }
-    return this._lastNonce;
+    const key = `${this.network}:${this.wallet?.address.toLowerCase()}`;
+    const nonce = Math.max(Date.now(), (signerNonces.get(key) || 0) + 1);
+    signerNonces.set(key, nonce);
+    return nonce;
   }
 
   /**
@@ -266,61 +324,31 @@ export class HLClient {
    * Returns 10000 + universeIndex for the OrderWire `a` field.
    */
   async _resolveSpotAssetIndex(coin) {
-    // HIP-4 outcome coins use "#" prefix (e.g. "#90", "#110").
-    // Their asset ID = 100_000_000 + encoding (per HL docs "Asset IDs / Outcomes").
-    // This is DIFFERENT from regular spot coins (@90) which use 10_000 + universe.index.
-    if (coin.startsWith('#')) {
-      const encoding = parseInt(coin.slice(1), 10);
-      if (!isNaN(encoding)) {
-        return 100_000_000 + encoding;
-      }
-    }
-
-    // Regular spot coins — look up in spotMeta universe
-    const TTL = 5 * 60_000;
-    const now = Date.now();
-    if (!this._spotUniverseCache || now - this._spotUniverseCacheTs > TTL) {
-      const meta = await this._infoRequest({ type: 'spotMeta' });
-      this._spotUniverseCache = meta;
-      this._spotUniverseCacheTs = now;
-    }
-
-    const universe = this._spotUniverseCache?.universe || [];
-    const lookupName = coin.startsWith('@') ? coin : '@' + coin;
-
-    for (const entry of universe) {
-      const entryName = entry.name || '';
-      if (entryName === lookupName || entryName === coin || entryName.startsWith(lookupName + '/')) {
-        return 10000 + entry.index;
-      }
-    }
-
-    throw new Error(`Cannot resolve spot asset index for coin "${coin}". Not found in spot universe.`);
+    if (!isOutcomeCoin(coin)) throw new Error('Only canonical HIP-4 #/+ outcomes are supported; @ is ordinary spot');
+    return 100_000_000 + Number(coin.slice(1));
   }
 
   /**
    * Get szDecimals for an outcome coin (how many decimal places allowed for size).
    */
   async _getSzDecimals(coin) {
-    // Ensure cache is populated
     await this._resolveSpotAssetIndex(coin);
+    // Exact outcome metadata only. Absent explicit precision: whole shares and
+    // five price decimals are the conservative fallback, never an @ spot pair.
+    const spec = await this.getOutcomeSpec(coin);
+    const value = spec.sideSpecs?.[coinToOutcome(coin).side]?.szDecimals ?? spec.szDecimals;
+    if (value == null) return 0;
+    if (!Number.isInteger(value) || value < 0 || value > 8) throw new Error('Invalid outcome precision');
+    return value;
+  }
 
-    const universe = this._spotUniverseCache?.universe || [];
-    const tokens = this._spotUniverseCache?.tokens || [];
-    const lookupName = coin.startsWith('#') ? '@' + coin.slice(1) : coin;
-
-    for (const entry of universe) {
-      const entryName = entry.name || '';
-      if (entryName === lookupName || entryName === coin) {
-        const tokenIdx = Array.isArray(entry.tokens) ? entry.tokens[0] : null;
-        if (tokenIdx != null && tokens[tokenIdx]) {
-          return tokens[tokenIdx].szDecimals ?? 0;
-        }
-        break;
-      }
-    }
-
-    return 0;
+  async getOutcomeSpec(coin) {
+    const { outcomeId } = coinToOutcome(coin);
+    const meta = await this.getOutcomeMeta();
+    const spec = meta?.outcomes?.find(s => s.outcome === outcomeId);
+    if (!spec) throw new Error('Outcome metadata unavailable');
+    if (spec.quoteToken !== 'USDC') throw new Error('Outcome quoteToken must explicitly be USDC');
+    return spec;
   }
 
   /**
@@ -329,7 +357,7 @@ export class HLClient {
   async _roundSize(coin, size) {
     const szDecimals = await this._getSzDecimals(coin);
     const factor = Math.pow(10, szDecimals);
-    return Math.floor(size * factor) / factor;
+    return quantize(positive(size, 'size'), szDecimals);
   }
 
   // ─── Balance & Funding helpers ──────────────────────────────────
@@ -339,97 +367,70 @@ export class HLClient {
    * @returns {Promise<number>} withdrawable USDC in perp account
    */
   async getPerpBalance() {
-    try {
-      const addr = this.address;
-      if (!addr) return 0;
-      const state = await this._infoRequest({ type: 'clearinghouseState', user: addr });
-      const withdrawable = parseFloat(state?.withdrawable || '0');
-      return Number.isFinite(withdrawable) ? withdrawable : 0;
-    } catch (err) {
-      process.stderr.write(`[getPerpBalance] error: ${err.message}\n`);
-      return 0;
-    }
+    if (!this.address) return 0;
+    const state = await this._infoRequest({ type: 'clearinghouseState', user: this.address });
+    const value = Number(state?.withdrawable);
+    if (!Number.isFinite(value) || value < 0) throw new Error('Invalid withdrawable balance');
+    return value;
   }
 
-  /**
-   * Get spot USDC balance.
-   * @returns {Promise<number>} total USDC in spot account
-   */
   async getSpotUsdcBalance() {
-    try {
-      const addr = this.address;
-      if (!addr) return 0;
-      const data = await this._infoRequest({ type: 'spotClearinghouseState', user: addr });
-      const balances = data?.balances || [];
-      const usdc = balances.find(b =>
-        b.coin === 'USDC' || b.coin === 'USD' || b.coin === 'USDH'
-      );
-      const total = parseFloat(usdc?.total || usdc?.available || '0');
-      return Number.isFinite(total) ? total : 0;
-    } catch (err) {
-      process.stderr.write(`[getSpotUsdcBalance] error: ${err.message}\n`);
-      return 0;
-    }
+    if (!this.address) return 0;
+    const data = await this.getUserBalances();
+    if (!Array.isArray(data?.balances)) throw new Error('Invalid spot balances');
+    const usdc = data.balances.find(b => b.coin === 'USDC' && (b.token == null || b.token === 0));
+    if (!usdc) return 0;
+    const total = Number(usdc.total), hold = Number(usdc.hold);
+    if (!Number.isFinite(total) || !Number.isFinite(hold) || total < 0 || hold < 0) throw new Error('Invalid USDC balance/hold');
+    return Math.max(0, total - hold);
   }
 
-  /**
-   * Ensure the perp/USD-class account has enough funding for an outcome trade.
-   *
-   * Checks perp withdrawable first; if insufficient, transfers from spot USDC.
-   * NEVER throws — returns false if funding is impossible.
-   *
-   * @param {number} requiredUsdc — minimum USDC needed in perp account
-   * @returns {Promise<boolean>} true if funded, false if not enough funds
-   */
-  async ensureOutcomeFunding(requiredUsdc) {
-    try {
-      if (!requiredUsdc || requiredUsdc <= 0) return true;
-
-      // Round required to 2dp to avoid floating-point dust (e.g. 110.00000000000001)
-      const required = Math.ceil(requiredUsdc * 100) / 100;
-
-      const perpBal = await this.getPerpBalance();
-      process.stderr.write(`[ensureOutcomeFunding] required=${required}, perpBal=${perpBal}\n`);
-
-      if (perpBal >= required - 0.01) {
-        process.stderr.write(`[ensureOutcomeFunding] already funded\n`);
-        return true;
-      }
-
-      const spotBal = await this.getSpotUsdcBalance();
-      process.stderr.write(`[ensureOutcomeFunding] spotBal=${spotBal}\n`);
-
-      const deficit = required - perpBal;
-
-      if (spotBal <= 0) {
-        process.stderr.write(`[ensureOutcomeFunding] no spot USDC available, cannot fund\n`);
-        return perpBal > 0; // true if perp has *something* (partial), false if zero
-      }
-
-      // Transfer what we need (or all available if spot < deficit)
-      const transferAmt = Math.min(spotBal, Math.max(deficit, 0));
-      if (transferAmt < 0.01) {
-        process.stderr.write(`[ensureOutcomeFunding] transfer amount too small: ${transferAmt}\n`);
-        // Already close enough — floating point dust
-        return perpBal >= required - 0.01;
-      }
-
-      // Round to 2 decimal places (USDC precision)
-      const roundedAmt = Math.floor(transferAmt * 100) / 100;
-      process.stderr.write(`[ensureOutcomeFunding] transferring ${roundedAmt} USDC spot -> perp\n`);
-
-      await this.transferUsdClass(roundedAmt, true);
-      process.stderr.write(`[ensureOutcomeFunding] transfer successful\n`);
-
-      // Verify the transfer landed
-      const newPerpBal = await this.getPerpBalance();
-      process.stderr.write(`[ensureOutcomeFunding] new perpBal=${newPerpBal}\n`);
-      return newPerpBal >= required * 0.95; // 5% tolerance for rounding
-    } catch (err) {
-      process.stderr.write(`[ensureOutcomeFunding] error: ${err.message}\n`);
-      return false;
-    }
+  async getAccountAbstraction() {
+    const mode = await this._infoRequest({ type: 'userAbstraction', user: this.address });
+    if (!['disabled', 'default', 'dexAbstraction', 'unifiedAccount', 'portfolioMargin'].includes(mode)) throw new Error('Unknown account abstraction');
+    return mode;
   }
+
+  async getAvailableUsdc() {
+    const mode = await this.getAccountAbstraction();
+    // No synthetic credit/double-counting across mirrored unified ledgers.
+    if (['unifiedAccount', 'portfolioMargin'].includes(mode)) return Math.min(await this.getSpotUsdcBalance(), await this.getPerpBalance());
+    const spot = await this.getSpotUsdcBalance();
+    return this.authMode === 'agent' ? spot : spot + await this.getPerpBalance();
+  }
+
+  _requireOwner() {
+    if (!this.wallet) throw new Error('No wallet configured for signing');
+    if (this.authMode === 'agent' || this.address !== this.wallet.address) throw new Error('Owner action required: use the official Hyperliquid app to transfer or withdraw. Agent cannot sign this action.');
+  }
+
+  async ensureOutcomeFunding(requiredUsdc, coin) {
+    const required = positive(requiredUsdc, 'funding amount');
+    if (coin) await this.getOutcomeSpec(coin);
+    const mode = await this.getAccountAbstraction();
+    if (['unifiedAccount', 'portfolioMargin'].includes(mode)) return await this.getAvailableUsdc() >= required;
+    const spot = await this.getSpotUsdcBalance();
+    if (spot >= required) return true;
+    this._requireOwner();
+    const deficit = Math.ceil((required - spot) * 1e6) / 1e6;
+    if (await this.getPerpBalance() < deficit) return false;
+    await this.transferUsdClass(deficit, false);
+    return await this.getSpotUsdcBalance() >= required;
+  }
+
+  async ensureWithdrawalFunding(amount) {
+    this._requireOwner();
+    amount = positive(amount, 'withdraw amount');
+    const mode = await this.getAccountAbstraction();
+    const perp = await this.getPerpBalance();
+    if (perp >= amount) return true;
+    if (['unifiedAccount', 'portfolioMargin'].includes(mode)) return false;
+    const deficit = Math.ceil((amount - perp) * 1e6) / 1e6;
+    if (await this.getSpotUsdcBalance() < deficit) return false;
+    await this.transferUsdClass(deficit, true);
+    return await this.getPerpBalance() >= amount;
+  }
+
 
   // ─── Info endpoints ─────────────────────────────────────────────
 
@@ -466,6 +467,11 @@ export class HLClient {
       : orders;
   }
 
+  async getOrderStatus(oid, address = this.address) {
+    if (!address || !Number.isSafeInteger(Number(oid)) || Number(oid) <= 0) throw new Error('Invalid order lookup');
+    return this._infoRequest({ type: 'orderStatus', user: address, oid: Number(oid) });
+  }
+
   async getCandles(coin, interval, startTime, endTime) {
     return this._infoRequest({
       type: 'candleSnapshot',
@@ -475,50 +481,92 @@ export class HLClient {
 
   // ─── Exchange endpoints ─────────────────────────────────────────
 
-  /**
-   * Place an order on the spot orderbook.
-   *
-   * @param {string} coin - e.g. "#21460"
-   * @param {boolean} isBuy - true for buy, false for sell
-   * @param {number|string} price - limit price
-   * @param {number|string} size - order size (in outcome shares)
-   * @param {string} orderType - 'Limit' (GTC) or 'Market' (IOC with slippage)
-   * @returns {Promise<object>} Exchange response
-   */
-  async placeOrder(coin, isBuy, price, size, orderType = 'Limit') {
-    if (!this.wallet) throw new Error('No wallet configured for signing');
+  _orderTypeToWire(orderType) {
+    if (orderType === 'Market') {
+      return { limit: { tif: 'Ioc' } };
+    }
+    return { limit: { tif: 'Gtc' } };
+  }
 
-    // Round size to allowed decimals for this coin
-    size = await this._roundSize(coin, Number(size));
-    if (size <= 0) throw new Error('Order size too small after rounding');
+  async _buildOrderWire({ coin, isBuy, price, size, orderType = 'Limit', maxSpend }) {
+    price = positive(price, 'price'); size = positive(size, 'size');
+    if (price >= 1 || typeof isBuy !== 'boolean' || !['Limit', 'Market'].includes(orderType)) throw new Error('Invalid outcome order');
+    coin = normalizeOutcomeCoin(coin);
+    const roundedSize = await this._roundSize(coin, size);
+    if (roundedSize <= 0) throw new Error('Order size too small after rounding');
 
     const assetIndex = await this._resolveSpotAssetIndex(coin);
+    const decimals = Math.min(5, 8 - await this._getSzDecimals(coin));
+    const factor = 10 ** decimals;
+    const roundedPrice = quantize(price, decimals, !isBuy);
+    if (roundedPrice <= 0 || roundedPrice >= 1) throw new Error('Price outside outcome tick range');
+    const formattedPrice = removeTrailingZeros(roundedPrice.toFixed(decimals));
+    if (maxSpend != null && isBuy && roundedPrice * roundedSize * (1 + FEE_RESERVE) > positive(maxSpend, 'budget')) throw new Error('Reviewed budget exceeded');
 
-    // Debug log for troubleshooting
-    process.stderr.write(`[placeOrder] ${JSON.stringify({ coin, isBuy, price, size, orderType, assetIndex })}\n`);
 
-    // Build order_type
-    let ot;
-    if (orderType === 'Market') {
-      ot = { limit: { tif: 'Ioc' } };
-    } else {
-      ot = { limit: { tif: 'Gtc' } };
-    }
-
-    const formattedPrice = formatPriceForHl(price);
-
-    const orderWire = orderToWire({
+    return orderToWire({
       is_buy: isBuy,
       limit_px: formattedPrice,
-      sz: size,
-      order_type: ot,
+      sz: roundedSize,
+      order_type: this._orderTypeToWire(orderType),
       reduce_only: false,
     }, assetIndex);
+  }
+
+  async prepareOrder({ coin, isBuy, price, size, budget, orderType = 'Limit' }) {
+    if (isBuy && budget != null) {
+      budget = positive(budget, 'budget');
+      size = budget / (positive(price, 'price') * (1 + FEE_RESERVE));
+    }
+    const wire = await this._buildOrderWire({ coin, isBuy, price, size, orderType });
+    const notional = Number(wire.p) * Number(wire.s);
+    if (notional < 10) throw new Error('Minimum $10 notional after rounding');
+    const maxSpend = isBuy ? quantize(notional * (1 + FEE_RESERVE), 6, true) : null;
+    if (budget != null && maxSpend > budget) throw new Error('Reviewed budget exceeded after rounding');
+    return { coin: normalizeOutcomeCoin(coin), isBuy, price: Number(wire.p), size: Number(wire.s), orderType, maxSpend };
+  }
+
+  async prepareMarketOrder(coin, isBuy, amount, slippagePct = DEFAULTS.ORDER_SLIPPAGE_PERCENT) {
+    if (!Number.isFinite(slippagePct) || slippagePct < 0 || slippagePct > 100) throw new Error('Invalid slippage');
+    const book = await this.getOrderbook(coin);
+    const ref = positive(book?.levels?.[isBuy ? 1 : 0]?.[0]?.px, 'book price');
+    if (ref >= 1) throw new Error('Invalid book price');
+    const price = isBuy ? Math.min(ref * (1 + slippagePct / 100), 0.99999) : Math.max(ref * (1 - slippagePct / 100), 0.00001);
+    return this.prepareOrder({ coin, isBuy, price, ...(isBuy ? { budget: amount } : { size: amount }), orderType: 'Market' });
+  }
+
+  async _checkFeeReserve() {
+    const fees = await this._infoRequest({ type: 'userFees', user: this.address });
+    const rate = Number(fees?.userSpotCrossRate);
+    if (!Number.isFinite(rate) || rate < 0 || rate > FEE_RESERVE) throw new Error('Cannot verify trading fees within reviewed reserve');
+  }
+
+  /**
+   * Place multiple orders in one signed HyperLiquid order action.
+   *
+   * @param {Array<{coin:string,isBuy:boolean,price:number|string,size:number|string,orderType?:string}>} orderRequests
+   * @param {object} options
+   * @param {string} options.grouping - HyperLiquid grouping mode; defaults to 'na'
+   * @param {boolean} options.throwOnError - throw if any status has error; defaults true
+   * @returns {Promise<object>} Exchange response
+   */
+  async placeOrders(orderRequests, { grouping = 'na', throwOnError = true } = {}) {
+    if (!this.wallet) throw new Error('No wallet configured for signing');
+    if (!Array.isArray(orderRequests) || orderRequests.length === 0) {
+      throw new Error('No orders provided');
+    }
+
+    if (orderRequests.some(r => r.isBuy && r.maxSpend != null)) await this._checkFeeReserve();
+    const orderWires = [];
+    for (const request of orderRequests) {
+      orderWires.push(await this._buildOrderWire(request));
+    }
 
     const action = {
       type: 'order',
-      orders: [orderWire],
-      grouping: 'na',
+      orders: orderWires,
+      grouping,
+      ...(this.builder ? { builder: this.builder } : {}),
     };
 
     const nonce = this._nonce();
@@ -537,17 +585,32 @@ export class HLClient {
       vaultAddress: null,
     };
 
-    process.stderr.write(`[placeOrder] wire: ${JSON.stringify(orderWire)}\n`);
 
     const result = await this._exchangeRequest(payload);
-    const orderError = getFirstOrderError(result);
-    if (orderError) {
-      const error = new Error(orderError);
+    const orderErrors = orderStatuses(result, orderWires.length)
+      .map((status, index) => ({ index, error: status?.error }))
+      .filter(entry => entry.error);
+    if (throwOnError && orderErrors.length > 0) {
+      const error = new Error(orderErrors.map(entry => entry.error).join('; '));
       error.hlResult = result;
+      error.orderErrors = orderErrors;
       throw error;
     }
-    process.stderr.write(`[placeOrder] result: ${JSON.stringify(result)}\n`);
     return result;
+  }
+
+  /**
+   * Place an order on the spot orderbook.
+   *
+   * @param {string} coin - e.g. "#21460"
+   * @param {boolean} isBuy - true for buy, false for sell
+   * @param {number|string} price - limit price
+   * @param {number|string} size - order size (in outcome shares)
+   * @param {string} orderType - 'Limit' (GTC) or 'Market' (IOC with slippage)
+   * @returns {Promise<object>} Exchange response
+   */
+  async placeOrder(coin, isBuy, price, size, orderType = 'Limit') {
+    return this.placeOrders([{ coin, isBuy, price, size, orderType }]);
   }
 
   /**
@@ -560,48 +623,28 @@ export class HLClient {
    * @param {number} [slippagePct=2] - slippage percentage
    * @returns {Promise<object>}
    */
-  async placeMarketOrder(coin, isBuy, size, slippagePct = DEFAULTS.ORDER_SLIPPAGE_PERCENT) {
-    // Get current price from orderbook
-    const book = await this.getOrderbook(coin);
-    const [bids, asks] = book?.levels || [[], []];
-
-    let refPrice;
-    if (isBuy) {
-      refPrice = asks?.[0]?.px ? Number(asks[0].px) : null;
-    } else {
-      refPrice = bids?.[0]?.px ? Number(bids[0].px) : null;
-    }
-
-    if (!refPrice || refPrice <= 0) {
-      throw new Error('Cannot determine market price — orderbook is empty');
-    }
-
-    // Use IOC (Immediate-Or-Cancel) with generous slippage for true market orders.
-    // Price is clamped to [0.00001, 0.99999] for outcome markets.
-    const limitPrice = isBuy
-      ? Math.min(refPrice * (1 + slippagePct / 100), 0.99999)
-      : Math.max(refPrice * (1 - slippagePct / 100), 0.00001);
-
-    const roundedPrice = Number(limitPrice.toFixed(5));
-
+  async placeMarketOrder(coin, isBuy, size, slippagePct = DEFAULTS.ORDER_SLIPPAGE_PERCENT, options = {}) {
+    const reviewed = options.reviewed;
+    if (!reviewed || reviewed.coin !== normalizeOutcomeCoin(coin) || reviewed.isBuy !== isBuy || reviewed.size !== size || reviewed.orderType !== 'Market') throw new Error('Market order requires a reviewed price and budget cap');
     try {
-      return await this.placeOrder(coin, isBuy, roundedPrice, size, 'Market');
+      return await this.placeOrders([reviewed]);
     } catch (err) {
-      // Fallback: if IOC fails, retry as GTC limit (will rest on book).
-      // Known IOC rejection reasons:
-      // - "80% from reference price" — stale markPx
-      // - "could not immediately match" — no resting orders at this price
-      const msg = String(err?.message || '').toLowerCase();
-      if (msg.includes('80%') || msg.includes('reference price') || msg.includes('could not immediately match')) {
-        process.stderr.write(`[placeMarketOrder] IOC rejected (${msg}), falling back to GTC limit\n`);
-        return this.placeOrder(coin, isBuy, roundedPrice, size, 'Limit');
+      // Only a complete single IOC rejection proves no exposure was accepted.
+      // Never retry a timeout, partial response or ambiguous HTTP failure.
+      const statuses = err.hlResult ? orderStatuses(err.hlResult, 1) : [];
+      const msg = String(statuses[0]?.error || '').toLowerCase();
+      if (options.allowRestingFallback === true && !err.executionUnknown && (msg.includes('80%') || msg.includes('reference price') || msg.includes('could not immediately match'))) {
+        return this.placeOrders([{ ...reviewed, orderType: 'Limit' }]);
       }
       throw err;
     }
   }
 
+
   async transferUsdClass(amount, toPerp) {
-    if (!this.wallet) throw new Error('No wallet configured for signing');
+    this._requireOwner();
+    amount = positive(amount, 'transfer amount');
+    if (typeof toPerp !== 'boolean') throw new Error('Invalid transfer direction');
 
     const nonce = this._nonce();
     const action = {
@@ -626,7 +669,9 @@ export class HLClient {
       this.isMainnet,
     );
 
-    return this._exchangeRequest({ action, nonce, signature });
+    const result = assertExchange(await this._exchangeRequest({ action, nonce, signature }));
+    if (result?.response?.type !== 'default') throw new UnknownExecutionError();
+    return result;
   }
 
   async transferBetweenSpotAndPerp(amount, toPerp) {
@@ -634,13 +679,15 @@ export class HLClient {
   }
 
   /**
-   * Withdraw USDC from spot account to an external address on HyperLiquid L1.
+   * Request a USDC bridge withdrawal from the standard perp ledger to Arbitrum.
    * @param {string} destination - 0x-prefixed destination address
    * @param {number|string} amount - USDC amount to withdraw
    * @returns {Promise<object>} Exchange response
    */
   async withdraw(destination, amount) {
-    if (!this.wallet) throw new Error('No wallet configured for signing');
+    this._requireOwner();
+    amount = positive(amount, 'withdraw amount');
+    if (!ethers.utils.isAddress(destination) || destination === ethers.constants.AddressZero) throw new Error('Invalid destination');
 
     const nonce = this._nonce();
     const action = {
@@ -665,7 +712,9 @@ export class HLClient {
       this.isMainnet,
     );
 
-    return this._exchangeRequest({ action, nonce, signature });
+    const result = assertExchange(await this._exchangeRequest({ action, nonce, signature }));
+    if (result?.response?.type !== 'default') throw new UnknownExecutionError();
+    return result;
   }
 
   /**
@@ -674,69 +723,46 @@ export class HLClient {
    * @param {number} orderId - Order OID
    */
   async cancelOrder(coin, orderId) {
-    if (!this.wallet) throw new Error('No wallet configured for signing');
-
-    const assetIndex = await this._resolveSpotAssetIndex(coin);
-
-    const action = {
-      type: 'cancel',
-      cancels: [{ a: assetIndex, o: Number(orderId) }],
-    };
-
-    const nonce = this._nonce();
-    const signature = await signL1Action(
-      this.wallet,
-      action,
-      null,
-      nonce,
-      this.isMainnet,
-    );
-
-    return this._exchangeRequest({ action, nonce, signature, vaultAddress: null });
+    return this.cancelOrders([{ coin, oid: orderId }]);
   }
 
-  /**
-   * Cancel all open orders.
-   */
-  async cancelAllOrders() {
+  async cancelOrders(orders) {
     if (!this.wallet) throw new Error('No wallet configured for signing');
-
-    const openOrders = await this.getOpenOrders();
-    if (!openOrders || openOrders.length === 0) {
-      return { status: 'ok', message: 'No open orders to cancel' };
-    }
-
+    if (!Array.isArray(orders) || !orders.length) throw new Error('No reviewed orders');
     const cancels = [];
-    for (const order of openOrders) {
-      try {
-        const assetIndex = await this._resolveSpotAssetIndex(order.coin);
-        cancels.push({ a: assetIndex, o: Number(order.oid) });
-      } catch {
-        // Skip orders for unknown coins
-      }
+    for (const order of orders) {
+      const oid = Number(order.oid);
+      if (!Number.isSafeInteger(oid) || oid <= 0) throw new Error('Invalid order ID');
+      cancels.push({ a: await this._resolveSpotAssetIndex(order.coin), o: oid });
     }
-
-    if (cancels.length === 0) {
-      return { status: 'ok', message: 'No cancellable orders found' };
-    }
-
     const action = { type: 'cancel', cancels };
     const nonce = this._nonce();
-    const signature = await signL1Action(
-      this.wallet,
-      action,
-      null,
-      nonce,
-      this.isMainnet,
-    );
-
-    return this._exchangeRequest({ action, nonce, signature, vaultAddress: null });
+    const signature = await signL1Action(this.wallet, action, null, nonce, this.isMainnet);
+    const result = assertExchange(await this._exchangeRequest({ action, nonce, signature, vaultAddress: null }));
+    const statuses = result?.response?.data?.statuses;
+    if (result?.response?.type !== 'cancel' || !Array.isArray(statuses) || statuses.length !== cancels.length) throw new UnknownExecutionError('Cancellation status incomplete; inspect the exact OIDs before retrying.');
+    const failures = statuses.map((s, i) => s === 'success' ? null : { oid: cancels[i].o, error: s?.error || 'Unknown cancel status' }).filter(Boolean);
+    const remaining = await this.getOpenOrders();
+    if (!Array.isArray(remaining)) throw new UnknownExecutionError('Cancel readback unavailable');
+    const open = remaining.filter(o => cancels.some(c => c.o === Number(o.oid)));
+    if (failures.length || open.length) {
+      const error = new Error(`Cancellation not fully verified. OIDs: ${[...new Set([...failures.map(f => f.oid), ...open.map(o => o.oid)])].join(', ')}`);
+      error.cancelErrors = failures; error.hlResult = result; throw error;
+    }
+    return { ...result, verifiedCancelled: cancels.map(c => c.o) };
   }
+
+  async cancelAllOrders(reviewedOrders) {
+    const orders = reviewedOrders || (await this.getOpenOrders()).filter(o => isOutcomeCoin(o.coin));
+    if (!orders.length) return { status: 'ok', verifiedCancelled: [] };
+    return this.cancelOrders(orders);
+  }
+
 
   // ─── Factory ────────────────────────────────────────────────────
 
-  static async create(privateKey, network = 'testnet') {
-    const client = new HLClient(privateKey, network);
+  static async create(privateKey, network = 'testnet', options = {}) {
+    const client = new HLClient(privateKey, network, options);
     return client;
   }
 

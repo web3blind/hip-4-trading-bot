@@ -1,7 +1,7 @@
 import { ethers } from 'ethers';
 import { randomBytes, createCipheriv, createDecipheriv, scryptSync } from 'crypto';
 import { createContext, safeLogInfo, safeLogWarn } from './logger.js';
-import { saveConfig } from './config.js';
+import { saveConfig, loadConfig } from './config.js';
 
 // Lazy import for node-machine-id (CommonJS compatibility)
 async function getMachineIdModule() {
@@ -201,29 +201,33 @@ export async function getDecryptedPrivateKey() {
  * Initialize a new wallet and save to config (convenience wrapper).
  * Called on first run.
  */
-export async function initializeWallet() {
-  const ctx = createContext('auth', 'initializeWallet');
-  safeLogInfo(ctx, 'Initializing new wallet');
+let walletInitialization = Promise.resolve();
+export function initializeWallet() {
+  const run = walletInitialization.then(async () => {
+    const config = await loadConfig();
+    if (config.walletAddress || config.encrypted?.privateKey || config.agentAddress) {
+      throw new Error('Wallet already configured; refusing to overwrite key or address');
+    }
+    const { walletAddress, encryptedPrivateKey } = await generateWallet();
+    await saveConfig({ ...config, authMode: 'wallet', agentAddress: '', walletAddress,
+      encrypted: { ...config.encrypted, privateKey: encryptedPrivateKey } });
+    return { address: walletAddress, warning: `New wallet: ${walletAddress}\nExport and save its private key securely.` };
+  });
+  walletInitialization = run.catch(() => {});
+  return run;
+}
 
-  const { walletAddress, encryptedPrivateKey } = await generateWallet();
-
-  const config = {
-    encrypted: {
-      privateKey: encryptedPrivateKey,
-    },
-    walletAddress,
-    language: '',
-    notifications: {
-      priceChangePercent: 10,
-      priceRepeatStepPercent: 2,
-      alertCooldownSeconds: 300,
-    },
-  };
-
-  await saveConfig(config);
-
-  return {
-    address: walletAddress,
-    warning: `⚠️ WARNING!\nNew wallet created for HyperLiquid.\nAddress: ${walletAddress}\n\nThis is a NEW wallet. Fund it separately.\nDO NOT use your main wallet!\n\nExport and save the private key (Settings → Export Key).\nAccess may be lost if the OS is reinstalled or moved to a new device.`,
-  };
+/** Decrypt the actual stored signer and fail closed on identity mismatch. */
+export async function validateWalletConfig(config) {
+  const privateKey = await getPrivateKey(config);
+  const signer = new ethers.Wallet(privateKey).address;
+  const mode = config.authMode || 'wallet';
+  if (!['wallet', 'agent'].includes(mode)) throw new Error('Invalid auth mode');
+  if (!ethers.utils.isAddress(config.walletAddress)) throw new Error('Invalid owner address');
+  const expected = mode === 'agent' ? config.agentAddress : config.walletAddress;
+  if (!ethers.utils.isAddress(expected) || signer.toLowerCase() !== expected.toLowerCase()) {
+    throw new Error('Stored signer does not match configured identity');
+  }
+  if (!['testnet', 'mainnet'].includes(config.hlNetwork || 'testnet')) throw new Error('Invalid network');
+  return privateKey;
 }

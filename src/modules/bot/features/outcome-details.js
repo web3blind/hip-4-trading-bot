@@ -6,7 +6,7 @@
  * Provides trade action buttons: Buy/Sell YES/NO.
  */
 
-import { getOutcomeById } from '../../database.js';
+import { getCachedOutcome, fetchAndCacheOutcomes } from './outcomes.js';
 import { loadConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
 import { outcomeDetailKeyboard, backKeyboard } from '../ui/keyboards.js';
@@ -22,36 +22,10 @@ import { ORDERBOOK_DEPTH } from '../constants.js';
  * @returns {object} { outcome, orderbook, prices }
  */
 export async function fetchOutcomeDetails(hlClient, outcomeId) {
-  // Try to get from database first
-  let outcome = getOutcomeById(outcomeId);
-
-  // If not in DB, fetch fresh metadata
-  if (!outcome) {
-    const meta = await hlClient.getOutcomeMeta();
-    const universe = meta?.universe || [];
-
-    // Find entries for this outcomeId
-    const yesCoin = toCoin(outcomeId, 0);
-    const noCoin = toCoin(outcomeId, 1);
-
-    const yesEntry = universe.find(e => (e.name || e.coin) === yesCoin);
-    const noEntry = universe.find(e => (e.name || e.coin) === noCoin);
-
-    if (!yesEntry && !noEntry) {
-      return null;
-    }
-
-    outcome = {
-      outcome_id: outcomeId,
-      outcomeId,
-      question: yesEntry?.fullName || noEntry?.fullName || `Outcome #${outcomeId}`,
-      description: yesEntry?.description || noEntry?.description || '',
-      sides: [
-        { side: 0, coin: yesCoin },
-        { side: 1, coin: noCoin },
-      ],
-    };
-  }
+  // Live outcomeMeta (not legacy universe/SQLite) defines availability and quote token.
+  await fetchAndCacheOutcomes(hlClient);
+  const outcome = getCachedOutcome(outcomeId);
+  if (!outcome || outcome.status !== 'active') return null;
 
   // Fetch mid prices
   let prices = { yes: null, no: null };

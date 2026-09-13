@@ -1,4 +1,4 @@
-import 'dotenv/config';
+if (!process.env.HIP4_DATA_DIR) await import('dotenv/config');
 import { loadConfig, ensureConfigFileExists } from './modules/config.js';
 import { initBot, startBot, stopBot } from './modules/bot/bot.js';
 import { initDatabase } from './modules/database.js';
@@ -13,7 +13,9 @@ import { startWorkers, stopWorkers } from './modules/workers.js';
 import { applyProxyRuntime } from './modules/proxy.js';
 import { HLClient } from './modules/hyperliquid.js';
 import { getDecryptedPrivateKey } from './modules/auth.js';
-import { setHLClient } from './modules/bot/runtime.js';
+import { activateHLClient, createConfiguredHLClient } from './modules/bot/runtime.js';
+import { validateWalletConfig } from './modules/auth.js';
+import { acquireRuntimeLock } from './modules/process-lock.js';
 
 // Patch console first to catch any SDK secret leakage
 patchConsoleForRedaction();
@@ -32,13 +34,13 @@ async function shutdown(signal = 'unknown', exitCode = 0) {
   safeLogInfo(ctx, 'Shutting down application', { signal, exitCode });
 
   try {
-    stopWorkers();
+    await stopWorkers();
   } catch (error) {
     safeLogError(ctx, error, { stage: 'stopWorkers' });
   }
 
   try {
-    stopBot();
+    await stopBot();
   } catch (error) {
     safeLogError(ctx, error, { stage: 'stopBot' });
   }
@@ -110,6 +112,7 @@ async function runBootstrap() {
   const testEncrypted = await encrypt('test-value', machineKey);
   const testDecrypted = await decrypt(testEncrypted, machineKey);
   if (testDecrypted !== 'test-value') throw new Error('Encrypt/decrypt round-trip failed');
+  if (config.walletAddress || config.encrypted?.privateKey || config.agentAddress) await validateWalletConfig(config);
   safeLogInfo(ctx, 'auth.js OK');
 
   safeLogInfo(ctx, 'Bootstrap OK');
@@ -132,6 +135,7 @@ async function runBot() {
     throw new Error('TELEGRAM_ALLOWED_USER_ID not set in environment');
   }
 
+  await acquireRuntimeLock();
   // 1) Init database
   safeLogInfo(ctx, 'Initializing database');
   initDatabase();
@@ -147,17 +151,15 @@ async function runBot() {
 
   // 3) Init HyperLiquid client (if wallet is configured)
   let hlClient = null;
-  if (config?.walletAddress && config?.encrypted?.privateKey) {
+  if (config?.walletAddress || config?.encrypted?.privateKey || config?.agentAddress) {
     try {
       safeLogInfo(ctx, 'Initializing HyperLiquid client');
-      const privateKey = await getDecryptedPrivateKey();
       const network = config.hlNetwork || 'testnet';
-      hlClient = await HLClient.create(privateKey, network);
-      setHLClient(hlClient);
+      hlClient = await createConfiguredHLClient(config);
       safeLogInfo(ctx, 'HyperLiquid client initialized', { network });
     } catch (error) {
       safeLogError(ctx, error, { stage: 'hlClientInit' });
-      safeLogInfo(ctx, 'Continuing without HyperLiquid client (wallet may not be configured)');
+      throw error;
     }
   } else {
     safeLogInfo(ctx, 'Wallet not configured — skipping HyperLiquid client init');
@@ -168,21 +170,9 @@ async function runBot() {
   const botInstance = await initBot(botToken, allowedUserId);
   safeLogInfo(ctx, 'Bot initialized');
 
-  // 5) Start bot polling
-  safeLogInfo(ctx, 'Starting bot');
-  startBot();
-
-  // 6) Start workers (if HL client is available)
-  if (hlClient) {
-    safeLogInfo(ctx, 'Starting background workers');
-    startWorkers({
-      hlClient,
-      bot: botInstance,
-      chatId: allowedUserId,
-    });
-  } else {
-    safeLogInfo(ctx, 'Skipping workers (no HyperLiquid client)');
-  }
+  // Activate scoped database/client/workers before accepting updates.
+  await activateHLClient(hlClient);
+  await startBot({ onFatal: () => shutdown('polling_error', 1) });
 
   safeLogInfo(ctx, 'Bot is running');
 }

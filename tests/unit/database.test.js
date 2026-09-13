@@ -1,6 +1,12 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import {
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+const root = mkdtempSync(join(tmpdir(), 'hip4-db-test-'));
+process.env.HIP4_DATA_DIR = root;
+process.env.LOG_TO_FILE = 'false';
+const {
   initDatabase,
   closeDatabase,
   upsertOutcome,
@@ -14,7 +20,7 @@ import {
   getOrders,
   getOrderByOid,
   deleteOrder,
-} from '../../src/modules/database.js';
+} = await import('../../src/modules/database.js');
 
 describe('database', () => {
   before(() => {
@@ -25,6 +31,7 @@ describe('database', () => {
 
   after(() => {
     closeDatabase();
+    rmSync(root, { recursive: true, force: true });
   });
 
   describe('outcomes', () => {
@@ -121,22 +128,22 @@ describe('database', () => {
         orderType: 'Limit',
         price: '0.73',
         size: '10',
-        oid: 'test-order-1',
+        oid: '9000001',
         status: 'open',
       });
 
       const orders = getOrders();
       assert.ok(orders.length >= 1);
-      const order = orders.find(o => o.oid === 'test-order-1');
+      const order = orders.find(o => o.oid === '9000001');
       assert.ok(order);
       assert.equal(order.coin, '#21460');
       assert.equal(order.side, 'buy');
     });
 
     it('getOrderByOid returns the correct order', () => {
-      const order = getOrderByOid('test-order-1');
+      const order = getOrderByOid('9000001');
       assert.ok(order);
-      assert.equal(order.oid, 'test-order-1');
+      assert.equal(order.oid, '9000001');
     });
 
     it('getOrders filters by status', () => {
@@ -148,8 +155,8 @@ describe('database', () => {
     });
 
     it('deletes an order', () => {
-      deleteOrder('test-order-1');
-      const order = getOrderByOid('test-order-1');
+      deleteOrder('9000001');
+      const order = getOrderByOid('9000001');
       assert.equal(order, null);
     });
   });

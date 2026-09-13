@@ -4,19 +4,7 @@ import { getTranslator } from '../../i18n.js';
 import { getOutcomeByCoin } from '../../database.js';
 import { createContext, safeLogError } from '../../logger.js';
 import { busyLocks } from '../runtime.js';
-
-function isOutcomeToken(coin) {
-  if (!coin) return false;
-  const c = String(coin).trim();
-  return c.startsWith('#') || c.startsWith('+') || c.startsWith('@');
-}
-
-/** Normalize any outcome coin variant (+110, @110) to canonical #-form */
-function normalizeOutcomeCoin(coin) {
-  const c = String(coin).trim();
-  if (c.startsWith('+') || c.startsWith('@')) return '#' + c.slice(1);
-  return c;
-}
+import { isOutcomeCoin as isOutcomeToken, normalizeOutcomeCoin } from '../../hl-encoding.js';
 
 function resolveSide(coin, outcome) {
   if (!outcome || !outcome.sides) return 'Unknown';
@@ -35,9 +23,7 @@ function findOutcomeForPosition(coin) {
   const norm = normalizeOutcomeCoin(coin);
   return getOutcomeByCoin(coin)
     || getOutcomeByCoin(norm)
-    || getOutcomeByCoin(String(coin).replace('@', '#'))
     || getOutcomeByCoin(String(coin).replace('+', '#'))
-    || getOutcomeByCoin(String(coin).replace('#', '@'))
     || getOutcomeByCoin(String(coin).replace('#', '+'));
 }
 
@@ -61,7 +47,7 @@ export function createPositionsFeature(deps) {
     const config = await loadConfig();
     const t = await getTranslator(config.language || 'en');
 
-    if (!config.walletAddress) {
+    if (!hlClient?.address) {
       await ctx.editMessageText(t('wallet_not_configured_short'), {
         reply_markup: new InlineKeyboard().text(t('back'), 'back_menu'),
       });
@@ -74,7 +60,7 @@ export function createPositionsFeature(deps) {
     busyLocks.set(chatId, true);
 
     try {
-      const balances = await hlClient.getUserBalances(config.walletAddress);
+      const balances = await hlClient.getUserBalances(hlClient.address);
       const allBalances = Array.isArray(balances?.balances) ? balances.balances : [];
 
       const outcomePositions = allBalances.filter((b) => {

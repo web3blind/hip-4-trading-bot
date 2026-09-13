@@ -17,20 +17,16 @@ import { InlineKeyboard } from 'grammy';
 import { loadConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
 import { toCoin, SIDES } from '../../hl-encoding.js';
-import { HLClient } from '../../hyperliquid.js';
-import { getDecryptedPrivateKey } from '../../auth.js';
-import { userStates, busyLocks, hlClient as runtimeHLClient } from '../runtime.js';
+import { orderStatuses } from '../../hyperliquid.js';
+import { userStates, busyLocks, confirmationCallback, hlClient as runtimeHLClient } from '../runtime.js';
 import { mainMenuKeyboard } from '../ui/keyboards.js';
 import { getOutcomeById } from '../../database.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
 async function getHLClient() {
-  if (runtimeHLClient) return runtimeHLClient;
-  const config = await loadConfig();
-  const pk = await getDecryptedPrivateKey();
-  if (!pk) throw new Error('Wallet not configured');
-  return await HLClient.create(pk, config.hlNetwork || 'testnet');
+  if (!runtimeHLClient) throw new Error('Wallet not configured');
+  return runtimeHLClient;
 }
 
 async function getT() {
@@ -49,9 +45,7 @@ async function replaceOrReply(ctx, text, extra = {}) {
 /** Get total available USDC (spot + perp) */
 async function getUsdcBalance(client) {
   try {
-    const spotBal = await client.getSpotUsdcBalance();
-    const perpBal = await client.getPerpBalance();
-    return spotBal + perpBal;
+    return await client.getAvailableUsdc();
   } catch {
     return 0;
   }
@@ -79,7 +73,7 @@ async function fetchArbData(hlClient, outcomeId) {
   const szNo = Number(asks1[0].sz);
   const totalCost = askYes + askNo;
 
-  if (totalCost >= 0.999 || szYes < 10 || szNo < 10) return null;
+  if (![askYes, askNo, szYes, szNo].every(n => Number.isFinite(n) && n > 0) || totalCost >= 0.999 || szYes < 10 || szNo < 10) return null;
 
   return {
     askYes,
@@ -226,7 +220,7 @@ export function createSplitBuyFeature(_deps) {
       return;
     }
 
-    if (state.usdcBalance > 0 && usdcAmount > state.usdcBalance) {
+    if (usdcAmount > state.usdcBalance) {
       await ctx.reply(t('insufficient_balance', { balance: state.usdcBalance.toFixed(2) }), {
         reply_markup: new InlineKeyboard().text(t('cancel'), `outcome:${state.outcomeId}`),
       });
@@ -244,7 +238,7 @@ export function createSplitBuyFeature(_deps) {
     const chatId = ctx.chat?.id || ctx.callbackQuery?.message?.chat?.id;
     const { arb, outcomeId, outcomeName } = state;
 
-    const pairs = Math.floor(usdcAmount / arb.totalCost);
+    const pairs = Math.floor(usdcAmount / (arb.totalCost * 1.01));
     if (pairs < 1) {
       await replaceOrReply(ctx, t('error_invalid_amount') + `\n\n${t('split_total_cost')}: $${arb.totalCost.toFixed(4)} — need at least $${arb.totalCost.toFixed(2)}`, {
         reply_markup: new InlineKeyboard().text(t('back'), `outcome:${outcomeId}`),
@@ -254,32 +248,34 @@ export function createSplitBuyFeature(_deps) {
 
     // Cap by available liquidity
     const effectivePairs = Math.min(pairs, Math.floor(arb.maxPairs));
-    const totalCost = effectivePairs * arb.totalCost;
+    const client = await getHLClient();
+    const reviewed = await Promise.all([
+      client.prepareOrder({ coin: toCoin(outcomeId, 0), isBuy: true, price: arb.askYes, size: effectivePairs }),
+      client.prepareOrder({ coin: toCoin(outcomeId, 1), isBuy: true, price: arb.askNo, size: effectivePairs }),
+    ]);
+    const totalCost = reviewed.reduce((sum, r) => sum + r.maxSpend, 0);
+    if (totalCost > usdcAmount) throw new Error('Reviewed budget exceeded');
     const settlementValue = effectivePairs * 1.0;
-    const profit = settlementValue - totalCost;
+    const orderNotional = reviewed.reduce((sum, order) => sum + order.price * order.size, 0);
+    const profit = settlementValue - orderNotional;
+    const profitPct = profit / orderNotional * 100;
 
     const text =
       `${t('split_confirm_title')}\n\n` +
       `${outcomeName}\n\n` +
-      `${t('split_buy_yes')}: ${effectivePairs} shares @ $${arb.askYes.toFixed(4)}\n` +
-      `${t('split_buy_no')}: ${effectivePairs} shares @ $${arb.askNo.toFixed(4)}\n` +
-      `${t('split_total_cost')}: $${totalCost.toFixed(2)}\n` +
+      `${t('split_buy_yes')}: ${reviewed[0].size} shares @ $${reviewed[0].price}\n` +
+      `${t('split_buy_no')}: ${reviewed[1].size} shares @ $${reviewed[1].price}\n` +
+      `${t('split_review_total')}: $${totalCost.toFixed(2)}\n` +
       `${t('split_settlement_value')}: $${settlementValue.toFixed(2)}\n` +
-      `${t('split_guaranteed_profit')}: $${profit.toFixed(2)} (${arb.profitPct.toFixed(2)}%)\n\n` +
-      t('proceed');
+      `${t('split_guaranteed_profit')}: $${profit.toFixed(2)} (${profitPct.toFixed(2)}%)\n\n` +
+      t('split_nonatomic_risk') + '\n\n' + t('proceed');
 
-    const kb = new InlineKeyboard()
-      .text(t('confirm'), 'confirm_split_buy')
-      .text(t('cancel'), `outcome:${outcomeId}`);
-
-    userStates.set(chatId, {
-      ...state,
-      state: 'CONFIRMING_SPLIT_BUY',
-      pairs: effectivePairs,
-      totalCost,
-      settlementValue,
-      profit,
+    const callback = confirmationCallback(chatId, 'confirm_split_buy', {
+      ...state, state: 'CONFIRMING_SPLIT_BUY', pairs: effectivePairs,
+      totalCost, settlementValue, profit, reviewed,
     });
+    const kb = new InlineKeyboard().text(t('confirm'), callback)
+      .text(t('cancel'), `outcome:${outcomeId}`);
 
     await replaceOrReply(ctx, text, { reply_markup: kb });
   }
@@ -300,149 +296,25 @@ export function createSplitBuyFeature(_deps) {
       return;
     }
 
+    if (busyLocks.get(chatId)) return;
     busyLocks.set(chatId, true);
 
     try {
       const client = await getHLClient();
-      const { outcomeId, arb, pairs } = state;
-
-      // Auto-fund: ensure perp account has enough USDC
-      await replaceOrReply(ctx, t('checking_funding'));
-      const requiredUsdc = state.totalCost * 1.1;
-      const funded = await client.ensureOutcomeFunding(requiredUsdc);
-      if (!funded) {
-        await replaceOrReply(ctx, t('insufficient_funds_deposit'), {
-          reply_markup: mainMenuKeyboard(),
-        });
-        userStates.delete(chatId);
-        busyLocks.delete(chatId);
-        return;
-      }
-
-      // Re-verify arb still exists
-      const freshArb = await fetchArbData(client, outcomeId);
-      if (!freshArb || freshArb.totalCost >= 0.999) {
-        await replaceOrReply(ctx, t('split_no_arb'), {
-          reply_markup: new InlineKeyboard().text(t('back'), `outcome:${outcomeId}`),
-        });
-        userStates.delete(chatId);
-        busyLocks.delete(chatId);
-        return;
-      }
-
-      // Use the latest prices for execution
-      const execAskYes = freshArb.askYes;
-      const execAskNo = freshArb.askNo;
-      const execPairs = Math.min(pairs, Math.floor(freshArb.maxPairs));
-
-      if (execPairs < 1) {
-        await replaceOrReply(ctx, t('split_no_arb'), {
-          reply_markup: new InlineKeyboard().text(t('back'), `outcome:${outcomeId}`),
-        });
-        userStates.delete(chatId);
-        busyLocks.delete(chatId);
-        return;
-      }
-
-      const yesCoin = toCoin(outcomeId, SIDES.YES);
-      const noCoin = toCoin(outcomeId, SIDES.NO);
-
-      // Place YES buy order (limit at ask price)
-      await replaceOrReply(ctx, `${t('split_buy_title')}\n\n${t('split_buy_yes')}: ${execPairs} @ $${execAskYes.toFixed(4)}...`);
-
-      let yesResult = null;
-      let yesFilled = null;
-      let yesError = null;
-
-      try {
-        yesResult = await client.placeOrder(yesCoin, true, execAskYes, execPairs, 'Limit');
-        const yesStatuses = yesResult?.response?.data?.statuses || [];
-        yesFilled = yesStatuses.find(s => s.filled);
-        const yesResting = yesStatuses.find(s => s.resting);
-        const yesErr = yesStatuses.find(s => s.error);
-
-        if (yesErr) {
-          yesError = yesErr.error;
-        } else if (!yesFilled && yesResting) {
-          // Order is resting, not immediately filled — it may fill later but we continue
-          yesFilled = { filled: { totalSz: '0', avgPx: String(execAskYes) } };
-        }
-      } catch (err) {
-        yesError = err.message;
-      }
-
-      if (yesError) {
-        await replaceOrReply(ctx,
-          `${t('split_partial')}\n\n` +
-          `${t('split_buy_yes')}: FAILED — ${yesError}\n` +
-          `${t('split_buy_no')}: NOT ATTEMPTED`,
-          { reply_markup: new InlineKeyboard().text(t('back'), `outcome:${outcomeId}`).row().text(t('main_menu_btn'), 'back_menu') },
-        );
-        userStates.delete(chatId);
-        busyLocks.delete(chatId);
-        return;
-      }
-
-      // Place NO buy order (limit at ask price)
-      await replaceOrReply(ctx, `${t('split_buy_title')}\n\n${t('split_buy_yes')}: OK\n${t('split_buy_no')}: ${execPairs} @ $${execAskNo.toFixed(4)}...`);
-
-      let noResult = null;
-      let noFilled = null;
-      let noError = null;
-
-      try {
-        noResult = await client.placeOrder(noCoin, true, execAskNo, execPairs, 'Limit');
-        const noStatuses = noResult?.response?.data?.statuses || [];
-        noFilled = noStatuses.find(s => s.filled);
-        const noResting = noStatuses.find(s => s.resting);
-        const noErr = noStatuses.find(s => s.error);
-
-        if (noErr) {
-          noError = noErr.error;
-        } else if (!noFilled && noResting) {
-          noFilled = { filled: { totalSz: '0', avgPx: String(execAskNo) } };
-        }
-      } catch (err) {
-        noError = err.message;
-      }
-
-      if (noError) {
-        // YES succeeded but NO failed — warn user about one-sided position
-        const yesSz = yesFilled?.filled?.totalSz || execPairs;
-        await replaceOrReply(ctx,
-          `${t('split_partial')}\n\n` +
-          `${t('split_buy_yes')}: ${yesSz} shares @ $${execAskYes.toFixed(4)} — OK\n` +
-          `${t('split_buy_no')}: FAILED — ${noError}\n\n` +
-          `WARNING: You have a one-sided YES position. Consider selling or placing NO order manually.`,
-          { reply_markup: new InlineKeyboard().text(t('back'), `outcome:${outcomeId}`).row().text(t('main_menu_btn'), 'back_menu') },
-        );
-        userStates.delete(chatId);
-        busyLocks.delete(chatId);
-        return;
-      }
-
-      // Both succeeded
-      const yesSz = yesFilled?.filled?.totalSz || execPairs;
-      const noSz = noFilled?.filled?.totalSz || execPairs;
-      const yesAvgPx = yesFilled?.filled?.avgPx || execAskYes;
-      const noAvgPx = noFilled?.filled?.avgPx || execAskNo;
-      const actualCost = Number(yesSz) * Number(yesAvgPx) + Number(noSz) * Number(noAvgPx);
-      const actualSettlement = Math.min(Number(yesSz), Number(noSz));
-      const actualProfit = actualSettlement - actualCost;
-
-      const resultText =
-        `${t('split_executed')}\n\n` +
-        `${t('split_buy_yes')}: ${yesSz} shares @ $${Number(yesAvgPx).toFixed(4)}\n` +
-        `${t('split_buy_no')}: ${noSz} shares @ $${Number(noAvgPx).toFixed(4)}\n` +
-        `${t('split_total_cost')}: $${actualCost.toFixed(2)}\n` +
-        `${t('split_settlement_value')}: $${actualSettlement.toFixed(2)}\n` +
-        `${t('split_guaranteed_profit')}: $${actualProfit.toFixed(2)} (${(actualProfit / actualCost * 100).toFixed(2)}%)`;
-
-      await replaceOrReply(ctx, resultText, {
-        reply_markup: new InlineKeyboard()
-          .text(t('back'), `outcome:${outcomeId}`)
-          .row()
-          .text(t('main_menu_btn'), 'back_menu'),
+      const { outcomeId, reviewed } = state;
+      if (!Array.isArray(reviewed) || reviewed.length !== 2) throw new Error('Missing reviewed orders');
+      if (!await client.ensureOutcomeFunding(state.totalCost, reviewed[0].coin)) throw new Error(t('insufficient_funds_deposit'));
+      const result = await client.placeOrders(reviewed, { throwOnError: false });
+      const statuses = orderStatuses(result, 2);
+      const complete = statuses.every((s, i) => s.filled && Number(s.filled.totalSz) === reviewed[i].size);
+      const lines = statuses.map((s, i) => {
+        const label = i === 0 ? 'YES' : 'NO';
+        if (s.error) return `${label}: ${t('order_rejected', { error: s.error })}`;
+        if (s.resting) return `${label}: ${t('limit_gtc')} OID: ${s.resting.oid}`;
+        return `${label}: ${t('filled')} ${s.filled.totalSz} @ ${s.filled.avgPx}; OID: ${s.filled.oid}`;
+      });
+      await replaceOrReply(ctx, `${t(complete ? 'split_executed' : 'split_partial')}\n\n${lines.join('\n')}`, {
+        reply_markup: new InlineKeyboard().text(t('back'), `outcome:${outcomeId}`).text(t('view_orders'), 'orders:refresh'),
       });
     } catch (err) {
       process.stderr.write(`[split-buy] executeSplitBuy error: ${err.message}\n`);

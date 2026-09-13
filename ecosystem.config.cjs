@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: 'polymarket-trading-bot',
+      name: 'hip-4-telegram-bot',
       script: 'src/index.js',
       cwd: __dirname,
       exec_mode: 'fork',

@@ -9,7 +9,7 @@ import { InlineKeyboard } from 'grammy';
 import { loadConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
 import { createContext, safeLogError } from '../../logger.js';
-import { busyLocks, confirmationLocks, userStates, hlClient } from '../runtime.js';
+import { busyLocks, confirmationLocks, userStates, hlClient, consumeConfirmation, invalidateUserState, isAuthorizedPrivateContext, runtimeTransitioning } from '../runtime.js';
 import { mainMenuKeyboard, getMainMenuKeyboard } from '../ui/keyboards.js';
 
 import { showOutcomesList, showEventOutcomes } from '../features/outcomes.js';
@@ -43,10 +43,19 @@ async function editOrReply(ctx, text, extra = {}) {
 }
 
 export async function handleCallbackQuery(ctx) {
-  const data = ctx.callbackQuery.data;
+  if (!isAuthorizedPrivateContext(ctx) || runtimeTransitioning) return;
+  let data = ctx.callbackQuery.data;
   const chatId = ctx.chat.id;
 
   const isConfirm = data.startsWith('confirm_');
+  if (busyLocks.get(chatId) || confirmationLocks.get(chatId)) { try { await ctx.answerCallbackQuery(); } catch {} return; }
+  if (isConfirm) {
+    data = consumeConfirmation(chatId, data);
+    if (!data) { try { await ctx.answerCallbackQuery('Confirmation expired. Open a new review.'); } catch {} return; }
+  } else {
+    const step = /^(mkt_(buy|sell)_pct:|lim_(buy|sell)_pct:|split_pct:|withdraw_pct:)/.test(data);
+    if (!step) await invalidateUserState(chatId);
+  }
   if (isConfirm) {
     if (confirmationLocks.get(chatId)) {
       try { await ctx.answerCallbackQuery(); } catch {}
@@ -273,7 +282,7 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
-    if (data === 'orders' || data === 'orders:refresh') {
+    if (data === 'orders' || data === 'orders:refresh' || /^orders:page:\d+$/.test(data)) {
       if (!hlClient) {
         await editOrReply(ctx, 'Trading is not ready yet. Create or import a wallet first.', {
           reply_markup: new InlineKeyboard().text('Back', 'back_menu'),
@@ -281,7 +290,12 @@ export async function handleCallbackQuery(ctx) {
         return;
       }
       const orders = createOrdersFeature({ hlClient });
-      await orders.showOrders(ctx);
+      await orders.showOrders(ctx, data.startsWith('orders:page:') ? Number(data.split(':')[2]) : 1);
+      return;
+    }
+
+    if (data === 'confirm_cancel_orders') {
+      if (hlClient) await createOrdersFeature({ hlClient }).executeCancellation(ctx);
       return;
     }
 
@@ -300,6 +314,10 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
+    if (data === 'confirm_network') { await handleSettingsCallback(ctx, data); return; }
+    if (data === 'confirm_fund_predictions') { await handleWalletCallback(ctx, data); return; }
+
+    if (data === 'rewards') { const { showRewards } = await import('../features/rewards.js'); await showRewards(ctx); return; }
     if (data === 'settings') {
       await showSettings(ctx);
       return;

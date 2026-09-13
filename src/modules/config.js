@@ -1,5 +1,5 @@
 import { readFile, writeFile, mkdir, access, open, rename, unlink } from 'fs/promises';
-import { dirname, join } from 'path';
+import { dirname, join, isAbsolute, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { createContext, safeLogInfo } from './logger.js';
 
@@ -7,9 +7,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // Config file path
-const CONFIG_PATH = join(__dirname, '..', '..', 'data', 'config.json');
+export const DATA_DIR = process.env.HIP4_DATA_DIR || join(__dirname, '..', '..', 'data');
+if (!isAbsolute(DATA_DIR)) throw new Error('HIP4_DATA_DIR must be absolute');
+if (process.env.HIP4_DATA_DIR && resolve(DATA_DIR) === resolve(__dirname, '..', '..', 'data')) throw new Error('HIP4_DATA_DIR must not target live data');
+const CONFIG_PATH = join(DATA_DIR, 'config.json');
 const CONFIG_DIR = dirname(CONFIG_PATH);
 let saveConfigQueue = Promise.resolve();
+let sessionConfig = null;
+export function setSessionConfig(config) { sessionConfig = config ? structuredClone(config) : null; }
 
 // Default config structure for first run - all fields empty
 const DEFAULT_CONFIG = {
@@ -17,6 +22,9 @@ const DEFAULT_CONFIG = {
     privateKey: ''
   },
   walletAddress: '',
+  authMode: 'wallet',
+  agentAddress: '',
+  outcomeBuilderEnabled: false,
   hlNetwork: process.env.HL_NETWORK || 'testnet',
   language: '',
   notifications: {
@@ -47,12 +55,13 @@ async function configFileExists() {
 
 // Ensure config file exists - creates it with empty fields if missing
 export async function ensureConfigFileExists() {
+  if (sessionConfig) return structuredClone(sessionConfig);
   await ensureDataDir();
   
   const exists = await configFileExists();
   if (!exists) {
     // Create config file with default skeleton (empty fields)
-    const config = { ...DEFAULT_CONFIG };
+    const config = structuredClone(DEFAULT_CONFIG);
     await saveConfig(config);
     const ctx = createContext('config', 'ensureConfigFileExists');
     safeLogInfo(ctx, 'Config file created with default skeleton');
@@ -65,6 +74,7 @@ export async function ensureConfigFileExists() {
 
 // Load configuration from file
 export async function loadConfig() {
+  if (sessionConfig) return structuredClone(sessionConfig);
   try {
     await ensureDataDir();
     const data = await readFile(CONFIG_PATH, 'utf8');
@@ -78,7 +88,7 @@ export async function loadConfig() {
       // Config file doesn't exist, return default
       const ctx = createContext('config', 'loadConfig');
       safeLogInfo(ctx, 'Config file not found, using defaults');
-      return { ...DEFAULT_CONFIG };
+      return structuredClone(DEFAULT_CONFIG);
     }
     if (error instanceof SyntaxError) {
       throw new Error(`Config file is corrupted JSON: ${error.message}`);
@@ -132,6 +142,7 @@ function withSaveConfigLock(task) {
 
 // Save configuration to file
 export async function saveConfig(config) {
+  if (sessionConfig) { sessionConfig = structuredClone(config); return; }
   return withSaveConfigLock(async () => {
     await ensureDataDir();
 
@@ -210,8 +221,12 @@ export async function isLanguageConfigured() {
 export async function isWalletConfigured() {
   try {
     const config = await loadConfig();
-    return config.walletAddress && config.walletAddress !== '' && 
-           config.encrypted && config.encrypted.privateKey && config.encrypted.privateKey !== '';
+    const addressValid = /^0x[a-fA-F0-9]{40}$/.test(config.walletAddress || '');
+    // Only an explicitly installed in-memory agent session may omit its key.
+    // Persisted agent configs must still contain the encrypted signer.
+    const sessionAgent = sessionConfig && config.authMode === 'agent' &&
+      /^0x[a-fA-F0-9]{40}$/.test(config.agentAddress || '');
+    return Boolean(addressValid && (sessionAgent || config.encrypted?.privateKey));
   } catch {
     return false;
   }

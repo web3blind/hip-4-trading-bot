@@ -95,12 +95,7 @@ function normalizeProxyUrl(rawValue) {
   }
 
   const runtimeParsed = new URL(parsed.toString());
-  let downgradedToHttpConnect = false;
-  if (runtimeParsed.protocol === 'https:') {
-    // For common proxy providers use HTTP CONNECT transport even when they advertise "https proxies".
-    runtimeParsed.protocol = 'http:';
-    downgradedToHttpConnect = true;
-  }
+  const downgradedToHttpConnect = false; // Never downgrade TLS to the proxy.
 
   return {
     enabled: true,

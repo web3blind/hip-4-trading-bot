@@ -13,19 +13,16 @@ import { InlineKeyboard } from 'grammy';
 import { loadConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
 import { toCoin, SIDES } from '../../hl-encoding.js';
-import { HLClient } from '../../hyperliquid.js';
-import { getDecryptedPrivateKey } from '../../auth.js';
-import { userStates, busyLocks } from '../runtime.js';
+import { orderStatuses } from '../../hyperliquid.js';
+import { userStates, busyLocks, confirmationCallback, hlClient as runtimeHLClient } from '../runtime.js';
 import { mainMenuKeyboard } from '../ui/keyboards.js';
 import { formatPrice, formatUSDC } from '../ui/formatters.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
 async function getHLClient() {
-  const config = await loadConfig();
-  const pk = await getDecryptedPrivateKey();
-  if (!pk) throw new Error('Wallet not configured');
-  return await HLClient.create(pk, config.network || 'testnet');
+  if (!runtimeHLClient) throw new Error('Wallet not configured');
+  return runtimeHLClient;
 }
 
 async function getT() {
@@ -194,20 +191,17 @@ export function createTradeLimitFeature(_deps) {
     try {
       const client = await getHLClient();
       if (state.isBuy) {
-        const spotBal = await client.getSpotUsdcBalance();
-        const perpBal = await client.getPerpBalance();
-        usdcBalance = spotBal + perpBal;
+        usdcBalance = await client.getAvailableUsdc();
       } else {
         const address = client.getAddress();
         const data = await client.getUserBalances(address);
         const balances = data?.balances || [];
         const coin = state.coin;
-        const spotName = coin.replace('#', '@');
         const tokenName = coin.replace('#', '+');
         const entry = balances.find(b =>
-          b.coin === coin || b.coin === spotName || b.coin === tokenName
+          b.coin === coin || b.coin === tokenName
         );
-        sharesBalance = entry ? parseFloat(entry.total || '0') : 0;
+        sharesBalance = entry ? Math.max(0, Number(entry.total) - Number(entry.hold || 0)) : 0;
       }
     } catch {}
 
@@ -280,6 +274,18 @@ export function createTradeLimitFeature(_deps) {
       usdcAmount = size * state.limitPrice;
     }
 
+    if ((state.isBuy && inputAmount > state.usdcBalance) || (!state.isBuy && inputAmount > state.sharesBalance)) {
+      await ctx.reply(t('hl_insufficient')); return;
+    }
+    const client = await getHLClient();
+    const reviewed = await client.prepareOrder({ coin: state.coin, isBuy: state.isBuy, price: state.limitPrice,
+      ...(state.isBuy ? { budget: inputAmount } : { size: inputAmount }), orderType: 'Limit' });
+    size = reviewed.size;
+    usdcAmount = state.isBuy ? reviewed.maxSpend : size * reviewed.price;
+    state = { ...state, limitPrice: reviewed.price };
+    const callback = confirmationCallback(chatId, 'confirm_limit_order', {
+      ...state, state: 'CONFIRMING_LIMIT_ORDER', size, usdcAmount, reviewed,
+    });
     const actionLabel = state.isBuy ? 'BUY' : 'SELL';
 
     let confirmText;
@@ -290,7 +296,7 @@ export function createTradeLimitFeature(_deps) {
         `${t('price')}: ${formatPrice(state.limitPrice)}\n` +
         `${t('spend')}: ${formatUSDC(usdcAmount)}\n` +
         `${t('est_shares')}: ${size.toFixed(4)}\n` +
-        `${t('order_type')}: ${t('limit_gtc')}\n\n` +
+        `${t('order_type')}: ${t('limit_gtc')}\n${t('review_limit_caps')}\n\n` +
         t('proceed');
     } else {
       confirmText =
@@ -299,20 +305,15 @@ export function createTradeLimitFeature(_deps) {
         `${t('price')}: ${formatPrice(state.limitPrice)}\n` +
         `${t('shares')}: ${size.toFixed(4)}\n` +
         `${t('est_proceeds')}: ${formatUSDC(usdcAmount)}\n` +
-        `${t('order_type')}: ${t('limit_gtc')}\n\n` +
+        `${t('order_type')}: ${t('limit_gtc')}\n${t('review_limit_caps')}\n\n` +
         t('proceed');
     }
 
     const keyboard = new InlineKeyboard()
-      .text(t('confirm'), 'confirm_limit_order')
+      .text(t('confirm'), callback)
       .text(t('cancel'), `outcome:${state.outcomeId}`);
 
-    userStates.set(chatId, {
-      ...state,
-      state: 'CONFIRMING_LIMIT_ORDER',
-      size,
-      usdcAmount,
-    });
+
 
     await ctx.reply(confirmText, { reply_markup: keyboard });
   }
@@ -331,6 +332,7 @@ export function createTradeLimitFeature(_deps) {
       return;
     }
 
+    if (busyLocks.get(chatId)) return;
     busyLocks.set(chatId, true);
     try {
       const client = await getHLClient();
@@ -338,8 +340,8 @@ export function createTradeLimitFeature(_deps) {
       // Auto-fund for limit buys (sells don't need perp funding)
       if (state.isBuy) {
         try { await ctx.editMessageText(t('checking_funding')); } catch {}
-        const requiredUsdc = state.limitPrice * state.size * 1.1;
-        const funded = await client.ensureOutcomeFunding(requiredUsdc);
+        const requiredUsdc = state.reviewed.maxSpend;
+        const funded = await client.ensureOutcomeFunding(requiredUsdc, state.coin);
         if (!funded) {
           await ctx.editMessageText(t('insufficient_funds_deposit'), { reply_markup: mainMenuKeyboard() });
           userStates.delete(chatId);
@@ -350,15 +352,9 @@ export function createTradeLimitFeature(_deps) {
 
       try { await ctx.editMessageText(t('placing_limit_order')); } catch {}
 
-      const result = await client.placeOrder(
-        state.coin,
-        state.isBuy,
-        state.limitPrice,
-        state.size,
-        'Limit',
-      );
+      const result = await client.placeOrders([state.reviewed]);
 
-      const statuses = result?.response?.data?.statuses || [];
+      const statuses = orderStatuses(result, 1);
       const resting = statuses.find(s => s.resting);
       const filled = statuses.find(s => s.filled);
 

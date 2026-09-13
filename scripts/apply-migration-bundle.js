@@ -4,7 +4,7 @@ import { readFile, unlink } from 'fs/promises';
 import { Wallet } from 'ethers';
 
 import { encrypt, decrypt, getMachineKey } from '../src/modules/auth.js';
-import { saveConfig } from '../src/modules/config.js';
+import { saveConfig, DATA_DIR } from '../src/modules/config.js';
 import {
   decodeBase64,
   formatFingerprint,
@@ -113,31 +113,28 @@ async function main() {
   }
 
   const privateKey = String(payload.privateKey || '').trim();
-  const apiKey = String(payload?.l2Credentials?.apiKey || '').trim();
-  const secret = String(payload?.l2Credentials?.secret || '').trim();
-  const passphrase = String(payload?.l2Credentials?.passphrase || '').trim();
-  if (!privateKey || !apiKey || !secret || !passphrase) {
-    throw new Error('Payload does not contain complete wallet credentials');
-  }
+  if (!privateKey) throw new Error('Payload signer key missing');
 
   const derivedWalletAddress = new Wallet(privateKey).address;
   const payloadWalletAddress = String(payload.walletAddress || '').trim();
-  if (payloadWalletAddress && payloadWalletAddress.toLowerCase() !== derivedWalletAddress.toLowerCase()) {
+  const authMode = payload.config?.authMode || 'wallet';
+  if (!['wallet', 'agent'].includes(authMode)) throw new Error('Invalid auth mode');
+  if (!/^0x[0-9a-f]{40}$/i.test(payloadWalletAddress)) throw new Error('Invalid owner address');
+  if (authMode === 'agent' && String(payload.config?.agentAddress).toLowerCase() !== derivedWalletAddress.toLowerCase()) throw new Error('Agent signer mismatch');
+  if (authMode === 'wallet' && payloadWalletAddress.toLowerCase() !== derivedWalletAddress.toLowerCase()) {
     throw new Error('Payload walletAddress does not match payload privateKey');
   }
 
   const machineKey = await getMachineKey();
   const encryptedPrivateKey = await encrypt(privateKey, machineKey);
-  const encryptedApiKey = await encrypt(apiKey, machineKey);
-  const encryptedSecret = await encrypt(secret, machineKey);
-  const encryptedPassphrase = await encrypt(passphrase, machineKey);
-
   const baseConfig = toObject(payload.config);
   const mergedStrategies = toObject(baseConfig.strategies);
   const mergedNotifications = toObject(baseConfig.notifications);
 
   const nextConfig = {
     ...baseConfig,
+    authMode,
+    hlNetwork: baseConfig.hlNetwork || 'testnet',
     walletAddress: payloadWalletAddress || derivedWalletAddress,
     language: String(baseConfig.language || 'ru'),
     strategies: {
@@ -153,26 +150,28 @@ async function main() {
       ...mergedNotifications
     },
     encrypted: {
-      privateKey: encryptedPrivateKey,
-      l2Credentials: {
-        apiKey: encryptedApiKey,
-        secret: encryptedSecret,
-        passphrase: encryptedPassphrase
-      }
+      privateKey: encryptedPrivateKey
     }
   };
 
   await saveConfig(nextConfig);
 
-  const verifyPrivateKey = await decrypt(nextConfig.encrypted.privateKey, machineKey);
+  // Read the committed disk file, not the in-memory object or session overlay.
+  const saved = await readJson(join(DATA_DIR, 'config.json'));
+  for (const field of ['walletAddress', 'authMode', 'agentAddress', 'hlNetwork', 'outcomeBuilderEnabled']) {
+    if (saved[field] !== nextConfig[field]) throw new Error(`Post-save verification failed: ${field}`);
+  }
+  const verifyPrivateKey = await decrypt(saved.encrypted.privateKey, machineKey);
   if (verifyPrivateKey !== privateKey) {
     throw new Error('Post-save verification failed: private key cannot be decrypted back');
   }
 
   if (!args['keep-private-key']) {
+    await unlink(privateKeyPath);
     try {
-      await unlink(privateKeyPath);
-    } catch {}
+      await readFile(privateKeyPath);
+      throw new Error('One-time key still exists after deletion');
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
 
   if (args['delete-request']) {

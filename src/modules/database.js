@@ -6,13 +6,25 @@ import { mkdirSync } from 'fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const DB_DIR = join(__dirname, '..', '..', 'data');
-const DB_PATH = join(DB_DIR, 'database.sqlite');
+import { DATA_DIR } from './config.js';
+const DB_DIR = DATA_DIR;
+let DB_PATH = join(DB_DIR, 'cache-unconfigured.sqlite');
+export function canonicalOid(value) {
+  if (typeof value === 'number' && !Number.isSafeInteger(value)) throw new Error('Unsafe OID');
+  const oid = String(value ?? '');
+  if (!/^[0-9]+$/.test(oid)) throw new Error('Invalid OID');
+  return BigInt(oid).toString();
+}
 
 let db = null;
 
 // Initialize database and create tables
-export function initDatabase() {
+export function initDatabase(scope = {}) {
+  const network = scope.network || 'testnet';
+  const account = String(scope.accountAddress || 'unconfigured').toLowerCase();
+  if (!['testnet', 'mainnet'].includes(network) || !/^(0x[a-f0-9]{40}|unconfigured)$/.test(account)) throw new Error('Invalid database scope');
+  closeDatabase();
+  DB_PATH = join(DB_DIR, `cache-${network}-${account}.sqlite`);
   // Ensure data directory exists
   try {
     mkdirSync(DB_DIR, { recursive: true });
@@ -25,6 +37,11 @@ export function initDatabase() {
 
   // Create tables
   createTables();
+  // Only the account/network-scoped cache is opened here; never migrate database.sqlite.
+  // NULL on old rows preserves unknown historical delivery without replaying old fills.
+  if (!db.pragma('table_info(orders)').some(column => column.name === 'fill_notification_status')) {
+    db.exec('ALTER TABLE orders ADD COLUMN fill_notification_status TEXT');
+  }
   createPriceAlertsTable();
 
   return db;
@@ -210,12 +227,12 @@ export function deletePosition(coin) {
 // ─── Orders ───────────────────────────────────────────────────
 
 export function upsertOrder(order) {
-  const { coin, side, orderType, price, size, oid, status } = order;
+  const { coin, side, orderType, price, size, oid, status, fillNotificationStatus } = order;
   const now = Date.now();
 
   const stmt = db.prepare(`
-    INSERT INTO orders (coin, side, order_type, price, size, oid, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO orders (coin, side, order_type, price, size, oid, status, created_at, updated_at, fill_notification_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(oid) DO UPDATE SET
       coin = excluded.coin,
       side = excluded.side,
@@ -223,9 +240,14 @@ export function upsertOrder(order) {
       price = excluded.price,
       size = excluded.size,
       status = excluded.status,
+      fill_notification_status = COALESCE(orders.fill_notification_status, excluded.fill_notification_status),
       updated_at = excluded.updated_at
   `);
-  return stmt.run(coin, side, orderType, String(price || ''), String(size || ''), oid, status || 'open', now, now);
+  return stmt.run(coin, side, orderType, String(price || ''), String(size || ''), canonicalOid(oid), status || 'open', now, now, fillNotificationStatus || null);
+}
+
+export function markOrderFillNotificationDelivered(oid) {
+  return db.prepare("UPDATE orders SET fill_notification_status = 'delivered' WHERE oid = ? AND fill_notification_status = 'pending'").run(canonicalOid(oid));
 }
 
 export function getOrders(status = null) {
@@ -239,12 +261,12 @@ export function getOrders(status = null) {
 
 export function getOrderByOid(oid) {
   const stmt = db.prepare('SELECT * FROM orders WHERE oid = ?');
-  return stmt.get(oid) || null;
+  return stmt.get(canonicalOid(oid)) || null;
 }
 
 export function deleteOrder(oid) {
   const stmt = db.prepare('DELETE FROM orders WHERE oid = ?');
-  return stmt.run(oid);
+  return stmt.run(canonicalOid(oid));
 }
 
 // ─── Outcome by Coin ─────────────────────────────────────────
