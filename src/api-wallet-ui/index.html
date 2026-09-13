@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>API wallet · HIP4 Bot</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<main>
+<header><p class="eyebrow">HIP4 BOT</p><label for="language">Язык / Language</label><select id="language"><option value="ru" selected>Русский</option><option value="en">English</option></select><h1 data-i18n="title">Сохранить API-кошелёк</h1><p data-i18n="intro"></p></header>
+<section aria-labelledby="help-title">
+<h2 id="help-title" data-i18n="helpTitle"></h2>
+<p><span data-i18n="links"></span> <a href="https://app.hyperliquid.xyz/API" target="_blank" rel="noopener noreferrer">Mainnet API</a> · <a href="https://app.hyperliquid-testnet.xyz/API" target="_blank" rel="noopener noreferrer">Testnet API</a></p>
+<ol id="help"><li data-i18n="step1"></li><li data-i18n="step2"></li><li data-i18n="step3"></li><li data-i18n="step4"></li><li data-i18n="step5"></li><li data-i18n="step6"></li><li data-i18n="step7"></li><li data-i18n="step8"></li><li data-i18n="step9"></li></ol>
+<p class="warning" data-i18n="risk"></p><p data-i18n="tunnel"></p>
+</section>
+<section aria-labelledby="form-title">
+<h2 id="form-title" data-i18n="formTitle"></h2>
+<form id="wallet-form" autocomplete="off">
+<label for="network" data-i18n="network"></label><select id="network"><option value="testnet" selected>Testnet</option><option value="mainnet">Mainnet</option></select>
+<label for="account-address" data-i18n="owner"></label><input id="account-address" name="accountAddress" required pattern="0x[0-9a-fA-F]{40}" spellcheck="false" autocapitalize="none" autocomplete="off" aria-describedby="owner-help"><p id="owner-help" class="hint" data-i18n="ownerHelp"></p>
+<label for="private-key" data-i18n="key"></label><div class="key-row"><input id="private-key" name="privateKey" type="password" required pattern="(0x)?[0-9a-fA-F]{64}" spellcheck="false" autocapitalize="none" autocomplete="off" aria-describedby="key-help"><button type="button" id="show-key" aria-controls="private-key" aria-pressed="false" data-i18n="show"></button></div><p id="key-help" class="hint" data-i18n="keyHelp"></p>
+<div class="actions"><button type="submit" id="prepare" data-i18n="prepare" disabled></button><button type="button" id="cancel" data-i18n="cancel"></button></div>
+</form>
+<div id="review" hidden aria-labelledby="review-title"><h3 id="review-title" tabindex="-1" data-i18n="reviewTitle"></h3>
+<dl><dt data-i18n="network"></dt><dd id="review-network"></dd><dt data-i18n="owner"></dt><dd id="review-owner"></dd><dt data-i18n="agent"></dt><dd id="review-agent"></dd><dt data-i18n="until"></dt><dd id="review-until"></dd></dl>
+<div id="replacement" hidden><p class="warning" data-i18n="replacement"></p><dl><dt data-i18n="previous"></dt><dd id="previous-owner"></dd><dt data-i18n="newOwner"></dt><dd id="new-owner"></dd></dl><label class="check"><input type="checkbox" id="replace-confirm"><span data-i18n="replaceConfirm"></span></label></div>
+<label class="check"><input type="checkbox" id="consent"><span data-i18n="consent"></span></label><button type="button" id="save" data-i18n="save" disabled></button></div>
+<p id="status" role="status" aria-live="polite" aria-atomic="true" tabindex="-1"></p>
+<div id="saved" hidden><h3 data-i18n="savedTitle"></h3><p data-i18n="savedText"></p><ol><li data-i18n="finish1"></li><li><span data-i18n="finish2"></span> <code>Ctrl+C</code>.</li><li><span data-i18n="finish3"></span> <code>npm start</code>.</li></ol><p data-i18n="notRunning"></p></div>
+</section>
+<noscript>Для формы нужен JavaScript. This form requires JavaScript.</noscript>
+</main>
+</body></html>

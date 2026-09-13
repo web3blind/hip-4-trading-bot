@@ -17,6 +17,7 @@ export async function showWalletInfo(ctx) {
 
   if (!config.walletAddress) {
     const keyboard = new InlineKeyboard()
+      .text(t('api_wallet_connect'), 'wallet:connect_api').row()
       .text(t('settings_init_wallet') || 'Init Wallet', 'init_wallet')
       .row()
       .text(t('back') || 'Back', 'back_menu');
@@ -51,6 +52,7 @@ export async function showWalletInfo(ctx) {
     `\n${t('network_label')}: ${config.hlNetwork || 'testnet'}`;
 
   const keyboard = new InlineKeyboard();
+  keyboard.text(t('api_wallet_connect'), 'wallet:connect_api').row();
   if (config.authMode !== 'agent' && spotUsdc > 0.01) {
     keyboard.text(`${t('fund_predictions')} ($${spotUsdc.toFixed(2)})`, 'wallet:fund_predictions').row();
   }
@@ -70,6 +72,13 @@ export async function showWalletInfo(ctx) {
 
 export async function handleWalletCallback(ctx, data) {
   if (!isAuthorizedPrivateContext(ctx)) return;
+  if (data === 'wallet:connect_api') {
+    const config = await loadConfig();
+    const t = await getTranslator(config.language || 'en');
+    const extra = { reply_markup: new InlineKeyboard().text(t('back'), 'wallet'), link_preview_options: { is_disabled: true } };
+    try { await ctx.editMessageText(t('api_wallet_help'), extra); } catch { await ctx.reply(t('api_wallet_help'), extra); }
+    return;
+  }
   if (data === 'confirm_fund_predictions') { await executeFundPredictions(ctx); return; }
   if (data === 'wallet') {
     await showWalletInfo(ctx);

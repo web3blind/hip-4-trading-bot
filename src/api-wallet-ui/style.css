@@ -1,0 +1,39 @@
+:root { color-scheme: dark; font-family: system-ui, sans-serif; background: #101923; color: #f2f5f7; line-height: 1.65; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 860px; margin: 0 auto; padding: 24px 18px 64px; }
+header, section { margin-bottom: 24px; }
+section { background: #172430; border: 1px solid #526375; border-radius: 12px; padding: 24px; }
+h1 { font-size: clamp(1.7rem, 4vw, 2.3rem); line-height: 1.2; }
+h2 { font-size: 1.35rem; line-height: 1.35; }
+h3 { font-size: 1.2rem; }
+.eyebrow { color: #87ead7; font-weight: 750; letter-spacing: .12em; }
+a { color: #9eeafa; text-underline-offset: .2em; overflow-wrap: anywhere; }
+ol { padding-inline-start: 1.6rem; }
+li { padding-inline-start: .3rem; margin-bottom: .9rem; }
+label { display: block; margin: 16px 0 6px; font-weight: 650; }
+input, select, button { font: inherit; min-height: 48px; border-radius: 6px; border: 1px solid #9aaebf; padding: 10px 12px; }
+input, select { background: #0d1720; color: #fff; }
+input { width: 100%; min-width: 0; }
+select { max-width: 100%; }
+button { background: #8ae8d1; color: #09261e; cursor: pointer; font-weight: 700; }
+button:hover:not(:disabled) { background: #b7f7e7; }
+button:disabled { opacity: .65; cursor: not-allowed; }
+:focus-visible { outline: 3px solid #ffdb76; outline-offset: 4px; }
+.key-row { display: flex; gap: 10px; align-items: stretch; }
+.key-row button { flex: 0 0 auto; }
+.actions { display: flex; gap: 12px; flex-wrap: wrap; margin: 22px 0; }
+#cancel, #show-key { background: #253a4b; color: #fff; }
+#cancel:hover:not(:disabled), #show-key:hover:not(:disabled) { background: #39556b; }
+.hint { color: #c8d6e1; font-size: .95rem; margin-top: 6px; }
+.warning { border-inline-start: 4px solid #ffdb76; padding: 12px 16px; background: #302b1d; }
+.check { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 20px; font-weight: 400; }
+.check input { flex: 0 0 24px; width: 24px; height: 24px; min-height: 24px; margin-top: 3px; accent-color: #8ae8d1; }
+dt { font-weight: 700; color: #c8d6e1; }
+dd { margin: 2px 0 14px; overflow-wrap: anywhere; }
+#review { border-top: 1px solid #526375; padding-top: 10px; }
+#status { min-height: 1.65em; font-weight: 650; overflow-wrap: anywhere; }
+code { background: #0d1720; color: #b7f7e7; padding: 3px 7px; border-radius: 4px; }
+[hidden] { display: none !important; }
+@media (max-width: 520px) { section { padding: 16px; } main { padding: 16px 10px 40px; } .key-row { flex-direction: column; } .actions button { flex: 1; } }
+@media (forced-colors: active) { button, input, select, section, .warning { border: 1px solid ButtonText; } }

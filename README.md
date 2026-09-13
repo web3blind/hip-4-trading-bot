@@ -15,23 +15,59 @@ On Windows use `Copy-Item .env.example .env`. Set `TELEGRAM_BOT_TOKEN` (BotFathe
 
 The Linux `install/install.sh` and Windows `install/windows_install.bat` installers install locked dependencies only by default. They do not install Node/PM2 globally, replace data or automatically restart a bot. `--start` explicitly requests PM2 startup; inspect existing processes first.
 
-## Connect your existing wallet without sharing its private key
+## Connect with a persistent API wallet (recommended)
+
+The bot needs **your MAIN Hyperliquid account address** and a dedicated **API-wallet private key**. It never needs the main wallet private key or seed phrase. No browser console, JSON export or injected wallet is required in the bot's connection form. Detailed English/Russian instructions are also available directly in the form and under **Wallet / Settings → Connect API wallet** in Telegram.
+
+### Obtain and authorize the API wallet
+
+1. Open the official [mainnet API page](https://app.hyperliquid.xyz/API), or [testnet API page](https://app.hyperliquid-testnet.xyz/API) for testnet. Match this network in the bot.
+2. Click **Connect**, then connect the main wallet that owns your Hyperliquid funds.
+3. Enter a recognizable API wallet name, such as `HIP4Bot`. Click **Generate** to create a separate signing wallet for this bot.
+4. Immediately copy the generated **API-wallet private key** into a password manager. It may not be displayed again. This is not the private key/seed of your main wallet. Do not send funds to the API-wallet address.
+5. **Authorize** the generated API wallet and confirm the authorization in your main wallet. Button labels may change. If offered, select a suitable validity period. Confirm its address appears in the authorized API-wallet list and check **Valid Until**. Generating a key alone does not authorize trading.
+6. Copy your **MAIN account address** from the connected wallet. The bot derives the API-agent address from the API private key; do not paste that agent address as the main account.
+
+The public official API page explicitly states that API wallets act on behalf of an account without withdrawal permissions and that info requests use the account public address. See also [Nonces and API wallets](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/nonces-and-api-wallets). Authorization requires your own wallet interaction; no real account approval is performed by installing this project.
+
+### Save the connection once
+
+Stop the currently running bot, then run:
 
 ```bash
 npm run connect
 ```
 
-Open the printed private loopback URL in a browser with your wallet extension. Do not share that URL. The connection server listens on `127.0.0.1:8787`, not a public interface. On a remote host, forward the port with `ssh -L 8787:127.0.0.1:8787 user@host`, then open the printed link locally. Do not expose this server through a public reverse proxy.
+Open the printed private local link. Choose network, enter the **main account address** and the **API-wallet private key** in the password field. Check the connection, review both addresses and the authorization expiry, then explicitly save. Replacing existing configuration requires confirmation and retains its encrypted configuration backup. Do not send the key or local link through Telegram.
 
-- Choose the intended account and network. Testnet is the safe initial default; mainnet trades use real money.
-- Review and explicitly approve the agent in your wallet. The owner's private key stays in the wallet and is never shared with the bot/server. This does **not** make the connection risk-free: an approved agent can trade and lose your funds.
-- A separate agent signing key is held in process memory for this session. The existing encrypted local wallet/config is not replaced by the session. Restart/expiry requires reconnecting. Process termination is not on-chain revocation: revoke the agent in Hyperliquid when finished or if compromised.
-- Agent mode does not authorize owner-only deposits/transfers/withdrawals. Perform those through the official wallet/account interface; do not send a master key to bypass restrictions.
-- After successful connection use `/start` in the private Telegram chat. Keep this process running; do not also start another polling bot with the same token.
+The form listens only on `127.0.0.1:8787`. For a remote server, run this on your own computer (replace `user@host` with your SSH login):
 
-### Optional Outcome attribution and rewards
+```bash
+ssh -N -L 8787:127.0.0.1:8787 user@host
+```
 
-The connector offers optional zero-fee Outcome builder attribution, with explicit wallet approval. Attribution and reward visibility are not evidence of campaign eligibility. Provider whitelisting, maker/taker rules, qualifying activity and payout decisions remain external requirements. Reported paid/pending/awarded amounts are service-reported history, **not a guarantee of future rewards or profitability**. Approval, eligibility and live payout behavior require separate verification; tests do not establish them.
+Keep the SSH connection open and open the exact printed link in your local browser. Never publish this port through a public proxy. This tunnel is needed for setup, not for daily trading.
+
+After saving, close the connector with **Ctrl+C**, then:
+
+```bash
+npm start
+```
+
+Send `/start` in the private Telegram chat. Future restarts use the saved encrypted API key until authorization expires or is revoked; there is no daily reconnect requirement. `npm start` validates stored agent authorization before activation. The API wallet is not unlimited/permanent permission: review its actual expiry.
+
+### Renewal, revocation and risks
+
+- Revoke the dedicated API wallet on the same official API page. Stopping the bot does not revoke it.
+- If the key is lost or authorization expires, generate and authorize a replacement, rerun `npm run connect`, review/save, then restart. Use a separate API wallet for each application.
+- An agent can trade/cancel orders and **lose your funds**. Perform owner-only transfers and withdrawals in Hyperliquid using your main wallet. Funding remains in the main account, not the API wallet.
+- Keys are encrypted at rest using the existing machine-bound encryption. Server compromise can still expose an active signer; encryption is not protection against a fully compromised machine.
+
+### Optional temporary connection and Outcome rewards
+
+The previous temporary wallet-signing flow remains optional as `npm run connect:temporary`; it holds its generated agent key only in memory and requires reconnection after stopping. It is no longer the default.
+
+Temporary mode offers optional zero-fee Outcome builder approval. Importing a persistent API wallet does not grant new builder permissions or guarantee rewards. Paid/pending/awarded data under Settings → Outcome rewards is service-reported history, not proof of eligibility or future profitability. Campaign interface/whitelist/activity requirements remain external.
 
 ## Existing local wallet mode
 

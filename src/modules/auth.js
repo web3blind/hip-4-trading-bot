@@ -229,5 +229,22 @@ export async function validateWalletConfig(config) {
     throw new Error('Stored signer does not match configured identity');
   }
   if (!['testnet', 'mainnet'].includes(config.hlNetwork || 'testnet')) throw new Error('Invalid network');
+  if (mode === 'agent' && signer.toLowerCase() === config.walletAddress.toLowerCase()) throw new Error('Agent signer must differ from owner');
   return privateKey;
+}
+
+/** Read-only network authorization check; never infer permissions from a key. */
+export async function verifyAgentAuthorization(config, { fetchImpl = fetch } = {}) {
+  if (!['testnet', 'mainnet'].includes(config.hlNetwork) || !ethers.utils.isAddress(config.walletAddress) || !ethers.utils.isAddress(config.agentAddress) || config.walletAddress.toLowerCase() === config.agentAddress.toLowerCase()) throw new Error('Invalid agent identity or network');
+  const base = config.hlNetwork === 'mainnet' ? 'https://api.hyperliquid.xyz' : 'https://api.hyperliquid-testnet.xyz';
+  let agents;
+  try {
+    const response = await fetchImpl(`${base}/info`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'extraAgents', user: config.walletAddress }), signal: AbortSignal.timeout(15000), redirect: 'error' });
+    if (!response.ok) throw new Error('HTTP failure');
+    agents = await response.json();
+    if (!Array.isArray(agents)) throw new Error('Invalid response');
+  } catch { throw Object.assign(new Error('API wallet authorization unavailable; retry later'), { status: 502 }); }
+  const agent = agents.find(a => typeof a?.address === 'string' && a.address.toLowerCase() === config.agentAddress.toLowerCase() && Number.isSafeInteger(a.validUntil) && a.validUntil > Date.now());
+  if (!agent) throw Object.assign(new Error('API wallet not authorized for this owner/network, revoked or expired'), { status: 403 });
+  return agent.validUntil;
 }

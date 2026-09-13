@@ -147,9 +147,13 @@ export function activateHLClient(client, options = {}) {
   activationQueue = run.catch(() => {});
   return run;
 }
-export async function createConfiguredHLClient(config) {
-  const { validateWalletConfig } = await import('../auth.js');
+export async function createConfiguredHLClient(config, { fetchImpl = fetch } = {}) {
+  const { validateWalletConfig, verifyAgentAuthorization } = await import('../auth.js');
   const { HLClient } = await import('../hyperliquid.js');
   const key = await validateWalletConfig(config);
+  if (config.authMode === 'agent') {
+    if (!Number.isSafeInteger(config.agentValidUntil) || config.agentValidUntil <= Date.now()) throw new Error('Agent approval expired or invalid; reconnect API wallet');
+    await verifyAgentAuthorization(config, { fetchImpl });
+  }
   return HLClient.create(key, config.hlNetwork || 'testnet', { accountAddress: config.walletAddress, authMode: config.authMode || 'wallet', builder: config.outcomeBuilderEnabled ? { b: '0xab5dbc057628bc18523c4cdfc0e1e2ebdbecb704', f: 0 } : undefined });
 }

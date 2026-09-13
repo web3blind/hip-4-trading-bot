@@ -83,7 +83,7 @@ export async function runAgentConnector({ port = 8787, onConnected, fetchImpl } 
 
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
   if (process.argv.includes('--help')) {
-    console.log('npm run connect — ephemeral agent connection on http://127.0.0.1:8787. Open the printed local URL in your wallet browser. Never enter a private key. Use an SSH tunnel when running on a server.');
+    console.log('npm run connect:temporary — ephemeral agent connection on http://127.0.0.1:8787. Open the printed local URL in your wallet browser. Never enter a private key. Use an SSH tunnel when running on a server.');
   } else {
     patchConsoleForRedaction();
     applyProxyRuntime();
