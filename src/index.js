@@ -159,7 +159,11 @@ async function runBot() {
       safeLogInfo(ctx, 'HyperLiquid client initialized', { network });
     } catch (error) {
       safeLogError(ctx, error, { stage: 'hlClientInit' });
-      throw error;
+      if (config.authMode !== 'agent') throw error;
+      // Keep the authorized private Telegram setup available to renew/revoke
+      // credentials. No signing client or trading workers run in recovery mode.
+      hlClient = null;
+      safeLogInfo(ctx, 'API wallet unavailable; reconnect through the private bot dialogue');
     }
   } else {
     safeLogInfo(ctx, 'Wallet not configured — skipping HyperLiquid client init');

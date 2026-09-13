@@ -19,6 +19,7 @@ import { createSearchFeature } from '../features/search.js';
 import { createWithdrawFeature } from '../features/withdraw.js';
 import { createSplitBuyFeature } from '../features/split-buy.js';
 import { handleCustomThresholdInput } from '../features/settings.js';
+import { interceptApiWalletInput } from '../features/api-wallet.js';
 
 // Instantiate features
 const tradeMarket = createTradeMarketFeature({});
@@ -38,6 +39,9 @@ const CONFIRMATION_STATES = new Set([
 // ─── Main text handler ──────────────────────────────────────────
 
 export async function handleTextMessage(ctx) {
+  let consumed = true;
+  await interceptApiWalletInput(ctx, async () => { consumed = false; });
+  if (consumed) return;
   if (!isAuthorizedPrivateContext(ctx) || runtimeTransitioning) return;
   const chatId = ctx.chat.id;
   const text = ctx.message.text;

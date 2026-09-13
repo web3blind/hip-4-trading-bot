@@ -36,7 +36,9 @@ export const confirmationLocks = new Map();
 
 /** @type {import('../hyperliquid.js').HLClient|null} */
 export let hlClient = null;
+export let runtimeGeneration = 0;
 export function setHLClient(value) {
+  runtimeGeneration++;
   hlClient = value;
 }
 
@@ -85,6 +87,7 @@ export const CONFIRMATION_TTL_MS = 120000;
 const pendingConfirmations = new Map();
 const cleanupTimers = new Map();
 let activationQueue = Promise.resolve();
+let pendingActivations = 0;
 export let runtimeTransitioning = false;
 export function runtimeBinding() {
   return `${hlClient?.network || 'unconfigured'}:${String(hlClient?.address || hlClient?.accountAddress || hlClient?.walletAddress || hlClient?.wallet?.address || '').toLowerCase()}`;
@@ -122,6 +125,8 @@ export function isAuthorizedPrivateContext(ctx) {
 }
 /** Shared activation for startup, wallet setup and ephemeral browser connection. */
 export function activateHLClient(client, options = {}) {
+  pendingActivations++;
+  runtimeTransitioning = true;
   const run = activationQueue.then(async () => {
     runtimeTransitioning = true;
     try {
@@ -142,7 +147,7 @@ export function activateHLClient(client, options = {}) {
       setHLClient(client);
       if (client && options.startWorkers !== false) startWorkers({ hlClient: client, bot, chatId: allowedUserId, ...options.workers });
       return client;
-    } finally { runtimeTransitioning = false; }
+    } finally { pendingActivations--; runtimeTransitioning = pendingActivations > 0; }
   });
   activationQueue = run.catch(() => {});
   return run;

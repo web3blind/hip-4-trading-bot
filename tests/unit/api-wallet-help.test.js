@@ -18,11 +18,17 @@ for (const language of ['ru', 'en']) test(`API wallet guide is reachable from Wa
     assert.ok(ctx.messages.at(-1).extra.reply_markup.inline_keyboard.flat().some(b => b.callback_data === 'wallet:connect_api'));
   }
   userStates.set(7, { state: 'AWAITING_EXPORT_CONFIRM' });
-  const help = context('wallet:connect_api'); await handleCallbackQuery(help);
-  assert.equal(userStates.has(7), false);
+  const setup = context('wallet:connect_api'); await handleCallbackQuery(setup);
+  const buttons = setup.messages.at(-1).extra.reply_markup.inline_keyboard.flat();
+  assert.equal(buttons[0].text, language === 'ru' ? 'Кошелёк' : 'Wallet');
+  assert.equal(buttons[1].text, language === 'ru' ? 'Приватник' : 'Private key');
+  assert.equal(userStates.get(7).state, 'API_WALLET_MENU');
+  const help = context('wallet:api_help'); await handleCallbackQuery(help);
   const text = help.messages.at(-1).text;
   assert.ok(text.length < 4096);
-  for (const word of ['https://app.hyperliquid.xyz/API', 'Generate', 'Authorize', 'Valid Until', 'npm run connect', 'npm start', 'Ctrl+C']) assert.ok(text.includes(word), word);
+  for (const word of ['https://app.hyperliquid.xyz/API', 'Generate', 'Valid Until']) assert.ok(text.includes(word), word);
+  assert.ok(text.includes(language === 'ru' ? 'Первая кнопка «Кошелёк»' : 'First button, Wallet'));
+  assert.equal(text.includes('npm run connect'), false);
   assert.equal(help.messages.at(-1).extra.parse_mode, undefined);
   const denied = context('wallet:connect_api', 'group'); await handleCallbackQuery(denied); assert.equal(denied.messages.length, 0);
 });

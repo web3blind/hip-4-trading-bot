@@ -28,6 +28,7 @@ import {
 import { createSearchFeature } from '../features/search.js';
 import { createWithdrawFeature } from '../features/withdraw.js';
 import { createSplitBuyFeature } from '../features/split-buy.js';
+import { isApiWalletStep } from '../features/api-wallet.js';
 
 const tradeMarket = createTradeMarketFeature({});
 const tradeLimit = createTradeLimitFeature({});
@@ -48,13 +49,13 @@ export async function handleCallbackQuery(ctx) {
   const chatId = ctx.chat.id;
 
   const isConfirm = data.startsWith('confirm_');
-  if (busyLocks.get(chatId) || confirmationLocks.get(chatId)) { try { await ctx.answerCallbackQuery(); } catch {} return; }
+  if (busyLocks.get(chatId) || confirmationLocks.get(chatId) || userStates.get(chatId)?.state === 'API_WALLET_SAVING') { try { await ctx.answerCallbackQuery(); } catch {} return; }
   if (isConfirm) {
     data = consumeConfirmation(chatId, data);
     if (!data) { try { await ctx.answerCallbackQuery('Confirmation expired. Open a new review.'); } catch {} return; }
   } else {
     const step = /^(mkt_(buy|sell)_pct:|lim_(buy|sell)_pct:|split_pct:|withdraw_pct:)/.test(data);
-    if (!step) await invalidateUserState(chatId);
+    if (!step && !isApiWalletStep(data)) await invalidateUserState(chatId);
   }
   if (isConfirm) {
     if (confirmationLocks.get(chatId)) {

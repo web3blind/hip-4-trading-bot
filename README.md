@@ -11,13 +11,13 @@ npm ci
 cp .env.example .env
 ```
 
-On Windows use `Copy-Item .env.example .env`. Set `TELEGRAM_BOT_TOKEN` (BotFather) and `TELEGRAM_ALLOWED_USER_ID` (your numeric user ID). Never put a wallet private key into `.env` or Telegram.
+On Windows use `Copy-Item .env.example .env`. Set `TELEGRAM_BOT_TOKEN` (BotFather) and `TELEGRAM_ALLOWED_USER_ID` (your numeric user ID). Never put a wallet private key into `.env`. The Telegram connection flow accepts only a dedicated API-wallet key in the authorized private chat and immediately deletes that message; never send a main key/seed.
 
 The Linux `install/install.sh` and Windows `install/windows_install.bat` installers install locked dependencies only by default. They do not install Node/PM2 globally, replace data or automatically restart a bot. `--start` explicitly requests PM2 startup; inspect existing processes first.
 
 ## Connect with a persistent API wallet (recommended)
 
-The bot needs **your MAIN Hyperliquid account address** and a dedicated **API-wallet private key**. It never needs the main wallet private key or seed phrase. No browser console, JSON export or injected wallet is required in the bot's connection form. Detailed English/Russian instructions are also available directly in the form and under **Wallet / Settings → Connect API wallet** in Telegram.
+The bot needs **your MAIN Hyperliquid account address** and a dedicated **API-wallet private key**. It never needs the main wallet private key or seed phrase. Setup is directly in the Telegram dialogue using two buttons. Detailed English/Russian instructions are available in that same section.
 
 ### Obtain and authorize the API wallet
 
@@ -30,42 +30,28 @@ The bot needs **your MAIN Hyperliquid account address** and a dedicated **API-wa
 
 The public official API page explicitly states that API wallets act on behalf of an account without withdrawal permissions and that info requests use the account public address. See also [Nonces and API wallets](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/nonces-and-api-wallets). Authorization requires your own wallet interaction; no real account approval is performed by installing this project.
 
-### Save the connection once
+### Connect directly in the Telegram dialogue
 
-Stop the currently running bot, then run:
+Start the bot normally with `npm start` (or use the already running instance). In its **private chat**, open **Wallet / Settings → Connect API wallet**. No SSH tunnel, web form, JSON, browser console or bot restart is needed for this flow.
 
-```bash
-npm run connect
-```
+1. Check the network displayed in the setup screen.
+2. First button **Wallet / Кошелёк**: send the MAIN Hyperliquid account address. This is not the generated API-agent address.
+3. Second button **Private key / Приватник**: review the displayed owner/network and replacement notice, then send only the dedicated API-wallet private key.
+4. The bot attempts to delete that message immediately, before credential verification or storage. If deletion fails, it refuses to save; remove the message manually. The key is never echoed.
+5. It verifies the agent authorization, makes an encrypted backup if replacing a configured wallet, writes the API key encrypted to the existing protected `data/config.json` (mode `0600`), and activates the shared trading client/workers. After the success message, use the bot. Restarts reuse the encrypted key until expiry/revocation.
 
-Open the printed private local link. Choose network, enter the **main account address** and the **API-wallet private key** in the password field. Check the connection, review both addresses and the authorization expiry, then explicitly save. Replacing existing configuration requires confirmation and retains its encrypted configuration backup. Do not send the key or local link through Telegram.
-
-The form listens only on `127.0.0.1:8787`. For a remote server, run this on your own computer (replace `user@host` with your SSH login):
-
-```bash
-ssh -N -L 8787:127.0.0.1:8787 user@host
-```
-
-Keep the SSH connection open and open the exact printed link in your local browser. Never publish this port through a public proxy. This tunnel is needed for setup, not for daily trading.
-
-After saving, close the connector with **Ctrl+C**, then:
-
-```bash
-npm start
-```
-
-Send `/start` in the private Telegram chat. Future restarts use the saved encrypted API key until authorization expires or is revoked; there is no daily reconnect requirement. `npm start` validates stored agent authorization before activation. The API wallet is not unlimited/permanent permission: review its actual expiry.
+Only use the intended bot's private chat. Telegram deletion does **not** prove removal from notification previews, client copies, or Telegram infrastructure. Never send the MAIN wallet key or seed phrase. Use a dedicated, revocable API wallet.
 
 ### Renewal, revocation and risks
 
 - Revoke the dedicated API wallet on the same official API page. Stopping the bot does not revoke it.
-- If the key is lost or authorization expires, generate and authorize a replacement, rerun `npm run connect`, review/save, then restart. Use a separate API wallet for each application.
+- If the key is lost or authorization expires, generate and authorize a replacement, repeat the Wallet and Private key buttons in the bot. Use a separate API wallet for each application.
 - An agent can trade/cancel orders and **lose your funds**. Perform owner-only transfers and withdrawals in Hyperliquid using your main wallet. Funding remains in the main account, not the API wallet.
 - Keys are encrypted at rest using the existing machine-bound encryption. Server compromise can still expose an active signer; encryption is not protection against a fully compromised machine.
 
-### Optional temporary connection and Outcome rewards
+### Optional local tools and Outcome rewards
 
-The previous temporary wallet-signing flow remains optional as `npm run connect:temporary`; it holds its generated agent key only in memory and requires reconnection after stopping. It is no longer the default.
+For operators who prefer local entry, `npm run connect` retains the optional loopback form; it is not required for Telegram setup. The previous temporary wallet-signing flow remains optional as `npm run connect:temporary`; it holds its generated agent key only in memory and requires reconnection after stopping. It is no longer the default.
 
 Temporary mode offers optional zero-fee Outcome builder approval. Importing a persistent API wallet does not grant new builder permissions or guarantee rewards. Paid/pending/awarded data under Settings → Outcome rewards is service-reported history, not proof of eligibility or future profitability. Campaign interface/whitelist/activity requirements remain external.
 

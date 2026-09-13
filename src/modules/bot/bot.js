@@ -45,6 +45,7 @@ import { showSettings, handleSettingsCallback } from './features/settings.js';
 import { showWalletInfo, handleWalletCallback } from './features/security.js';
 import { handleCallbackQuery } from './routing/callback-router.js';
 import { handleTextMessage } from './routing/text-router.js';
+import { interceptApiWalletInput } from './features/api-wallet.js';
 
 // ─── Bot lifecycle ───────────────────────────────────────────────
 
@@ -65,6 +66,8 @@ export async function initBot(token, allowedUserId) {
   const botInstance = new Bot(token);
   setBot(botInstance);
 
+  botInstance.use(interceptApiWalletInput);
+
   // ── Auth middleware ──────────────────────────────────────────
   botInstance.use(async (ctx, next) => {
     const userId = ctx.from?.id;
@@ -79,7 +82,7 @@ export async function initBot(token, allowedUserId) {
       return;
     }
 
-    if (runtimeTransitioning || busyLocks.get(ctx.chat.id)) return;
+    if (runtimeTransitioning || busyLocks.get(ctx.chat.id) || userStates.get(ctx.chat.id)?.state === 'API_WALLET_SAVING') return;
     if (ctx.message?.text?.startsWith('/')) await invalidateUserState(ctx.chat.id);
     // Rate limiting
     const now = Date.now();

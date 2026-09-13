@@ -3,6 +3,7 @@
  */
 
 import { InlineKeyboard } from 'grammy';
+import { handleApiWalletCallback, isApiWalletStep } from './api-wallet.js';
 import { loadConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
 import { getDecryptedPrivateKey, initializeWallet } from '../../auth.js';
@@ -72,13 +73,7 @@ export async function showWalletInfo(ctx) {
 
 export async function handleWalletCallback(ctx, data) {
   if (!isAuthorizedPrivateContext(ctx)) return;
-  if (data === 'wallet:connect_api') {
-    const config = await loadConfig();
-    const t = await getTranslator(config.language || 'en');
-    const extra = { reply_markup: new InlineKeyboard().text(t('back'), 'wallet'), link_preview_options: { is_disabled: true } };
-    try { await ctx.editMessageText(t('api_wallet_help'), extra); } catch { await ctx.reply(t('api_wallet_help'), extra); }
-    return;
-  }
+  if (data === 'wallet:connect_api' || isApiWalletStep(data)) { await handleApiWalletCallback(ctx, data); return; }
   if (data === 'confirm_fund_predictions') { await executeFundPredictions(ctx); return; }
   if (data === 'wallet') {
     await showWalletInfo(ctx);
