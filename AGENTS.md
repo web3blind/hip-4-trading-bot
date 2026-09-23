@@ -10,6 +10,11 @@ it is not a complete user manual or feature catalogue.
 - The current product supports market discovery/search, outcome details,
   market and limit orders, split-buy arbitrage, positions, orders, wallet
   funding/withdrawal, notifications, and English/Russian UI.
+- Markets open through bot-derived categories; the deployer filter comes from
+  `outcomeMeta` and combines with category. Catalog results are cached for five
+  minutes, not authoritative execution quotes.
+- An existing owner account can connect a dedicated API wallet through the
+  private Telegram chat. Never request or store the owner's private key there.
 - The repository was forked from a Polymarket bot and is still being migrated.
   Treat current code and tests as authoritative; `README.md`, `plan.md`, install
   scripts, comments, and compatibility stubs may still contain Polymarket-era
@@ -26,15 +31,14 @@ it is not a complete user manual or feature catalogue.
 - Safe bootstrap check: `npm run bootstrap`. It validates config and local
   encryption without starting Telegram polling or workers.
 - Foreground run: `npm start`; development watcher: `npm run dev`.
-- Canonical suites are `npm test` and `npm run test:unit`, but do not run
-  either in a live checkout: `tests/unit/database.test.js` currently opens and
-  mutates the fixed `data/database.sqlite`. Use an isolated checkout/data copy
-  until that test is changed to use a temporary database.
+- `npm test` / `npm run test:unit` use `scripts/run-safe-tests.js`: each unit
+  file runs in its own temporary `HIP4_DATA_DIR`, with offline network guards
+  and live credentials removed. Run this wrapper, not `node --test` directly
+  or any live-exchange probe, even from a checkout next to production data.
 - Syntax check changed files with `node --check <path>`.
-- PM2 commands are defined in `package.json` and `ecosystem.config.cjs`, but
-  their process names currently disagree and some installers retain legacy
-  Polymarket names. Inspect the live PM2 process and both files before any
-  start, restart, stop, or delete operation; never guess the process name.
+- PM2 scripts and `ecosystem.config.cjs` currently name `hip-4-telegram-bot`,
+  but inspect the live process ID, cwd, script, and singleton lock before any
+  restart; do not act on a guessed name or touch neighboring PM2 processes.
 
 ## Project Map
 
@@ -43,6 +47,10 @@ it is not a complete user manual or feature catalogue.
 - `src/modules/hyperliquid.js` — HyperLiquid info/exchange requests, signing,
   nonce handling, order construction, funding transfers, withdrawals, and
   cancellation.
+- `src/modules/outcome-builder.js` and `src/modules/api-wallet-store.js` —
+  Outcome builder eligibility and persistent API-wallet setup.
+- `src/modules/process-lock.js` — single-runtime `data/runtime.lock`; never
+  remove it without proving its owner exited and no bot/connector still runs.
 - `src/modules/hl-encoding.js` — canonical HIP-4 outcome/side encoding.
 - `src/modules/auth.js` — machine-bound private-key encryption and wallet setup.
 - `src/modules/config.js` — atomic `data/config.json` reads/writes and runtime
@@ -57,6 +65,10 @@ it is not a complete user manual or feature catalogue.
   `userStates`, `busyLocks`, and `confirmationLocks`.
 - `src/modules/bot/routing/` — callback/text dispatch only; business logic lives
   in `src/modules/bot/features/`.
+- `src/modules/bot/features/api-wallet.js` — private-chat connection and
+  confirmed deletion of the submitted API key before saving it.
+- `src/modules/bot/features/outcomes.js` and `positions.js` — filtered catalog
+  and read-only outcome position display.
 - `src/modules/bot/ui/` — Telegram keyboards and plain-text/TalkBack-friendly
   formatting.
 - `src/locales/en.json`, `src/locales/ru.json` — translation dictionaries.
@@ -82,6 +94,10 @@ it is not a complete user manual or feature catalogue.
 - HyperLiquid API responses and current account state are authoritative.
   SQLite is a local cache/reconciliation store, not proof that an order filled
   or a position still exists.
+- Position return is an indicative *unrealized* percentage based on the
+  remaining spot balance's `total` and `entryNtl` and the current mid-price;
+  zero/unknown basis or invalid/missing mid means N/A. It is not realized PnL
+  or a guaranteed executable price and excludes fees.
 - Nonces are monotonic only inside one `HLClient`. Avoid concurrent signing
   clients for the same wallet unless wallet-wide serialization is implemented.
 - Order/cancel signing fields and transfer/withdraw EIP-712 network fields are
@@ -103,10 +119,13 @@ it is not a complete user manual or feature catalogue.
 - Market orders are aggressive IOC orders. The current client may fall back to
   a resting GTC limit after specific IOC rejections; preserve this behavior only
   deliberately and make the resulting order state clear to the user.
-- Buy flows may call `ensureOutcomeFunding()`, which can transfer USDC from spot
-  to the prediction/perp balance before placing an order. Withdrawal may first
-  transfer funds in the opposite direction. Include these dependent actions in
-  confirmation, error handling, and tests.
+- In `unifiedAccount`/`portfolioMargin`, outcome funding uses available Spot
+  USDC (`total - hold`); a zero perp balance must not cap it or trigger a
+  Spot→perp transfer. Non-unified modes may transfer perp→Spot for purchases
+  or Spot→perp for withdrawals, but owner signing is required; the API-wallet
+  agent cannot sign owner transfers or withdrawals. Test dependent actions.
+- Add the Outcome builder code only after owner/network-specific approval is
+  verified; `f: 0` is zero *additional builder fee*, not a rewards guarantee.
 - Split buy submits YES and NO legs in one signed HyperLiquid order action, but
   it is not settlement-atomic. Inspect each returned status independently and
   preserve explicit partial-acceptance warnings; never report guaranteed profit
@@ -132,15 +151,21 @@ it is not a complete user manual or feature catalogue.
 - Telegram-facing market lists and details should remain plain text and concise
   for TalkBack. Use HTML only where the calling message explicitly sets
   `parse_mode: 'HTML'`, and escape any external/user-controlled text first.
+- On the Positions screen, put positions immediately after the heading; keep
+  the mid-price/fees caveat at the end, not before the list.
 - Keep `en.json` and `ru.json` keys synchronized. Do not replace translated copy
   with hard-coded English in an existing localized flow.
 
 ## Secrets, Persistence, And Migration
 
 - `.env` contains Telegram/API credentials and is never committed or printed.
-- `data/config.json` contains the encrypted wallet key and settings. Encryption
-  is machine-ID-bound; copying this file alone to another machine does not make
-  a usable backup.
+- `data/config.json` contains the encrypted owner/API-wallet key and settings.
+  Encryption is machine-ID-bound; copying this file alone to another machine
+  does not make a usable backup. Do not inspect its secret fields in routine
+  development or print them in diagnostics.
+- API-wallet setup must stay in an authorized private Telegram chat. Confirm
+  Telegram deleted the message containing the dedicated API key *before*
+  validating/persisting it; on deletion failure, store nothing.
 - `data/database.sqlite` uses WAL mode. Treat the database plus `-wal`/`-shm` as
   one consistency unit; use a SQLite backup or stopped-process snapshot.
 - Preserve `data/`, `.env`, logs, and migration artifacts across deploys. Never
@@ -163,16 +188,11 @@ it is not a complete user manual or feature catalogue.
 
 ## Known High-Risk Gaps
 
-- Private-key export currently treats any text entered in its confirmation state
-  as sufficient and leaves the key in Telegram. Do not exercise this flow with
-  a real key; fixing it requires real password validation and message deletion.
-- The settings network button toggles testnet/mainnet immediately. Do not invoke
-  it during inspection, and add a deliberate confirmation before relying on it.
-- `trade-limit.js` reads legacy `config.network` while the rest of the project
-  uses `config.hlNetwork`; do not copy that pattern.
-- Workers capture their own client when `startWorkers()` runs. Creating a wallet
-  or switching network updates bot runtime state but does not replace/restart the
-  worker client automatically.
+- Owner-key export still sends the key to Telegram briefly after the literal
+  `CONFIRM` and schedules deletion; it is not password authentication. Never
+  exercise it with a real key during inspection. API-wallet mode has no export.
+- The network button has a review/confirmation step, and API-wallet mode
+  requires reconnection to change network. Do not invoke either during inspection.
 - Outcome size precision can fall back to zero decimals when spot metadata was
   not populated; do not assume fractional HIP-4 size support without a focused
   rounding test.
@@ -184,10 +204,10 @@ it is not a complete user manual or feature catalogue.
 
 ## Testing And Update Coupling
 
-- Run `npm test` after changes only in an isolated checkout/data copy. In the
-  live checkout, use syntax checks and explicitly selected safe unit files, and
-  report the reduced validation scope. Set `LOG_TO_FILE=false` for offline unit
-  runs so validation does not mutate application logs.
+- Run `npm test` after changes through the safe wrapper; for a focused run use
+  `npm test -- <test-name-substring>`. Its child processes isolate data,
+  disable file logging, and block network. Never bypass the wrapper or run a
+  second bot instance with the production Telegram token.
 - For `hyperliquid.js` or encoding changes, cover `#`/`+`/`@` normalization,
   asset IDs, price/size rounding, nonce/signing payload shape, batch statuses,
   and partial errors with mocked exchange calls that do not spend funds.
