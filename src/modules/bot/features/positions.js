@@ -65,8 +65,8 @@ export function createPositionsFeature(deps) {
 
       const outcomePositions = allBalances.filter((b) => {
         if (!isOutcomeToken(b.coin)) return false;
-        const total = parseFloat(b.total || '0');
-        return total > 0.0001;
+        const total = Number(b.total);
+        return Number.isFinite(total) && total > 0.0001;
       });
 
       if (outcomePositions.length === 0) {
@@ -85,13 +85,13 @@ export function createPositionsFeature(deps) {
         mids = {};
       }
 
-      let text = `${t('positions_title')}\n\n`;
+      let text = `${t('positions_title')}\n${t('pnl_mid_note')}\n\n`;
       const keyboard = new InlineKeyboard();
 
       for (let i = 0; i < outcomePositions.length; i++) {
         const pos = outcomePositions[i];
         const rawCoin = pos.coin;
-        const total = parseFloat(pos.total || '0');
+        const total = Number(pos.total);
         const outcome = findOutcomeForPosition(rawCoin);
         const sellCoin = toSellCoin(rawCoin, outcome);
         const question = outcome?.question || outcome?.description || sellCoin;
@@ -99,13 +99,20 @@ export function createPositionsFeature(deps) {
 
         const normCoin = normalizeOutcomeCoin(rawCoin);
         const midPriceRaw = mids[sellCoin] ?? mids[normCoin] ?? mids[rawCoin];
-        const midPrice = midPriceRaw != null ? parseFloat(midPriceRaw) : null;
+        const parsedMid = Number(midPriceRaw);
+        const midPrice = midPriceRaw != null && Number.isFinite(parsedMid) && parsedMid >= 0 && parsedMid <= 1 ? parsedMid : null;
         const priceStr = midPrice !== null ? midPrice.toFixed(4) : t('na');
-        const valueStr = midPrice !== null ? (total * midPrice).toFixed(2) : t('na');
+        const valueStr = midPrice !== null ? `$${(total * midPrice).toFixed(2)}` : t('na');
+        const entryNtl = Number(pos.entryNtl);
+        const rawPercent = midPrice !== null && Number.isFinite(entryNtl) && entryNtl > 0
+          ? ((total * midPrice / entryNtl) - 1) * 100 : NaN;
+        const percent = Number.isFinite(rawPercent) ? rawPercent : null;
+        const pnlStr = percent === null ? t('na') : Math.abs(percent) < 0.005 ? '0.00%' : `${percent > 0 ? '+' : ''}${percent.toFixed(2)}%`;
 
         text += `${i + 1}. ${question}\n`;
         text += `   ${side} | ${t('shares')}: ${total.toFixed(4)} | ${t('price')}: ${priceStr}\n`;
-        text += `   ${t('value')}: $${valueStr}\n\n`;
+        text += `   ${t('value')}: ${valueStr}\n`;
+        text += `   ${t('unrealized_return')}: ${pnlStr}\n\n`;
 
         const safeCoin = encodeURIComponent(sellCoin);
         keyboard.text(t('sell_num', { num: i + 1 }), `pos:sell:${safeCoin}`);

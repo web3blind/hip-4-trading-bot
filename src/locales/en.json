@@ -108,6 +108,8 @@
   "export_pk_sent_will_delete": "🔐 Your private key:\n\n<code>{{privateKey}}</code>\n\n⚠️ This message will be automatically deleted in 90 seconds for security.",
   "export_pk_wallet_missing": "Wallet not initialized. Please initialize a wallet first.",
   "positions_title": "Your Positions",
+  "unrealized_return": "Unrealized return",
+  "pnl_mid_note": "Mid-price estimate before fees; selling may give a different result.",
   "orders_title": "Your Orders",
   "open_orders_title": "Your Open Orders",
   "order_status_open": "Open",

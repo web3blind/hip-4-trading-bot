@@ -1,5 +1,12 @@
 # HIP-4 audit remediation
 
+## Current task: Position unrealized return percentage
+- Read-only `spotClearinghouseState` supplies each held outcome's `total` and `entryNtl`; `allMids` supplies an indicative market price. Display `(total * mid / entryNtl - 1) * 100` as signed *unrealized* return, only when price and positive entry notional are valid. Zero/unknown cost or missing/invalid mid must show unavailable, never invented 0% or realized PnL.
+- Keep existing position buttons, account/network isolation and EN/RU; label midpoint estimate and omission of fees. Tests use synthetic balances only, with positive/negative/zero, alias, missing data and invalid values. No secrets or live trading actions.
+- Production rollout: update only the verified HIP-4 PM2 process after protected backup and staged server tests; do not read or print secrets or execute exchange writes.
+- Implemented on synthetic positive/negative/zero/unknown examples; local offline suite: 196 tests, 30 files, 0 failures. Live public info schema showed positive `entryNtl` and a usable mid for an open outcome without querying any credential.
+
+
 ## Current task: Market filters and five-minute catalog cache
 - Markets opens a filters screen: category first, then a filtered event/market list. The list has Filters as its first button, followed by market buttons. Category and deployer (venue) filters can be combined and survive pagination/event navigation.
 - The public Hyperliquid outcomeMeta has no category field; derive a small explicit category set from outcome/question template names, with Other for unknown types. Its outcome `venue` maps via root `deployers` to the deployer; never conflate the Outcome builder with the `out` deployer.

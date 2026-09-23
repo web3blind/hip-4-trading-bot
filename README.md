@@ -64,7 +64,7 @@ npm start
 
 Bootstrap checks local configuration/encryption without Telegram polling or trading workers. `npm start` uses the stored encrypted wallet; it does not resume an expired in-memory agent session. Wallet creation is available in bot settings with confirmation. Use a dedicated low-balance wallet. Fund the correct Hyperliquid network/account and the market's actual quote token, not Polygon. Private-key export through Telegram is disabled.
 
-Markets and limit orders require a review/confirmation. Market orders are aggressive IOC orders; inspect reported fills, resting orders and unknown results rather than assuming execution. Paired buys are not settlement-atomic: one leg can fail or fill differently. No automatic profit or reward is promised. Network changes require confirmation. Stale confirmations expire.
+Markets and limit orders require a review/confirmation. Market orders are aggressive IOC orders; inspect reported fills, resting orders and unknown results rather than assuming execution. Paired buys are not settlement-atomic: one leg can fail or fill differently. No automatic profit or reward is promised. Network changes require confirmation. Stale confirmations expire. The Positions view shows indicative unrealized return as a signed percentage of Hyperliquid's remaining `entryNtl` cost basis, valued at current mid-price; unavailable cost or price is shown as N/A, and realized PnL/fees are not included.
 
 ## Configuration and operation
 
