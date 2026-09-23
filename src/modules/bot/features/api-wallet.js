@@ -3,7 +3,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { loadConfig, saveConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
 import { saveApiWalletConnection } from '../../api-wallet-store.js';
-import { userStates, runtimeGeneration, runtimeBinding, runtimeTransitioning, busyLocks, isAuthorizedPrivateContext, activateHLClient, createConfiguredHLClient } from '../runtime.js';
+import { outcomeBuilderStatusKey } from '../../outcome-builder.js';
+import { userStates, runtimeGeneration, runtimeBinding, runtimeTransitioning, busyLocks, hlClient, isAuthorizedPrivateContext, activateHLClient, createConfiguredHLClient } from '../runtime.js';
 
 const TTL = 5 * 60_000;
 const copy = (s, en, ru) => s.language === 'ru' ? ru : en;
@@ -115,7 +116,11 @@ export async function interceptApiWalletInput(ctx, next) {
       }
       throw new Error('Connection failed');
     } finally { busyLocks.delete(ctx.chat.id); }
-    try { await ctx.reply(copy(s, 'API wallet saved and connected.', 'API-кошелёк сохранён и подключён.')); } catch {}
+    try {
+      const t = await getTranslator(s.language);
+      const status = outcomeBuilderStatusKey(hlClient?.outcomeBuilderStatus);
+      await ctx.reply(`${copy(s, 'API wallet saved and connected.', 'API-кошелёк сохранён и подключён.')}\n${t(status)}`);
+    } catch {}
   } catch {
     // Never propagate an SDK/Telegram error that may contain input or the update.
     userStates.delete(ctx.chat.id);

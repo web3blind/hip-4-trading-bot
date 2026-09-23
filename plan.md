@@ -1,194 +1,58 @@
-# HIP-4 Telegram Bot — Plan
+# HIP-4 audit remediation
 
-## Goal
+## Current task: Outcome builder attribution without SDK
+- Removed the unpublished SDK-only experiment after source backup; the public bot never depended on it. Verified official `approvedBuilders` and `maxBuilderFee` info endpoints with read-only synthetic-address requests.
+- At Telegram wallet connection and startup, check MAIN owner/mainnet builder approval. Before every managed order, recheck authorization; attach `{b: Outcome, f: 0}` only if verified. Revocation/outage removes builder from the order but does not stop ordinary HIP-4 trading. Testnet remains unaffected. Status is shown in wallet, connection and rewards views; campaign payouts/eligibility remain external.
+- No real wallet, Telegram polling, approvals or exchange writes in tests. `npm test`: 188 passed across 28 isolated files; syntax and `git diff --check` passed. Public synthetic-address read-only info responses returned `approvedBuilders: []`, `maxBuilderFee: 0` (zero alone is not proof of approval).
 
-Fork `polymarket-trading-bot` into a standalone HyperLiquid HIP-4 outcome-trading Telegram bot.
-Remove all Polymarket-specific logic. Replace with HyperLiquid HIP-4 API integration.
-Keep the same UX pattern: single-user Telegram bot, wallet management, market browsing, trading, positions, orders.
+## Current task: Telegram-native API wallet setup (supersedes browser default)
+- Explicit correction: all connection UI in private bot dialogue, first button «Кошелёк», second «Приватник». No local browser, CLI or SSH requirement. Retain prior optional CLI compatibility but remove it from primary help.
+- Flow: owner-address button collects public MAIN address; private-key button explains selected owner/network and replacement before asking for dedicated API key. On input, delete Telegram message BEFORE any asynchronous config/API/crypto work, validate authorized agent, save encrypted key to existing protected secret-bearing data/config.json (0600) and activate shared client/workers without restart. Preserve existing wallet via verified encrypted config backup on replacement; no duplicate plaintext stores.
+- Only authorized private chat can enter this flow. Secret interception precedes rate-limit/busy/command handling so rapid key input isn't left in chat; deletion failure means no save/activation and clear warning to remove manually. No raw key in state/callbacks/logs/errors/replies. Cancel/stale/context changes cannot bind a key to another owner/network. Keyboard may include network/help/back after the two primary buttons.
+- Boundaries: bot routing/middleware/new feature, existing crypto/persistence helpers, localized guide and tests. No live bot/restarts/credentials/funds, no AGENTS changes. Verification: full real Grammy update flow incl rapid input/group/unauthorized/deletion failure/replay/context/backup/save/restart/activation with controlled API; all isolated tests, review/diff, commit/push.
+- Completed: real Grammy update path verifies the two buttons in order, delete before API calls, rapid/duplicate input, cancel/stale/auth/TTL/network safety, encrypted 0600 persistence, backup and live-client activation against synthetic APIs; startup subprocess verifies expired agent still permits Telegram recovery without signing. Parent reviewed integration, retained busy lock through disk readback, requires confirmed Telegram deletion, and avoids false failure when only final notification fails. npm test: 181 passed, 0 failed, 27 files. No real key, Telegram account, running bot or .env modified.
 
-## Non-Goals
+## Previous task: persistent API wallet connection
+- User correction: default connection must use a pre-authorized API wallet key and owner account address, encrypted persistence across restarts; no browser console, JSON copying, injected-wallet signature or daily ephemeral reconnection. Detailed EN/RU steps belong directly in connection UI and Telegram connection help, plus README.
+- Scope: new persistent local connection form/service and CLI default, auth/config/runtime integration, Telegram help entry, locales/README and isolated tests. Preserve optional old temporary connector and existing wallet/trading behavior. No unrelated AGENTS.md edits.
+- Authoritative identity: Hyperliquid info extraAgents for selected network and owner; derived signer must match non-expired authorized agent, never owner. No exchange/signature calls for setup. Persist using existing encryption/saveConfig, verify decrypt/identity and protect existing config with explicit replacement review and encrypted-config backup. Expired/revoked API agents must fail closed.
+- Data safety: baseline f73f772, only pre-existing dirty plan.md. No real .env/config/DB changes, no live bot/restart/approvals/trades. Prior verified encrypted backup remains; new connection backup behavior exercised only in temp data roots. No new public service, loopback-only form with bearer/origin/host/body/rate limits and no secret logs/storage/browser return payload.
+- Verification: new HTTP/form-to-config-to-restarted-HLClient tests, invalid owner/key/network/expired/revoked/upstream failure/replacement/cancel/no plain secrets tests; browser synthetic fixture; npm test and syntax/diff checks; official API page/source inspection for instructions; reviewed commit/push. Stop before real credentials/account permission changes.
+- Done: default npm run connect saves durable API wallet, npm start uses it after process restart, user help supplies exact safe acquisition/authorization/renewal/revocation steps and distinguishes master vs agent address/key. No claimed live trading validation.
+- Completed verification: npm test 170/170 across 24 isolated files; real browser form -> reviewed replacement -> encrypted saved config and backup, no browser key retention; fresh subprocess reconstructed owner/signer client. Official API page inspected. Parent fixed absent Origin on authenticated GET and close/drain before runtime lock release. Fixture stopped. Actual .env/wallet untouched; AGENTS not changed.
 
-- Multi-exchange support (no Polymarket+HL combo)
-- HyperLiquid perps/spot trading (only HIP-4 outcomes)
-- Strategy system (defer to Phase 2 — get core trading working first)
-- On-chain operations (no split/merge/redeem — HL outcomes are native CLOB)
-- AI translation (keep i18n but remove OpenRouter dependency for MVP)
 
-## Architecture
+## Completion contract
+- outcome: repair all audit findings while preserving market/limit buy/sell, paired buys, positions/orders, notifications, EN/RU and wallet usability; add agent-account connection without exposing the owner's private key, optional Outcome builder attribution and reward visibility.
+- verification: isolated Node regression suites exercising real handlers/client boundaries with synthetic signers and controlled HTTP/Telegram responses; syntax; browser QA of local connection; public read-only Hyperliquid metadata/book and Outcome rewards; git diff review. No signed live trades, cancels, transfers, approvals, or withdrawal validation.
+- constraints: preserve pre-existing dirty batch-order and market-label work; # outcomes and + tokens are distinct from ordinary @ spot; actual API responses/quoteToken/account abstraction/fills are authoritative. Unknown execution is never success or automatic retry. Master keys must not enter browser-to-server payloads. Local existing wallet remains intact.
+- boundaries: this repository and its local test/backup artifacts only. Do not mutate Hermes/global config, unrelated projects, live wallets, network selection, Telegram delivery, or remote account permissions. No new public endpoint without approval.
+- stop_when: actual wallet signature, live funds, inaccessible provider whitelist/eligibility, or public deployment is required. Finish independent safe implementation and document exact unresolved external gate.
 
-### What stays (reuse as-is or with minor edits)
+## Data safety
+Inventory: HEAD f1e667bc77c073d344d69908da1af7afe1aa8bf6; existing dirty source/test changes; trusted origin web3blind/hip-4-trading-bot; no repo GitHub deployment workflows found. No running process with this checkout cwd or saved matching PM2 entry observed. data/config.json contains encrypted existing wallet; network absent => testnet; do not replace/migrate real wallet. Persistent files: .env, data/config.json, data/database.sqlite with -wal/-shm, data/logs and migration keys.
+Before code changes: preserve current source snapshot and git diff; SQLite online backup into private directory, verify integrity and table counts; encrypt runtime backup including .env/config/database with random AES-256 password stored separately mode 0600 for local rollback. Source snapshot excludes runtime/secrets/node_modules/.git. This is local rollback protection, not off-host disaster recovery.
+Forbidden: reset/clean/restore, rsync --delete, init-db against live data, broad probe cancellation, installing/starting second polling bot, migration of real wallet, changing actual config/network. Risky deployed schema changes/restart require additional continuity verification. Tests must use temporary absolute data roots and no .env loading from project. Any legacy manual live probe must fail closed by default and restrict cleanup to its own OIDs.
 
-| Module | Lines | Changes |
-|--------|-------|---------|
-| `src/modules/auth.js` | 277 | Replace Polymarket wallet gen → HL private key import/generate |
-| `src/modules/config.js` | 272 | Adapt config fields (remove CLOB creds, add HL-specific) |
-| `src/modules/database.js` | 673 | Adapt table schemas (outcomes instead of markets) |
-| `src/modules/logger.js` | 542 | As-is |
-| `src/modules/proxy.js` | 497 | As-is |
-| `src/modules/i18n.js` | 66 | As-is |
-| `src/modules/bot/runtime.js` | — | Minor: remove Polymarket-specific state keys |
-| `src/modules/bot/constants.js` | — | Adapt constants |
-| `src/modules/bot/ui/keyboards.js` | — | Rebuild for HL outcome UX |
-| `src/modules/bot/ui/formatters.js` | — | Rebuild for HL outcome data |
-| `src/modules/bot/routing/` | — | Adapt routes |
-| `src/index.js` | 155 | Minor: remove Polymarket SDK init |
-| `ecosystem.config.cjs` | — | Rename app |
+## Slices
+1. [x] Establish safe test/data paths and snapshot baseline.
+2. [x] Wallet/auth/private-chat controls; one-time state-bound confirmations; atomic network/client/workers lifecycle; account/network-specific persistent caches and worker reconciliation.
+3. [x] Strict API encoding, response parsing, account-aware quote balances, budgets/precision before review, fill-aware paired results/cancellation/withdraw semantics.
+4. [~] Fresh metadata/catalog, parent expiry, migration, installers/PM2, README, log/proxy, guarded probes verified. AGENTS.md remains unchanged: protected-file approval timed out; no bypass attempted.
+5. [x] Browser/local agent connection and separate owner/signer identity; optional zero-fee Outcome attribution and payout visibility, no promise of whitelist eligibility.
+6. [x] Full integration regression, independent review, corrections/retest, reviewed commit/push if no risky automation; short Russian final usage instructions.
 
-### What gets replaced entirely
+## Financial flow rules
+Every review binds operation/token, account, network, expiry. Cancel/navigation invalidates it; stale buttons cannot confirm a new operation. Amounts and rounded order wires are frozen at review, refreshed execution cannot exceed caps. User sees actual fills/resting/unknown and OIDs; server does not fabricate success. Owner-only transfer/withdraw disabled for agent mode with clear actionable instructions, not automatic signing attempts. Withdrawal review names Arbitrum route and fee/receipt semantics. Quote and maker/taker rewards require campaign rules and builder approval; reward service data is not proof of eligibility.
 
-| Old Module | New Module | Purpose |
-|-----------|-----------|---------|
-| `polymarket.js` (3601 lines) | `hyperliquid.js` | HL API client: info, exchange, signing |
-| `workers.js` (1379 lines) | `workers.js` | Positions sync, order monitoring (HL API) |
-| `strategyMarketWatcher.js` (627 lines) | DELETE (Phase 2) | Strategy scanner — not needed for MVP |
-| `constants.js` (43 lines) | `constants.js` | HL chain config, API URLs, encoding helpers |
-| `bot.js` (2996 lines) | `bot.js` | Rewire features, remove Polymarket refs |
-| `features/markets.js` | `features/outcomes.js` | Browse HIP-4 outcome markets |
-| `features/market-details.js` | `features/outcome-details.js` | View outcome orderbook, price, info |
-| `features/trade-market.js` | `features/trade-market.js` | Market buy/sell on HL outcomes |
-| `features/trade-limit.js` | `features/trade-limit.js` | Limit orders on HL outcomes |
-| `features/trade-onchain.js` | DELETE | No on-chain ops for HL outcomes |
-| `features/strategies.js` | DELETE (Phase 2) | Strategies deferred |
-| `features/positions.js` | `features/positions.js` | HL outcome positions |
-| `features/orders.js` | `features/orders.js` | HL open/filled orders |
-| `features/withdraw.js` | `features/withdraw.js` | HL USDC withdraw (if applicable) |
-| `features/settings.js` | `features/settings.js` | Adapt settings |
-| `features/security.js` | `features/security.js` | Adapt for HL wallet |
-| `features/language.js` | As-is | — |
-| `ai.js` | DELETE | Not needed for MVP |
-| `notifications.js` | `notifications.js` | Adapt for HL outcomes |
+## Plan-only / customer copy
+This file records staging limits. UI remains short, accessible and EN/RU; meaningful warnings for non-atomic pair risk, unverified approval and live-money confirmations are required. No speculative refactor or trading strategies. Final response concise as requested.
 
-### What gets added
-
-| New Module | Purpose |
-|-----------|---------|
-| `src/modules/hyperliquid.js` | Core HL API client |
-| `src/modules/hl-signing.js` | EIP-712 signing for HL exchange actions |
-| `src/modules/hl-encoding.js` | Outcome ID encoding/decoding utilities |
-
-## HyperLiquid HIP-4 API Reference
-
-### Endpoints
-
-- **Testnet Info**: `POST https://api.hyperliquid-testnet.xyz/info`
-- **Testnet Exchange**: `POST https://api.hyperliquid-testnet.xyz/exchange`
-- **Mainnet Info**: `POST https://api.hyperliquid.xyz/info`
-- **Mainnet Exchange**: `POST https://api.hyperliquid.xyz/exchange`
-
-### Info Requests (read-only, no auth)
-
-```json
-{"type": "outcomeMeta"}                              // All outcome markets
-{"type": "l2Book", "coin": "#21460"}                 // Orderbook
-{"type": "allMids"}                                  // All mid prices
-{"type": "spotClearinghouseState", "user": "0x..."}  // User balances
-{"type": "candleSnapshot", "req": {"coin": "#21460", "interval": "1h", "startTime": ..., "endTime": ...}}
-{"type": "userFills", "user": "0x..."}               // Fill history
-{"type": "frontendOpenOrders", "user": "0x..."}      // Open orders
-```
-
-### Asset Encoding
-
-```
-encoding = 10 * outcomeId + side   (side: 0=YES, 1=NO)
-coin = "#" + encoding              (e.g. #21460)
-token = "+" + encoding             (e.g. +21460)
-assetId = 100_000_000 + encoding   (e.g. 100021460)
-```
-
-### Exchange Actions (require signing)
-
-Standard HL exchange endpoint with EIP-712 typed data signing.
-Order placement uses the same `order` action as spot, but with outcome asset IDs.
-
-### Authentication
-
-- Private key (Ethereum wallet) → generates EIP-712 signatures
-- Optional: API wallet (sub-key with limited permissions)
-- Nonce management: timestamp-based
-
-## SDK Choice
-
-Use `hyperliquid` npm package (nktkas/hyperliquid, 360 stars, actively maintained).
-It handles signing, nonce management, and all API calls.
-
-```bash
-npm install hyperliquid
-```
-
-## Implementation Phases
-
-### Phase 1: Foundation (MVP Core)
-
-**Milestone 1.1: Strip Polymarket, set up HL client**
-- [ ] Remove `polymarket.js`, `strategyMarketWatcher.js`, `ai.js`, `trade-onchain.js`, `strategies.js`
-- [ ] Create `hyperliquid.js` — wrapper around `hyperliquid` SDK
-- [ ] Create `hl-encoding.js` — outcome encoding/decoding utils
-- [ ] Update `constants.js` — HL API URLs, chain config
-- [ ] Update `package.json` — remove @polymarket/clob-client, add hyperliquid
-- [ ] Update `.env.example` — HL-specific vars
-- [ ] Update `config.js` — HL config structure
-
-**Milestone 1.2: Wallet & Auth**
-- [ ] Update `auth.js` — generate/import HL-compatible Ethereum wallet
-- [ ] Integrate with `hyperliquid` SDK client initialization
-- [ ] Test wallet creation and API connection
-
-**Milestone 1.3: Market Discovery**
-- [ ] Create `features/outcomes.js` — list outcomes from outcomeMeta
-- [ ] Create `features/outcome-details.js` — view orderbook, price, description
-- [ ] Update `keyboards.js` — outcome-specific keyboards
-- [ ] Update `formatters.js` — outcome price/description formatting
-- [ ] Update `database.js` — outcomes cache table
-
-**Milestone 1.4: Trading**
-- [ ] Implement market buy/sell in `trade-market.js` using HL SDK
-- [ ] Implement limit buy/sell in `trade-limit.js` using HL SDK
-- [ ] Test order placement on testnet
-
-**Milestone 1.5: Positions & Orders**
-- [ ] Update `positions.js` — fetch from spotClearinghouseState
-- [ ] Update `orders.js` — fetch from frontendOpenOrders, cancel orders
-- [ ] Update `workers.js` — positions sync, order monitoring
-
-**Milestone 1.6: Bot Assembly**
-- [ ] Rewire `bot.js` — register new features, remove old
-- [ ] Update routing — callback-router.js, text-router.js
-- [ ] Update `notifications.js` for HL outcomes
-- [ ] Update locales (en.json, ru.json)
-- [ ] Update `index.js` entry point
-
-### Phase 2: Enhancement (post-MVP)
-
-- Strategy system for outcome arbitrage
-- WebSocket real-time price updates
-- Price alerts
-- Portfolio view
-- Mainnet switch when HIP-4 goes live
-
-## Validation Strategy
-
-- Unit tests for encoding/decoding
-- Unit tests for API response parsing
-- Integration test: connect to HL testnet, fetch outcomeMeta
-- Integration test: place and cancel test order on testnet
-- Manual Telegram bot testing
-
-## Risks & Assumptions
-
-1. **HIP-4 write API not fully documented** — may need to reverse-engineer from testnet UI or SDK source. Mitigation: `hyperliquid` npm package likely supports outcomes since it's actively maintained.
-2. **Testnet only** — bot will work on testnet until HIP-4 goes to mainnet. Config should support easy network switching.
-3. **SDK outcome support** — need to verify `hyperliquid` npm package supports outcome trading. If not, fall back to raw HTTP + signing.
-4. **Rate limits** — HL rate limits differ from Polymarket. Need to respect them.
-
-## Definition of Done
-
-- Bot starts, connects to HL testnet
-- User can browse HIP-4 outcome markets via Telegram
-- User can view orderbook and prices for any outcome
-- User can place market and limit orders (buy/sell YES/NO)
-- User can view positions and open orders
-- User can cancel orders
-- All Polymarket code is removed
-- Tests pass
-- README updated
+## Verification and release bounds
+- Final `npm test`: 160 passed, 0 failed across 22 isolated test files; no live exchange writes.
+- Syntax: `node --check` across 96 JS files passed; `bash -n install/install.sh`, `git diff --check` passed.
+- Independent review closed cancellation confirmation/frozen OIDs, withdrawal failed-refresh fallback, actual polling readiness/cleanup, persisted fill-notification retry, consistent near-break-even split estimate.
+- Browser connector exercised with synthetic injected wallet only; HTTP approval → actual owner/signer client/config boundary tested offline. Public Outcome wallet payout endpoint verified HTTP 200.
+- `.env` and `data/config.json` byte-identical to verified encrypted prework backup (AES-256-CBC PBKDF2 200000 iterations). Existing live wallet/network untouched.
+- No real wallet approval, trades, transfers, withdrawals or production startup. Windows installer not executed on this Linux host. Campaign eligibility is external and not guaranteed by builder code. Delivery across a crash after Telegram acceptance but before DB acknowledgement may duplicate; recovery/retry dedup otherwise verified.
+- Protected AGENTS.md update requires user approval; older statements there about aliases/tests/migration are superseded by verified current code and README, not silently edited.

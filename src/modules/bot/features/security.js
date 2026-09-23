@@ -11,6 +11,7 @@ import { createContext, safeLogError, safeLogInfo } from '../../logger.js';
 import { HLClient } from '../../hyperliquid.js';
 import { busyLocks, userStates, hlClient, activateHLClient, createConfiguredHLClient, confirmationCallback, runtimeBinding, invalidateUserState, scheduleMessageDeletion, isAuthorizedPrivateContext } from '../runtime.js';
 import { getMainMenuKeyboard } from '../ui/keyboards.js';
+import { outcomeBuilderStatusKey } from '../../outcome-builder.js';
 
 export async function showWalletInfo(ctx) {
   const config = await loadConfig();
@@ -35,6 +36,7 @@ export async function showWalletInfo(ctx) {
   let spotUsdc = 0;
   let perpUsdc = 0;
   let balanceText = '';
+  let builderText = t('outcome_builder_unavailable');
   if (hlClient) {
     try {
       spotUsdc = await hlClient.getSpotUsdcBalance();
@@ -44,13 +46,16 @@ export async function showWalletInfo(ctx) {
     } catch {
       balanceText = `\n${t('balance_unavailable')}`;
     }
+    const status = await hlClient.refreshOutcomeBuilderStatus();
+    builderText = t(outcomeBuilderStatusKey(status.status));
   }
 
   const text =
     `${t('wallet_title')}\n\n` +
     `Address:\n<code>${config.walletAddress}</code>` +
     balanceText +
-    `\n${t('network_label')}: ${config.hlNetwork || 'testnet'}`;
+    `\n${t('network_label')}: ${config.hlNetwork || 'testnet'}` +
+    `\n${builderText}`;
 
   const keyboard = new InlineKeyboard();
   keyboard.text(t('api_wallet_connect'), 'wallet:connect_api').row();

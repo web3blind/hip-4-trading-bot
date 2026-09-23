@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { ethers } from 'ethers';
 import { DATA_DIR, loadConfig, saveConfig } from './config.js';
 import { importWallet, validateWalletConfig, verifyAgentAuthorization, getMachineKey, encrypt, decrypt } from './auth.js';
+import { verifyOutcomeBuilderApproval } from './outcome-builder.js';
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 async function diskConfig() {
@@ -29,10 +30,11 @@ export function saveApiWalletConnection({ accountAddress, privateKey, network, e
     // A temporary connector overlays disk config: never claim it is durable.
     if (baseline !== null && !same(JSON.parse(baseline), previous)) throw new Error('Temporary session active; persistent setup unavailable');
     const validUntil = await verifyAgentAuthorization({ walletAddress: owner, agentAddress: signer.address, hlNetwork: network }, { fetchImpl });
+    const builderStatus = await verifyOutcomeBuilderApproval({ accountAddress: owner, network, fetchImpl });
     const imported = await importWallet(signer.privateKey);
     const next = { ...previous, authMode: 'agent', walletAddress: owner, agentAddress: signer.address, hlNetwork: network, agentValidUntil: validUntil,
       encrypted: { ...previous.encrypted, privateKey: imported.encryptedPrivateKey },
-      outcomeBuilderEnabled: previous.walletAddress?.toLowerCase() === owner.toLowerCase() && previous.hlNetwork === network ? !!previous.outcomeBuilderEnabled : false };
+      outcomeBuilderEnabled: builderStatus.enabled };
     await validateWalletConfig(next);
     if (baseline !== null && (previous.walletAddress || previous.encrypted?.privateKey)) {
       const machineKey = await getMachineKey();

@@ -152,13 +152,30 @@ export function activateHLClient(client, options = {}) {
   activationQueue = run.catch(() => {});
   return run;
 }
-export async function createConfiguredHLClient(config, { fetchImpl = fetch } = {}) {
+export async function createConfiguredHLClient(config, { fetchImpl = fetch, persistBuilderStatus } = {}) {
   const { validateWalletConfig, verifyAgentAuthorization } = await import('../auth.js');
   const { HLClient } = await import('../hyperliquid.js');
+  const { verifyOutcomeBuilderApproval } = await import('../outcome-builder.js');
   const key = await validateWalletConfig(config);
   if (config.authMode === 'agent') {
     if (!Number.isSafeInteger(config.agentValidUntil) || config.agentValidUntil <= Date.now()) throw new Error('Agent approval expired or invalid; reconnect API wallet');
     await verifyAgentAuthorization(config, { fetchImpl });
   }
-  return HLClient.create(key, config.hlNetwork || 'testnet', { accountAddress: config.walletAddress, authMode: config.authMode || 'wallet', builder: config.outcomeBuilderEnabled ? { b: '0xab5dbc057628bc18523c4cdfc0e1e2ebdbecb704', f: 0 } : undefined });
+  const network = config.hlNetwork || 'testnet';
+  const verifyBuilder = () => verifyOutcomeBuilderApproval({ accountAddress: config.walletAddress, network, fetchImpl });
+  const builderStatus = await verifyBuilder();
+  const effectiveConfig = { ...config, outcomeBuilderEnabled: builderStatus.enabled };
+  if (config.outcomeBuilderEnabled !== effectiveConfig.outcomeBuilderEnabled && typeof persistBuilderStatus === 'function') {
+    await persistBuilderStatus(effectiveConfig);
+  }
+  const client = await HLClient.create(key, network, {
+    accountAddress: config.walletAddress,
+    authMode: config.authMode || 'wallet',
+    outcomeBuilderVerifier: verifyBuilder,
+    outcomeBuilderStatus: builderStatus.status,
+  });
+  client.builder = builderStatus.enabled ? { b: builderStatus.builder, f: 0 } : null;
+  client.outcomeBuilderEnabled = builderStatus.enabled;
+  client.outcomeBuilderConfig = effectiveConfig;
+  return client;
 }

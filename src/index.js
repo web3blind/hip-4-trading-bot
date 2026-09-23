@@ -1,5 +1,5 @@
 if (!process.env.HIP4_DATA_DIR) await import('dotenv/config');
-import { loadConfig, ensureConfigFileExists } from './modules/config.js';
+import { loadConfig, saveConfig, ensureConfigFileExists } from './modules/config.js';
 import { initBot, startBot, stopBot } from './modules/bot/bot.js';
 import { initDatabase } from './modules/database.js';
 import {
@@ -155,7 +155,7 @@ async function runBot() {
     try {
       safeLogInfo(ctx, 'Initializing HyperLiquid client');
       const network = config.hlNetwork || 'testnet';
-      hlClient = await createConfiguredHLClient(config);
+      hlClient = await createConfiguredHLClient(config, { persistBuilderStatus: saveConfig });
       safeLogInfo(ctx, 'HyperLiquid client initialized', { network });
     } catch (error) {
       safeLogError(ctx, error, { stage: 'hlClientInit' });

@@ -62,7 +62,7 @@ test('actual Grammy dialogue preserves owner, primary button order, deletes rapi
   const saved = await cfg.loadConfig(); assert.equal(saved.walletAddress, owner.address); assert.equal(saved.agentAddress, agent.address);
   assert.equal(rt.hlClient.address, owner.address); assert.equal(rt.hlClient.wallet.address, agent.address);
   assert.equal(rt.busyLocks.size, 0); assert.equal(rt.runtimeTransitioning, false);
-  assert.equal(sent.filter(m => m.text === 'API-кошелёк сохранён и подключён.').length, 1);
+  assert.equal(sent.filter(m => m.text?.startsWith('API-кошелёк сохранён и подключён.')).length, 1);
   assert.ok(!JSON.stringify(sent).includes(agent.privateKey)); assert.ok(!readFileSync(join(root, 'config.json'), 'utf8').includes(agent.privateKey.slice(2)));
   assert.equal(statSync(join(root, 'config.json')).mode & 0o777, 0o600);
   assert.equal((await rt.createConfiguredHLClient(saved)).wallet.address, agent.address);

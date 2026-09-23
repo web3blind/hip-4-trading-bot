@@ -10,6 +10,7 @@ import { ethers } from 'ethers';
 import { encode as msgpackEncode } from '@msgpack/msgpack';
 import { HL_API, DEFAULTS } from './constants.js';
 import { isOutcomeCoin, normalizeOutcomeCoin, coinToOutcome } from './hl-encoding.js';
+import { OUTCOME_BUILDER } from './outcome-builder.js';
 
 const signerNonces = new Map();
 // Reserve one percent of notional for fees. Never use the reserve as price
@@ -252,6 +253,8 @@ export class HLClient {
     const builder = typeof options.builder === 'string' ? options.builder : options.builder?.b;
     if (options.builder && (!builder || !ethers.utils.isAddress(builder) || (options.builder.f != null && options.builder.f !== 0))) throw new Error('Builder requires address and zero fee');
     this.builder = builder ? { b: builder.toLowerCase(), f: 0 } : null;
+    this.outcomeBuilderVerifier = options.outcomeBuilderVerifier || null;
+    this.outcomeBuilderStatus = options.outcomeBuilderStatus || (this.builder ? 'approved' : 'unavailable');
     this.network = network;
     this.isMainnet = network === 'mainnet';
 
@@ -307,6 +310,37 @@ export class HLClient {
 
   async _exchangeRequest(payload) {
     return assertExchange(await this._request(this._exchangeUrl(), payload, true));
+  }
+
+  async refreshOutcomeBuilderStatus() {
+    if (!this.isMainnet) {
+      this.builder = null;
+      this.outcomeBuilderStatus = 'mainnet_only';
+      return { enabled: false, status: this.outcomeBuilderStatus, builder: OUTCOME_BUILDER, fee: 0 };
+    }
+    if (typeof this.outcomeBuilderVerifier !== 'function') {
+      this.builder = null;
+      this.outcomeBuilderStatus = 'unavailable';
+      return { enabled: false, status: this.outcomeBuilderStatus, builder: OUTCOME_BUILDER, fee: 0 };
+    }
+    let verification;
+    try { verification = await this.outcomeBuilderVerifier(); }
+    catch { verification = { enabled: false, status: 'unavailable', builder: OUTCOME_BUILDER, fee: 0 }; }
+    const valid = verification?.enabled === true && verification.status === 'approved' &&
+      verification.builder?.toLowerCase() === OUTCOME_BUILDER && verification.fee === 0;
+    this.builder = valid ? { b: OUTCOME_BUILDER, f: 0 } : null;
+    this.outcomeBuilderStatus = valid ? 'approved' : (verification?.status || 'unavailable');
+    return { ...verification, enabled: valid, status: this.outcomeBuilderStatus };
+  }
+
+  async _refreshOutcomeBuilderForOrder() {
+    // Managed Telegram connections revalidate on every order. Standalone
+    // clients with an explicitly supplied builder retain their original
+    // caller-managed behavior (e.g. the optional temporary connector).
+    if (typeof this.outcomeBuilderVerifier !== 'function') return;
+    // Missing/revoked approval must never attach stale attribution; ordinary
+    // HIP-4 trading remains available without Outcome campaign eligibility.
+    await this.refreshOutcomeBuilderStatus();
   }
 
   /**
@@ -556,6 +590,7 @@ export class HLClient {
       throw new Error('No orders provided');
     }
 
+    await this._refreshOutcomeBuilderForOrder();
     if (orderRequests.some(r => r.isBuy && r.maxSpend != null)) await this._checkFeeReserve();
     const orderWires = [];
     for (const request of orderRequests) {

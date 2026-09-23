@@ -53,7 +53,7 @@ Only use the intended bot's private chat. Telegram deletion does **not** prove r
 
 For operators who prefer local entry, `npm run connect` retains the optional loopback form; it is not required for Telegram setup. The previous temporary wallet-signing flow remains optional as `npm run connect:temporary`; it holds its generated agent key only in memory and requires reconnection after stopping. It is no longer the default.
 
-Temporary mode offers optional zero-fee Outcome builder approval. Importing a persistent API wallet does not grant new builder permissions or guarantee rewards. Paid/pending/awarded data under Settings → Outcome rewards is service-reported history, not proof of eligibility or future profitability. Campaign interface/whitelist/activity requirements remain external.
+In mainnet, the bot checks Outcome builder approval for the MAIN account when connecting, on startup and immediately before each order. If approval is verified, it attaches Outcome's builder address to the order with an explicit zero builder fee. Approval must be given once with the MAIN wallet in the [official Outcome interface](https://outcome.xyz/); an API wallet cannot grant it. Without approval or when the check fails, ordinary HIP-4 trading continues **without** Outcome attribution; check the status under Wallet or Settings → Outcome rewards. Temporary mode can still offer its own optional approval flow. Paid/pending/awarded totals are service-reported history, not proof of campaign eligibility or future rewards. No Outcome SDK dependency is required.
 
 ## Existing local wallet mode
 
