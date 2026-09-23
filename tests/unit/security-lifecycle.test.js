@@ -136,7 +136,7 @@ test('router rejects stale A without destroying B, bare callbacks and replay', a
   const a = rt.confirmationCallback(7, 'confirm_fund_predictions', { state: 'CONFIRMING_FUND_PREDICTIONS', amount: 1 });
   const b = rt.confirmationCallback(7, 'confirm_fund_predictions', { state: 'CONFIRMING_FUND_PREDICTIONS', amount: 2 });
   const transfers = [];
-  rt.setHLClient({ address: owner, network: 'testnet', async transferUsdClass(amount) { transfers.push(amount); } });
+  rt.setHLClient({ address: owner, network: 'testnet', async getAccountAbstraction() { return 'disabled'; }, async transferUsdClass(amount) { transfers.push(amount); } });
   await handleCallbackQuery(context(a));
   assert.equal(rt.userStates.get(7).amount, 2);
   await handleCallbackQuery(context('confirm_fund_predictions'));
@@ -149,11 +149,36 @@ test('router rejects stale A without destroying B, bare callbacks and replay', a
 test('funding screen is review only; confirmation uses frozen amount not increased live balance', async () => {
   const transferred = [];
   let balance = 10.129;
-  rt.setHLClient({ address: owner, network: 'testnet', async getSpotUsdcBalance() { return balance; }, async transferUsdClass(n) { transferred.push(n); } });
+  rt.setHLClient({ address: owner, network: 'testnet', async getAccountAbstraction() { return 'disabled'; }, async getSpotUsdcBalance() { return balance; }, async transferUsdClass(n) { transferred.push(n); } });
   const ctx = context('wallet:fund_predictions'); await handleCallbackQuery(ctx);
   const callback = button(ctx, 'confirm_fund_predictions:'); assert.ok(callback); assert.deepEqual(transferred, []);
   balance = 500;
   await handleCallbackQuery(context(callback)); assert.deepEqual(transferred, [10.12]);
+});
+
+test('unified wallet displays spot outcome funds, hides perp transfer, and rejects stale transfer callback', async () => {
+  const transfers = [];
+  const fake = {
+    address: owner, network: 'mainnet',
+    async getAccountAbstraction() { return 'unifiedAccount'; },
+    async getSpotUsdcBalance() { return 255.5; },
+    async getPerpBalance() { throw new Error('perp state is not meaningful'); },
+    async refreshOutcomeBuilderStatus() { return { status: 'approved' }; },
+    async transferUsdClass(...args) { transfers.push(args); },
+  };
+  rt.setHLClient(fake);
+  await config.saveConfig({ ...(await stored()), hlNetwork: 'mainnet', language: 'ru' });
+  const wallet = context('wallet'); await handleCallbackQuery(wallet);
+  assert.match(wallet.messages.at(-1).text, /255\.50/);
+  assert.match(wallet.messages.at(-1).text, /Единый счёт/);
+  assert.doesNotMatch(wallet.messages.at(-1).text, /Средства предсказаний: \$0/);
+  assert.equal(button(wallet, 'wallet:fund_predictions'), undefined);
+  const stale = context('wallet:fund_predictions'); await handleCallbackQuery(stale);
+  assert.match(stale.messages.at(-1).text, /перевод USDC в перп.*не нужен/);
+  const token = rt.confirmationCallback(7, 'confirm_fund_predictions', { state: 'CONFIRMING_FUND_PREDICTIONS', amount: 10 });
+  const confirmed = context(token); await handleCallbackQuery(confirmed);
+  assert.match(confirmed.messages.at(-1).text, /не нужен/);
+  assert.deepEqual(transfers, []);
 });
 
 test('menu/cancel/new flow invalidate confirmation; account and network binding reject stale', async () => {
@@ -226,7 +251,7 @@ test('network toggle reviews before persistence, confirms through shared activat
 
 test('concurrent double confirm cannot duplicate financial operation or unlock running handler', async () => {
   let release; const waiting = new Promise(resolve => { release = resolve; }); let calls = 0;
-  rt.setHLClient({ network: 'testnet', address: owner, async transferUsdClass() { calls++; await waiting; } });
+  rt.setHLClient({ network: 'testnet', address: owner, async getAccountAbstraction() { return 'disabled'; }, async transferUsdClass() { calls++; await waiting; } });
   const token = rt.confirmationCallback(7, 'confirm_fund_predictions', { state: 'CONFIRMING_FUND_PREDICTIONS', amount: 1 });
   const first = handleCallbackQuery(context(token));
   while (!calls) await new Promise(resolve => setImmediate(resolve));

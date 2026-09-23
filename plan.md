@@ -1,5 +1,9 @@
 # HIP-4 audit remediation
 
+## Current task: Unified USDC for HIP-4 outcomes
+- Public API, with only the address supplied in chat, confirms `unifiedAccount`: spot USDC is available while perp withdrawable is zero. No wallet secrets or config were read.
+- Correct unified/portfolio available funds to Spot USDC; label the wallet view accurately and prevent transfers to perp on unified accounts. Preserve manual-mode owner transfers.
+- Offline tests: 189 passing in 28 files. Read-only HLClient smoke verified available USDC and sufficient-funds check without a signer. No exchange write or production restart.
 ## Current task: Outcome builder attribution without SDK
 - Removed the unpublished SDK-only experiment after source backup; the public bot never depended on it. Verified official `approvedBuilders` and `maxBuilderFee` info endpoints with read-only synthetic-address requests.
 - At Telegram wallet connection and startup, check MAIN owner/mainnet builder approval. Before every managed order, recheck authorization; attach `{b: Outcome, f: 0}` only if verified. Revocation/outage removes builder from the order but does not stop ordinary HIP-4 trading. Testnet remains unaffected. Status is shown in wallet, connection and rewards views; campaign payouts/eligibility remain external.

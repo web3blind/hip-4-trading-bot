@@ -35,16 +35,23 @@ export async function showWalletInfo(ctx) {
 
   let spotUsdc = 0;
   let perpUsdc = 0;
+  let abstraction = null;
   let balanceText = '';
   let builderText = t('outcome_builder_unavailable');
   if (hlClient) {
     try {
+      abstraction = await hlClient.getAccountAbstraction();
       spotUsdc = await hlClient.getSpotUsdcBalance();
-      perpUsdc = await hlClient.getPerpBalance();
       balanceText = `\n${t('spot_usdc')}: $${spotUsdc.toFixed(2)}`;
-      balanceText += `\n${t('prediction_funding')}: $${perpUsdc.toFixed(2)}`;
+      if (['unifiedAccount', 'portfolioMargin'].includes(abstraction)) {
+        balanceText += `\n${t('unified_outcome_funding')}`;
+      } else {
+        perpUsdc = await hlClient.getPerpBalance();
+        balanceText += `\n${t('perp_usdc')}: $${perpUsdc.toFixed(2)}`;
+      }
     } catch {
       balanceText = `\n${t('balance_unavailable')}`;
+      abstraction = null;
     }
     const status = await hlClient.refreshOutcomeBuilderStatus();
     builderText = t(outcomeBuilderStatusKey(status.status));
@@ -59,8 +66,8 @@ export async function showWalletInfo(ctx) {
 
   const keyboard = new InlineKeyboard();
   keyboard.text(t('api_wallet_connect'), 'wallet:connect_api').row();
-  if (config.authMode !== 'agent' && spotUsdc > 0.01) {
-    keyboard.text(`${t('fund_predictions')} ($${spotUsdc.toFixed(2)})`, 'wallet:fund_predictions').row();
+  if (config.authMode !== 'agent' && abstraction && !['unifiedAccount', 'portfolioMargin'].includes(abstraction) && spotUsdc > 0.01) {
+    keyboard.text(`${t('transfer_to_perps')} ($${spotUsdc.toFixed(2)})`, 'wallet:fund_predictions').row();
   }
   const totalUsdc = spotUsdc + perpUsdc;
   if (config.authMode !== 'agent' && totalUsdc >= 1) {
@@ -119,10 +126,14 @@ async function handleFundPredictions(ctx) {
   if (!hlClient || config.authMode === 'agent') {
     await ctx.editMessageText(t('owner_transfer_required')); return;
   }
+  const mode = await hlClient.getAccountAbstraction();
+  if (['unifiedAccount', 'portfolioMargin'].includes(mode)) {
+    await ctx.editMessageText(t('unified_no_transfer')); return;
+  }
   const amount = Math.floor((await hlClient.getSpotUsdcBalance()) * 100) / 100;
   if (!Number.isFinite(amount) || amount < 0.01) { await ctx.editMessageText(t('no_spot_usdc')); return; }
   const callback = confirmationCallback(ctx.chat.id, 'confirm_fund_predictions', { state: 'CONFIRMING_FUND_PREDICTIONS', amount });
-  await ctx.editMessageText(`${t('fund_predictions')}: $${amount.toFixed(2)} USDC\n${t('network_label')}: ${hlClient.network}\n${config.walletAddress}`, {
+  await ctx.editMessageText(`${t('transfer_to_perps')}: $${amount.toFixed(2)} USDC\n${t('network_label')}: ${hlClient.network}\n${config.walletAddress}`, {
     reply_markup: new InlineKeyboard().text(t('confirm'), callback).text(t('cancel'), 'wallet'),
   });
 }
@@ -134,6 +145,10 @@ async function executeFundPredictions(ctx) {
   userStates.delete(ctx.chat.id);
   busyLocks.set(ctx.chat.id, true);
   try {
+    const mode = await hlClient.getAccountAbstraction();
+    if (['unifiedAccount', 'portfolioMargin'].includes(mode)) {
+      await ctx.editMessageText(t('unified_no_transfer')); return;
+    }
     await hlClient.transferUsdClass(state.amount, true);
     await ctx.editMessageText(`${t('transferred')}: $${state.amount.toFixed(2)} USDC`, { reply_markup: new InlineKeyboard().text(t('back'), 'wallet') });
   } finally { busyLocks.delete(ctx.chat.id); }

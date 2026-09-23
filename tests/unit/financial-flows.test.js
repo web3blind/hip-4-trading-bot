@@ -47,7 +47,13 @@ test('standard funding uses spot for outcomes and perp for withdrawal with exact
   assert.equal(await c.ensureWithdrawalFunding(30), true);
   assert.deepEqual(transfers[1], { amount: 7, toPerp: true });
   c.getAccountAbstraction = async () => 'unifiedAccount';
-  assert.equal(await c.getAvailableUsdc(), 3);
+  spot = 255.5; perp = 0;
+  assert.equal(await c.getAvailableUsdc(), 255.5);
+  assert.equal(await c.ensureOutcomeFunding(10, '#300'), true);
+  assert.equal(await c.ensureOutcomeFunding(256, '#300'), false);
+  assert.equal(transfers.length, 2);
+  c.getAccountAbstraction = async () => 'portfolioMargin';
+  assert.equal(await c.getAvailableUsdc(), 255.5);
 });
 test('cancel requires statuses AND absence on exact open-order readback', async () => {
   const c = client(); c._exchangeRequest = async () => response(['success'], 'cancel');

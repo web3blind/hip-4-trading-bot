@@ -46,7 +46,7 @@ Only use the intended bot's private chat. Telegram deletion does **not** prove r
 
 - Revoke the dedicated API wallet on the same official API page. Stopping the bot does not revoke it.
 - If the key is lost or authorization expires, generate and authorize a replacement, repeat the Wallet and Private key buttons in the bot. Use a separate API wallet for each application.
-- An agent can trade/cancel orders and **lose your funds**. Perform owner-only transfers and withdrawals in Hyperliquid using your main wallet. Funding remains in the main account, not the API wallet.
+- An agent can trade/cancel orders and **lose your funds**. Perform owner-only transfers and withdrawals in Hyperliquid using your main wallet. Funding remains in the main account, not the API wallet. For a Unified Account or Portfolio Margin account, USDC shown under Spot (minus holds) is the quote balance for USDC outcome orders; a zero perp balance does not require any spot-to-perp transfer. In Standard mode, spot USDC funds outcomes while perps have a separate balance.
 - Keys are encrypted at rest using the existing machine-bound encryption. Server compromise can still expose an active signer; encryption is not protection against a fully compromised machine.
 
 ### Optional local tools and Outcome rewards

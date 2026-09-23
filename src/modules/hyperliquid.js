@@ -427,8 +427,10 @@ export class HLClient {
 
   async getAvailableUsdc() {
     const mode = await this.getAccountAbstraction();
-    // No synthetic credit/double-counting across mirrored unified ledgers.
-    if (['unifiedAccount', 'portfolioMargin'].includes(mode)) return Math.min(await this.getSpotUsdcBalance(), await this.getPerpBalance());
+    // Unified/portfolio margin exposes the authoritative available USDC
+    // balance and holds in spotClearinghouseState. The per-DEX perp state
+    // can legitimately report 0 and must not cap an outcome's spot quote.
+    if (['unifiedAccount', 'portfolioMargin'].includes(mode)) return this.getSpotUsdcBalance();
     const spot = await this.getSpotUsdcBalance();
     return this.authMode === 'agent' ? spot : spot + await this.getPerpBalance();
   }
@@ -442,7 +444,7 @@ export class HLClient {
     const required = positive(requiredUsdc, 'funding amount');
     if (coin) await this.getOutcomeSpec(coin);
     const mode = await this.getAccountAbstraction();
-    if (['unifiedAccount', 'portfolioMargin'].includes(mode)) return await this.getAvailableUsdc() >= required;
+    if (['unifiedAccount', 'portfolioMargin'].includes(mode)) return await this.getSpotUsdcBalance() >= required;
     const spot = await this.getSpotUsdcBalance();
     if (spot >= required) return true;
     this._requireOwner();
