@@ -54,6 +54,8 @@ export async function handleMcpKeyAction(ctx, data) {
   }
   const key = await issueMcpKey(scope);
   await ctx.editMessageText(t('mcp_created'));
-  const message = await ctx.reply(`${t('mcp_key_once')}\n\n${key}\n\n${t('mcp_key_safety')}`);
+  const message = await ctx.reply(`${t('mcp_key_once')}\n\n${key}\n\n${t('mcp_key_safety')}`, {
+    reply_markup: new InlineKeyboard().copyText(t('mcp_copy_key'), key),
+  });
   if (message?.message_id) scheduleMessageDeletion(ctx, [message.message_id], 300_000);
 }

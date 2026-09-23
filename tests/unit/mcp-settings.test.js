@@ -13,7 +13,7 @@ const { showMcpSettings, handleMcpKeyAction } = await import('../../src/modules/
 const { listMcpKeys } = await import('../../src/modules/mcp/key-store.js');
 runtime.setAllowedUserId(7);
 const out = [], deleted = [];
-const ctx = (id = 7, type = 'private') => ({ chat: { id, type }, from: { id }, api: { async deleteMessage(chatId, messageId) { deleted.push([chatId, messageId]); return true; } }, async editMessageText(text, extra) { out.push({ text, extra }); }, async reply(text) { out.push({ text }); return { message_id: out.length }; } });
+const ctx = (id = 7, type = 'private') => ({ chat: { id, type }, from: { id }, api: { async deleteMessage(chatId, messageId) { deleted.push([chatId, messageId]); return true; } }, async editMessageText(text, extra) { out.push({ text, extra }); }, async reply(text, extra) { out.push({ text, extra }); return { message_id: out.length }; } });
 test.before(async () => saveConfig({ language: 'ru' }));
 test.after(async () => { await runtime.invalidateUserState(7); await rm(dir, { recursive: true, force: true }); });
 const confirmation = () => out.at(-1).extra.reply_markup.inline_keyboard.flat().find(b => b.callback_data.startsWith('confirm_mcp_')).callback_data;
@@ -30,6 +30,10 @@ test('only owner private chat can issue hash-only read key; copy disappears from
   await handleMcpKeyAction(ctx(), 'confirm_mcp_issue_read');
   const message = out.at(-1).text;
   assert.match(message, /hip4mcp_[A-Za-z0-9_-]{43}/);
+  const key = message.match(/hip4mcp_[A-Za-z0-9_-]{43}/)[0];
+  const sent = out.at(-1);
+  assert.equal(sent.extra.parse_mode, undefined);
+  assert.deepEqual(sent.extra.reply_markup.inline_keyboard, [[{ text: 'Скопировать ключ', copy_text: { text: key } }]]);
   assert.equal((await listMcpKeys())[0].scope, 'read');
   assert.ok(!JSON.stringify(await loadConfig()).includes(message.match(/hip4mcp_[A-Za-z0-9_-]{43}/)[0]));
   assert.equal(runtime.consumeConfirmation(7, callback), null);

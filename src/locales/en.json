@@ -114,6 +114,7 @@
   "mcp_created": "Key generated. Copy it from the next private message. It cannot be displayed again.",
   "mcp_revoked": "MCP key revoked. Existing positions and orders are unchanged.",
   "mcp_key_once": "MCP key (shown once; this message will be deleted after five minutes):",
+  "mcp_copy_key": "Copy key",
   "mcp_key_safety": "Do not send it in chat or a prompt. Store it in a protected local secret and use it as a Bearer token.",
   "settings_wallet": "Wallet Address",
   "settings_language": "Language",
