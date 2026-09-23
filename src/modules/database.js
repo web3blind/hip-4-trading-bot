@@ -43,6 +43,8 @@ export function initDatabase(scope = {}) {
     db.exec('ALTER TABLE orders ADD COLUMN fill_notification_status TEXT');
   }
   createPriceAlertsTable();
+  createCompleteSetAttemptsTable();
+  createCompleteSetAlertsTable();
 
   return db;
 }
@@ -110,6 +112,94 @@ function createTables() {
   `);
 
 
+}
+
+function createCompleteSetAttemptsTable() {
+  db.exec(`CREATE TABLE IF NOT EXISTS complete_set_attempts (
+    id TEXT PRIMARY KEY,
+    question_id INTEGER NOT NULL,
+    budget TEXT NOT NULL,
+    shares INTEGER NOT NULL,
+    coins_json TEXT NOT NULL,
+    account TEXT NOT NULL DEFAULT '',
+    network TEXT NOT NULL DEFAULT '',
+    rule_digest TEXT NOT NULL DEFAULT '',
+    fee_digest TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL CHECK(state IN ('prepared','submitting','submitted_unknown','partial','filled','rejected','closed')),
+    legs_json TEXT NOT NULL DEFAULT '[]',
+    notified_state TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_complete_set_attempts_state ON complete_set_attempts(state, updated_at);`);
+}
+
+export function createCompleteSetAttempt({ id, questionId, budget, shares, coins, account, network, ruleDigest, feeDigest, legs }) {
+  if (!/^[0-9a-f-]{36}$/.test(String(id)) || !Number.isSafeInteger(questionId) || questionId < 0 ||
+      !Number.isSafeInteger(shares) || shares <= 0 || !Number.isFinite(Number(budget)) || Number(budget) <= 0 ||
+      !/^0x[0-9a-fA-F]{40}$/.test(account || '') || !['mainnet','testnet'].includes(network) ||
+      !/^[0-9a-f]{64}$/.test(ruleDigest || '') || !/^[0-9a-f]{64}$/.test(feeDigest || '') ||
+      !Array.isArray(coins) || coins.length < 2 || coins.length > 8 ||
+      !coins.every(coin => /^#[0-9]+0$/.test(coin)) || !Array.isArray(legs) || legs.length !== coins.length ||
+      legs.some((leg,i) => leg.coin !== coins[i] || !/^0x[0-9a-f]{32}$/.test(leg.cloid || '') ||
+        !Number.isFinite(leg.price) || leg.price <= 0 || leg.price >= 1 || leg.size !== shares) ||
+      new Set(legs.map(leg=>leg.cloid)).size !== legs.length) throw new Error('Invalid complete set attempt');
+  const now = Date.now();
+  db.prepare(`INSERT INTO complete_set_attempts
+    (id, question_id, budget, shares, coins_json, account, network, rule_digest, fee_digest, legs_json, state, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?)`).run(
+      id, questionId, String(budget), shares, JSON.stringify(coins), account.toLowerCase(), network,
+      ruleDigest, feeDigest, JSON.stringify(legs), now, now);
+  return id;
+}
+
+export function updateCompleteSetAttempt(id, state, legs = null) {
+  if (!['submitting','submitted_unknown','partial','filled','rejected','closed'].includes(state) ||
+      (legs !== null && (!Array.isArray(legs) || !legs.every(x=>x && typeof x==='object')))) throw new Error('Invalid attempt update');
+  const change = db.prepare(`UPDATE complete_set_attempts SET state = ?,
+    legs_json = COALESCE(?, legs_json), updated_at = ? WHERE id = ? AND state IN ('prepared','submitting','submitted_unknown','partial','filled','rejected')`)
+    .run(state, legs === null ? null : JSON.stringify(legs), Date.now(), id);
+  if (change.changes !== 1) throw new Error('Attempt not found or already closed');
+}
+
+export function markCompleteSetAttemptNotified(id, state) {
+  if (!['partial','filled','submitted_unknown','rejected'].includes(state)) throw new Error('Invalid notification state');
+  return db.prepare('UPDATE complete_set_attempts SET notified_state = ?, updated_at = ? WHERE id = ? AND state = ?')
+    .run(state, Date.now(), id, state).changes === 1;
+}
+
+export function getCompleteSetAttempts(states = ['submitting','submitted_unknown','partial'], {limit=null,unnotifiedFilled=false}={}) {
+  if (!Array.isArray(states) || states.length === 0 || states.some(x => !['prepared','submitting','submitted_unknown','partial','filled','closed','rejected'].includes(x)) ||
+      (limit!==null && (!Number.isSafeInteger(limit) || limit<1 || limit>1000))) throw new Error('Invalid states or limit');
+  const placeholders=states.map(()=>'?').join(',');
+  return db.prepare(`SELECT * FROM complete_set_attempts WHERE state IN (${placeholders})
+    ${unnotifiedFilled ? "AND (state NOT IN ('filled','rejected') OR notified_state <> state)" : ''}
+    ORDER BY CASE state WHEN 'submitted_unknown' THEN 0 WHEN 'submitting' THEN 1
+      WHEN 'partial' THEN 2 WHEN 'rejected' THEN 3 WHEN 'filled' THEN 4 ELSE 5 END, created_at ASC
+    ${limit===null?'':'LIMIT ?'}`)
+    .all(...states,...(limit===null?[]:[limit])).map(row=>({...row, coins:JSON.parse(row.coins_json), legs:JSON.parse(row.legs_json)}));
+}
+
+function createCompleteSetAlertsTable() {
+  db.exec(`CREATE TABLE IF NOT EXISTS complete_set_alerts (
+    question_id INTEGER PRIMARY KEY,
+    last_alert_at INTEGER NOT NULL DEFAULT 0,
+    miss_count INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 0
+  )`);
+}
+
+export function getCompleteSetAlertState(questionId) {
+  return db.prepare('SELECT * FROM complete_set_alerts WHERE question_id = ?').get(questionId)
+    ?? {question_id:questionId,last_alert_at:0,miss_count:0,active:0};
+}
+
+export function updateCompleteSetAlertState(questionId, lastAlertAt, missCount, active) {
+  if (!Number.isSafeInteger(questionId) || questionId<0 || !Number.isSafeInteger(lastAlertAt) || lastAlertAt<0 ||
+      !Number.isSafeInteger(missCount) || missCount<0 || ![0,1].includes(active)) throw new Error('Invalid alert state');
+  db.prepare(`INSERT INTO complete_set_alerts (question_id,last_alert_at,miss_count,active) VALUES (?,?,?,?)
+    ON CONFLICT(question_id) DO UPDATE SET last_alert_at=excluded.last_alert_at,
+    miss_count=excluded.miss_count,active=excluded.active`).run(questionId,lastAlertAt,missCount,active);
 }
 
 // ─── Outcomes ─────────────────────────────────────────────────

@@ -28,6 +28,7 @@ import {
 import { createSearchFeature } from '../features/search.js';
 import { createWithdrawFeature } from '../features/withdraw.js';
 import { createSplitBuyFeature } from '../features/split-buy.js';
+import { createCompleteSetFeature } from '../features/complete-set.js';
 import { isApiWalletStep } from '../features/api-wallet.js';
 import { showMcpSettings, handleMcpKeyAction } from '../features/mcp-settings.js';
 import { handleMcpApproval, handleMcpRejection } from '../../mcp/operations.js';
@@ -36,6 +37,7 @@ const tradeMarket = createTradeMarketFeature({});
 const tradeLimit = createTradeLimitFeature({});
 const withdraw = createWithdrawFeature({});
 const splitBuy = createSplitBuyFeature({});
+const completeSet = createCompleteSetFeature({});
 
 async function editOrReply(ctx, text, extra = {}) {
   try {
@@ -56,7 +58,7 @@ export async function handleCallbackQuery(ctx) {
     data = consumeConfirmation(chatId, data);
     if (!data) { try { await ctx.answerCallbackQuery('Confirmation expired. Open a new review.'); } catch {} return; }
   } else {
-    const step = /^(mkt_(buy|sell)_pct:|lim_(buy|sell)_pct:|split_pct:|withdraw_pct:)/.test(data);
+    const step = /^(mkt_(buy|sell)_pct:|lim_(buy|sell)_pct:|split_pct:|withdraw_pct:|set_amount:)/.test(data);
     if (!step && !isApiWalletStep(data)) await invalidateUserState(chatId);
   }
   if (isConfirm) {
@@ -228,6 +230,20 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
+    if (data.startsWith('set_open:')) {
+      await completeSet.open(ctx, data.slice('set_open:'.length));
+      return;
+    }
+    if (data.startsWith('set_amount:')) {
+      const match = /^set_amount:([1-9][0-9]{0,8}):(40|100|250)$/.exec(data);
+      if (!match) { await editOrReply(ctx,t('session_expired')); return; }
+      await completeSet.chooseAmount(ctx,match[1],match[2]);
+      return;
+    }
+    if (data === 'confirm_set_buy') {
+      await completeSet.confirm(ctx);
+      return;
+    }
     // ── Split Buy (Arbitrage) ─────────────────────────────────────
     if (data.startsWith('split:')) {
       const outcomeId = parseInt(data.split(':')[1], 10);
@@ -350,7 +366,7 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
 
-    if (data.startsWith('notif_threshold:') || data.startsWith('notif_repeat:') || data.startsWith('notif_cooldown:')) {
+    if (data.startsWith('notif_threshold:') || data.startsWith('notif_repeat:') || data.startsWith('notif_cooldown:') || data === 'notif_set:toggle' || /^notif_set:budget:(40|100|250)$/.test(data)) {
       userStates.delete(chatId);
       await handleNotificationCallback(ctx, data);
       return;

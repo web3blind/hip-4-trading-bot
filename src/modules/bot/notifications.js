@@ -8,6 +8,31 @@ import { createContext, safeLogWarn } from '../logger.js';
 import { loadConfig } from '../config.js';
 import { getTranslator } from '../i18n.js';
 
+export async function notifyCompleteSetUpdate(bot, chatId, attempt) {
+  if (!bot || !chatId) return false;
+  const config=await loadConfig(),t=await getTranslator(config.language||'en');
+  const counts=attempt.legs.map(l=>`${l.coin}: ${Number(l.filledSize||0)}/${l.size}`);
+  try {
+    await bot.api.sendMessage(chatId,`${t('set_update')} #${attempt.questionId} (${attempt.state})\n${counts.join('\n')}\n${t('set_monitor_note')}`);
+    return true;
+  } catch {return false;}
+}
+
+export async function notifyCompleteSet(bot, chatId, question, quote) {
+  const config = await loadConfig();
+  const t = await getTranslator(config.language || 'en');
+  const a=question.description.match(/(?:^|\|)participantA:([^|]+)/)?.[1];
+  const b=question.description.match(/(?:^|\|)participantB:([^|]+)/)?.[1];
+  const label=a&&b?`${a.slice(0,55)} — ${b.slice(0,55)}`:`${String(question.name).slice(0,60)} #${question.question}`;
+  const text=`${t('set_alert_title')}\n${label}\n${t('set_legs')}: ${quote.orders.length}\n${t('set_shares')}: ${quote.shares}\n`+
+    `${t('set_spend')}: $${quote.maxSpend.toFixed(2)}\n${t('set_max_cost')}: $${quote.worstCost.toFixed(2)}\n`+
+    `${t('set_fee_max')}: $${quote.feeMax.toFixed(2)}\n${t('set_net_floor')}: $${quote.netLowerBound.toFixed(2)}\n`+
+    `${t('set_fee_warning')}\n${t('set_quote_expiry')}`;
+  return sendNotification(bot,chatId,text,{reply_markup:{inline_keyboard:[[{
+    text:t('set_check_button'),callback_data:`set_open:${question.question}`
+  }]]}});
+}
+
 /**
  * Send a generic notification message to a chat.
  *

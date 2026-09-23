@@ -474,6 +474,14 @@ export class HLClient {
     return this._infoRequest({ type: 'outcomeMeta' });
   }
 
+  async getOutcomeTemplates() {
+    return this._infoRequest({ type: 'outcomeTemplates' });
+  }
+
+  async getUserFees() {
+    return this._infoRequest({ type: 'userFees', user: this.address });
+  }
+
   async getOrderbook(coin) {
     return this._infoRequest({ type: 'l2Book', coin });
   }
@@ -504,8 +512,9 @@ export class HLClient {
   }
 
   async getOrderStatus(oid, address = this.address) {
-    if (!address || !Number.isSafeInteger(Number(oid)) || Number(oid) <= 0) throw new Error('Invalid order lookup');
-    return this._infoRequest({ type: 'orderStatus', user: address, oid: Number(oid) });
+    const byCloid = typeof oid === 'string' && /^0x[0-9a-fA-F]{32}$/.test(oid);
+    if (!address || (!byCloid && (!Number.isSafeInteger(Number(oid)) || Number(oid) <= 0))) throw new Error('Invalid order lookup');
+    return this._infoRequest({ type: 'orderStatus', user: address, oid: byCloid ? oid : Number(oid) });
   }
 
   async getCandles(coin, interval, startTime, endTime) {
@@ -524,8 +533,9 @@ export class HLClient {
     return { limit: { tif: 'Gtc' } };
   }
 
-  async _buildOrderWire({ coin, isBuy, price, size, orderType = 'Limit', maxSpend }) {
+  async _buildOrderWire({ coin, isBuy, price, size, orderType = 'Limit', maxSpend, cloid }) {
     price = positive(price, 'price'); size = positive(size, 'size');
+    if (cloid != null && (typeof cloid !== 'string' || !/^0x[0-9a-fA-F]{32}$/.test(cloid))) throw new Error('Invalid client order ID');
     if (price >= 1 || typeof isBuy !== 'boolean' || !['Limit', 'Market'].includes(orderType)) throw new Error('Invalid outcome order');
     coin = normalizeOutcomeCoin(coin);
     const roundedSize = await this._roundSize(coin, size);
@@ -546,6 +556,7 @@ export class HLClient {
       sz: roundedSize,
       order_type: this._orderTypeToWire(orderType),
       reduce_only: false,
+      cloid,
     }, assetIndex);
   }
 

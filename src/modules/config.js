@@ -30,7 +30,9 @@ const DEFAULT_CONFIG = {
   notifications: {
     priceChangePercent: 10,
     priceRepeatStepPercent: 2,
-    alertCooldownSeconds: 300
+    alertCooldownSeconds: 300,
+    completeSetEnabled: false,
+    completeSetScanBudget: 100
   }
 };
 
@@ -205,6 +207,9 @@ export async function getNotificationSettings() {
     priceChangePercent: notif.priceChangePercent ?? defaults.priceChangePercent,
     priceRepeatStepPercent: notif.priceRepeatStepPercent ?? defaults.priceRepeatStepPercent,
     alertCooldownSeconds: notif.alertCooldownSeconds ?? defaults.alertCooldownSeconds,
+    completeSetEnabled: notif.completeSetEnabled === true,
+    completeSetScanBudget: Number.isSafeInteger(notif.completeSetScanBudget) && notif.completeSetScanBudget>=40 && notif.completeSetScanBudget<=1000
+      ? notif.completeSetScanBudget : defaults.completeSetScanBudget,
   };
 }
 

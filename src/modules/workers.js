@@ -23,7 +23,9 @@ import {
   updatePriceAlertState,
 } from './database.js';
 import { createContext, safeLogError, safeLogWarn, safeLogInfo } from './logger.js';
-import { notifyOrderFilled, notifyPositionChange } from './bot/notifications.js';
+import { notifyOrderFilled, notifyPositionChange, notifyCompleteSet, notifyCompleteSetUpdate } from './bot/notifications.js';
+import { createCompleteSetWatcher } from './complete-set-watcher.js';
+import { reconcileCompleteSetAttempts } from './complete-set-monitor.js';
 
 // ─── Configuration ───────────────────────────────────────────────
 
@@ -31,6 +33,10 @@ const MINUTE_MS = 60 * 1000;
 const DEFAULT_SYNC_POSITIONS_MS = 2 * MINUTE_MS;
 const DEFAULT_MONITOR_ORDERS_MS = 30 * 1000;
 const DEFAULT_MONITOR_PRICES_MS = 60 * 1000;
+const DEFAULT_COMPLETE_SETS_MS = 5 * MINUTE_MS;
+const scanCompleteSets = createCompleteSetWatcher({
+  onAlert: (question, quote) => notifyCompleteSet(botInstance, notifyChatId, question, quote),
+});
 
 const workerTimers = new Map();
 const workerRunning = new Set();
@@ -343,6 +349,28 @@ async function monitorPricesWorker() {
   }
 }
 
+export async function monitorCompleteSetAttemptsWorker() {
+  if (!hlClient) return;
+  const ownerOnly=botInstance && notifyChatId && String(notifyChatId)===String(process.env.TELEGRAM_ALLOWED_USER_ID||'');
+  try {
+    await reconcileCompleteSetAttempts(hlClient,ownerOnly
+      ? attempt=>notifyCompleteSetUpdate(botInstance,notifyChatId,attempt) : null);
+  } catch(error) {safeLogError(createContext('workers','completeSetAttempts'),error);}
+}
+
+export async function monitorCompleteSetsWorker() {
+  const config=await loadConfig();
+  if (!config.notifications?.completeSetEnabled || !hlClient || !botInstance ||
+      !notifyChatId || String(notifyChatId)!==String(process.env.TELEGRAM_ALLOWED_USER_ID || '') ||
+      hlClient.network !== 'mainnet') return;
+  const budget=Number(config.notifications?.completeSetScanBudget);
+  const readOnly={network:hlClient.network,address:hlClient.address,builder:hlClient.builder,
+    getOutcomeMeta:()=>hlClient.getOutcomeMeta(),getOutcomeTemplates:()=>hlClient.getOutcomeTemplates(),
+    getUserFees:()=>hlClient.getUserFees(),getOrderbook:coin=>hlClient.getOrderbook(coin),
+    prepareOrder:order=>hlClient.prepareOrder(order)};
+  await scanCompleteSets(readOnly,{enabled:true,budget:Number.isFinite(budget)&&budget>=40&&budget<=1000?budget:100});
+}
+
 // ─── Public API ──────────────────────────────────────────────────
 
 /**
@@ -372,7 +400,9 @@ export function startWorkers(options = {}) {
 
   scheduleWorker('syncPositions', syncMs, syncPositionsWorker);
   scheduleWorker('monitorOrders', monitorMs, monitorOrdersWorker);
+  scheduleWorker('completeSetAttempts', monitorMs, monitorCompleteSetAttemptsWorker);
   scheduleWorker('monitorPrices', monitorPricesMs, monitorPricesWorker);
+  scheduleWorker('completeSets', DEFAULT_COMPLETE_SETS_MS, monitorCompleteSetsWorker);
 
   workersStarted = true;
 

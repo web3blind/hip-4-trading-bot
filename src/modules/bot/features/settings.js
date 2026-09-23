@@ -121,6 +121,8 @@ export async function showNotificationSettings(ctx) {
     `${t('repeat_step')}: ${notif.priceRepeatStepPercent}%\n` +
     `${t('re_alert_after')}\n\n` +
     `${t('cooldown')}: ${formatCooldown(notif.alertCooldownSeconds)}\n` +
+    `${t('set_alert_toggle')}: ${t(notif.completeSetEnabled ? 'set_enabled' : 'set_disabled')}\n` +
+    `${t('set_scan_budget')}: $${notif.completeSetScanBudget}\n` +
     t('min_time_between');
 
   const keyboard = new InlineKeyboard()
@@ -128,6 +130,10 @@ export async function showNotificationSettings(ctx) {
     .text(`${t('repeat_label')}: ${notif.priceRepeatStepPercent}%`, 'notif_repeat:pick')
     .row()
     .text(`${t('cooldown_label')}: ${formatCooldownShort(notif.alertCooldownSeconds)}`, 'notif_cooldown:pick')
+    .row()
+    .text(`${t('set_alert_toggle')}: ${t(notif.completeSetEnabled ? 'set_enabled' : 'set_disabled')}`, 'notif_set:toggle')
+    .row()
+    .text('$40', 'notif_set:budget:40').text('$100', 'notif_set:budget:100').text('$250', 'notif_set:budget:250')
     .row()
     .text(t('back_to_settings'), 'settings');
 
@@ -214,6 +220,17 @@ export async function showCooldownPicker(ctx) {
 // ─── Handle notification callbacks ──────────────────────────
 
 export async function handleNotificationCallback(ctx, data) {
+  const amount=data.match(/^notif_set:budget:(40|100|250)$/);
+  if (amount) {
+    await setNotificationSetting('completeSetScanBudget',Number(amount[1]));
+    await showNotificationSettings(ctx);return;
+  }
+  if (data === 'notif_set:toggle') {
+    const settings = await getNotificationSettings();
+    await setNotificationSetting('completeSetEnabled', !settings.completeSetEnabled);
+    await showNotificationSettings(ctx);
+    return;
+  }
   // Threshold picker
   if (data === 'notif_threshold:pick') {
     await showThresholdPicker(ctx);

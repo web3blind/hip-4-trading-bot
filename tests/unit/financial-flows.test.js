@@ -37,6 +37,15 @@ test('review caps and owner/signer, quote and alias boundaries', async () => {
   await assert.rejects(agent.withdraw(owner, 10), /Owner action/);
   await assert.rejects(agent.transferUsdClass(10, true), /Owner action/);
 });
+test('client order ID survives exact outcome wire and orderStatus accepts 16-byte ID', async () => {
+  const c=client(), cloid='0x'+'ab'.repeat(16);
+  const r=await c.prepareOrder({coin:'#300',isBuy:true,price:.42,size:30});
+  const wire=await c._buildOrderWire({...r,cloid});
+  assert.equal(wire.c,cloid);
+  await assert.rejects(c._buildOrderWire({...r,cloid:'0x01'}),/client order ID/);
+  c._infoRequest=async req=>req;
+  assert.deepEqual(await c.getOrderStatus(cloid),{type:'orderStatus',user:c.address,oid:cloid});
+});
 test('standard funding uses spot for outcomes and perp for withdrawal with exact readback', async () => {
   const c = client(); let spot = 3, perp = 30; const transfers = [];
   c.getAccountAbstraction = async () => 'disabled';

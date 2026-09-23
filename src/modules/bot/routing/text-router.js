@@ -18,6 +18,7 @@ import { handleExportConfirmation } from '../features/security.js';
 import { createSearchFeature } from '../features/search.js';
 import { createWithdrawFeature } from '../features/withdraw.js';
 import { createSplitBuyFeature } from '../features/split-buy.js';
+import { createCompleteSetFeature } from '../features/complete-set.js';
 import { handleCustomThresholdInput } from '../features/settings.js';
 import { interceptApiWalletInput } from '../features/api-wallet.js';
 
@@ -26,6 +27,7 @@ const tradeMarket = createTradeMarketFeature({});
 const tradeLimit = createTradeLimitFeature({});
 const withdrawFeature = createWithdrawFeature({});
 const splitBuyFeature = createSplitBuyFeature({});
+const completeSetFeature = createCompleteSetFeature({});
 
 // ─── Confirmation states that bypass the busy lock ──────────────
 
@@ -111,6 +113,9 @@ export async function handleTextMessage(ctx) {
         await withdrawFeature.handleWithdrawAmount(ctx, state, text);
         break;
 
+      case 'AWAITING_SET_AMOUNT':
+        await completeSetFeature.inputAmount(ctx, state, text);
+        break;
       // ── Split Buy (Arbitrage) ──
       case 'AWAITING_SPLIT_AMOUNT':
         await splitBuyFeature.handleSplitAmount(ctx, state, text);
