@@ -27,6 +27,8 @@ test('shows signed unrealized mid-price percentage for outcome balances without 
   assert.match(text, /Нереализованный результат: -60\.00%/);
   assert.match(text, /Нереализованный результат: 0\.00%/);
   assert.match(text, /без комиссий/);
+  assert.match(text, /^Ваши позиции\n\n1\./);
+  assert.ok(text.lastIndexOf('Нереализованный результат:') < text.indexOf('Оценка по средней цене'));
   assert.equal((text.match(/Нереализованный результат:/g) || []).length, 3);
   const buttons = messages.at(-1).options.reply_markup.inline_keyboard.flat().map(b => b.callback_data);
   assert.ok(buttons.includes('pos:sell:%23100'));

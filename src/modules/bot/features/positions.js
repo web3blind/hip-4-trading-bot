@@ -85,7 +85,7 @@ export function createPositionsFeature(deps) {
         mids = {};
       }
 
-      let text = `${t('positions_title')}\n${t('pnl_mid_note')}\n\n`;
+      let text = `${t('positions_title')}\n\n`;
       const keyboard = new InlineKeyboard();
 
       for (let i = 0; i < outcomePositions.length; i++) {
@@ -124,6 +124,7 @@ export function createPositionsFeature(deps) {
         keyboard.row();
       }
 
+      text += t('pnl_mid_note');
       keyboard.row();
       keyboard.text(t('refresh'), 'positions:refresh');
       keyboard.text(t('back'), 'back_menu');
