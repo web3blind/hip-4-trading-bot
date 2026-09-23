@@ -483,6 +483,7 @@ function redactSensitiveText(text) {
   return text
     .replace(/https?:\/\/[^\s/@]+:[^\s/@]+@/gi, 'https://[REDACTED]@')
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/=-]+/gi, '$1 [REDACTED]')
+    .replace(/hip4mcp_[A-Za-z0-9_-]{43}/g, '[REDACTED_MCP_KEY]')
     .replace(/\b\d{5,}:[A-Za-z0-9_-]{20,}\b/g, '[REDACTED_TOKEN]')
     // JSON-like key-value pairs: "KEY":"value"
     .replace(

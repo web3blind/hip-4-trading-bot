@@ -16,7 +16,8 @@ let saves = Promise.resolve();
  * persist permits the shared runtime activation queue to commit the config while
  * client/workers are stopped. It must call saveConfig with the provided config.
  */
-export function saveApiWalletConnection({ accountAddress, privateKey, network, expectedConfig, fetchImpl = fetch, persist = saveConfig }) {
+export function saveApiWalletConnection({ accountAddress, privateKey, network, expectedConfig, fetchImpl = fetch,
+  persist = (next, previous) => saveConfig(next, { expectedConfig: previous }) }) {
   const task = saves.then(async () => {
     if (typeof privateKey !== 'string' || !/^(?:0x)?[0-9a-fA-F]{64}$/.test(privateKey) || !ethers.utils.isAddress(accountAddress) || accountAddress.toLowerCase() === ethers.constants.AddressZero || !['mainnet','testnet'].includes(network)) throw new Error('Invalid API wallet credentials');
     let signer;
@@ -46,7 +47,7 @@ export function saveApiWalletConnection({ accountAddress, privateKey, network, e
     }
     if (await diskConfig() !== baseline || !same(await loadConfig(), previous)) throw new Error('Configuration changed; open connection again');
     try {
-      await persist(next);
+      await persist(next, previous);
       const stored = await diskConfig();
       if (stored === null || !same(JSON.parse(stored), next) || await validateWalletConfig(JSON.parse(stored)) !== signer.privateKey) throw new Error('Saved credential verification failed');
     } catch (error) {
@@ -54,7 +55,7 @@ export function saveApiWalletConnection({ accountAddress, privateKey, network, e
       const current = await diskConfig();
       if (current !== null && same(JSON.parse(current), next)) {
         if (baseline === null) await unlink(join(DATA_DIR, 'config.json'));
-        else await saveConfig(JSON.parse(baseline));
+        else await saveConfig(JSON.parse(baseline), { expectedConfig: next });
       }
       throw new Error('Connection was not activated; previous configuration retained');
     }

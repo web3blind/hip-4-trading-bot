@@ -18,6 +18,23 @@ module.exports = {
       env: {
         NODE_ENV: 'production'
       }
+    },
+    {
+      name: 'hip-4-mcp',
+      script: 'src/mcp-server.js',
+      cwd: __dirname,
+      exec_mode: 'fork',
+      instances: 1,
+      autorestart: true,
+      max_restarts: 10,
+      min_uptime: '30s',
+      restart_delay: 5000,
+      watch: false,
+      out_file: 'data/logs/mcp-out.log',
+      error_file: 'data/logs/mcp-error.log',
+      merge_logs: true,
+      time: true,
+      env: { NODE_ENV: 'production' }
     }
   ]
 };

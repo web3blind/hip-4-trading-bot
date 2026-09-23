@@ -29,6 +29,8 @@ import { createSearchFeature } from '../features/search.js';
 import { createWithdrawFeature } from '../features/withdraw.js';
 import { createSplitBuyFeature } from '../features/split-buy.js';
 import { isApiWalletStep } from '../features/api-wallet.js';
+import { showMcpSettings, handleMcpKeyAction } from '../features/mcp-settings.js';
+import { handleMcpApproval, handleMcpRejection } from '../../mcp/operations.js';
 
 const tradeMarket = createTradeMarketFeature({});
 const tradeLimit = createTradeLimitFeature({});
@@ -324,6 +326,11 @@ export async function handleCallbackQuery(ctx) {
     }
 
     if (data === 'confirm_network') { await handleSettingsCallback(ctx, data); return; }
+    if (data === 'confirm_mcp_action') { await handleMcpApproval(ctx); return; }
+    if (data.startsWith('confirm_mcp_')) { await handleMcpKeyAction(ctx, data); return; }
+    if (data.startsWith('mcp:key:')) { await handleMcpKeyAction(ctx, data); return; }
+    if (data.startsWith('mcp:reject:')) { await handleMcpRejection(ctx); return; }
+    if (data === 'settings:mcp') { await showMcpSettings(ctx); return; }
     if (data === 'confirm_fund_predictions') { await handleWalletCallback(ctx, data); return; }
 
     if (data === 'rewards') { const { showRewards } = await import('../features/rewards.js'); await showRewards(ctx); return; }

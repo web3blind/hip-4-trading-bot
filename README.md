@@ -78,7 +78,27 @@ Markets and limit orders require a review/confirmation. Market orders are aggres
 
 Catalog metadata comes from `outcomeMeta.outcomes/questions`, cached for five minutes per client/network and invalidated at market expiry. Markets opens **Filters**: choose a category, then a market; you can refine it by deployer (Hyperliquid `venue`, e.g. `out` = Outcome). Hyperliquid does not publish category tags in this metadata, so Sports/Prices/Economy/Business/Other are inferred from market template types. List prices can be up to five minutes old; opening details refreshes prices, and order reviews use live books. Settled/expired members are excluded. Raw resolution descriptions and actual market quote tokens remain authoritative.
 
-For persistent stored-wallet operation, explicitly install PM2 and inspect process state before using `npm run pm2:start`. The ecosystem and scripts use the same name: `hip-4-telegram-bot`. Other commands: `npm run pm2:logs`, `npm run pm2:restart`, `npm run pm2:stop`, `npm run pm2:delete`. Never restart during an uncertain financial action. PM2 configuration is not the ephemeral connection workflow.
+For persistent stored-wallet operation, PM2 manages two separate one-instance processes from `ecosystem.config.cjs`: `hip-4-telegram-bot` (Telegram polling plus private broker) and `hip-4-mcp` (loopback protocol frontend). `npm run pm2:start`, `npm run pm2:restart`, `npm run pm2:stop`, and `npm run pm2:delete` target **both** in order; `npm run pm2:mcp:start`, `npm run pm2:mcp:restart`, and `npm run pm2:mcp:logs` target only the frontend. `npm run pm2:logs` shows bot logs. Never restart during an uncertain financial action, and verify broker readiness and both process states after a deploy. PM2 configuration is not the ephemeral connection workflow.
+
+### MCP (private agent access)
+
+In the owner's private Telegram chat: **Settings → MCP**. Generate separate read and trade keys; rotating/revoking one scope does not affect the other. Only hashes are saved in the bot config. The raw key appears in one temporary private reply, scheduled for deletion; copy it into a protected client secret store before it disappears. Never paste it into a group, issue, source file or command line. Revocation/rotation blocks previously issued requests and pending approvals.
+
+Start the bot first, then run `npm run mcp:start` locally or `npm run pm2:mcp:start` for the dedicated `hip-4-mcp` PM2 process. The protocol endpoint listens **only** on `127.0.0.1:19120/mcp`; the bot broker uses a mode-0600 Unix socket inside the mode-0700 data runtime directory. Do not publish port 19120 through a reverse proxy, public bind or firewall rule. A client running on another machine needs a *private, authenticated transport* to the loopback endpoint. Provide the key only as an `Authorization: Bearer ...` header (prefer environment-backed secret interpolation); do not put it in URL, MCP arguments or logs. The trade key can request market/limit orders or cancellations but **cannot execute them**: the owner must approve each bound, short-lived request in the bot's private chat. No MCP wallet management, funds transfer, key administration or network change exists. A request ID identifies a single action for replay protection; only one outstanding trading review is permitted per key, with a bounded request rate. Catalog prices are cached and not execution prices; do not infer a fill from an accepted request.
+
+For Hermes on a separate trusted host, forward the remote loopback port through an automatically managed authenticated SSH connection (do not expose the port publicly). In Hermes's default profile place the issued key **only** in `~/.hermes/.env` as `MCP_HIP4_API_KEY=...` and add this non-secret config to `~/.hermes/config.yaml` once the key exists:
+
+```yaml
+mcp_servers:
+  hip4:
+    url: http://127.0.0.1:19120/mcp
+    headers:
+      Authorization: "Bearer ${MCP_HIP4_API_KEY}"
+    sampling:
+      enabled: false
+```
+
+The local SSH forward must already be running before `hermes mcp test hip4` or MCP discovery; tools appear as `mcp_hip4_*` after MCP reload/new session. Never send the issued key in an AI prompt or group chat. If the key is not installed yet, do **not** add the Hermes entry: it would repeatedly fail authentication.
 
 ## Offline tests and read-only diagnostics
 

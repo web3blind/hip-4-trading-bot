@@ -140,50 +140,60 @@ function withSaveConfigLock(task) {
   return run;
 }
 
-// Save configuration to file
-export async function saveConfig(config) {
-  if (sessionConfig) { sessionConfig = structuredClone(config); return; }
+// All config mutations share this queue across settings, wallet setup and MCP keys.
+// The lock covers the read as well as the write; locking just rename is not sufficient.
+export async function mutateConfig(mutator) {
+  if (typeof mutator !== 'function') throw new Error('Config mutator required');
   return withSaveConfigLock(async () => {
-    await ensureDataDir();
+    const config = await loadConfig();
+    const result = await mutator(config);
+    await writeConfigUnlocked(config);
+    return result;
+  });
+}
 
-    const serialized = JSON.stringify(config, null, 2);
-    const tempPath = `${CONFIG_PATH}.tmp-${process.pid}-${Date.now()}`;
+async function writeConfigUnlocked(config) {
+  if (sessionConfig) { sessionConfig = structuredClone(config); return; }
+  await ensureDataDir();
 
-    try {
-      await writeFile(tempPath, serialized, { encoding: 'utf8', mode: 0o600 });
-      await fsyncFile(tempPath);
-      await rename(tempPath, CONFIG_PATH);
-      await fsyncDirectory(CONFIG_DIR);
-    } catch (error) {
-      try {
-        await unlink(tempPath);
-      } catch {}
-      throw error;
+  const serialized = JSON.stringify(config, null, 2);
+  const tempPath = `${CONFIG_PATH}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    await writeFile(tempPath, serialized, { encoding: 'utf8', mode: 0o600 });
+    await fsyncFile(tempPath);
+    await rename(tempPath, CONFIG_PATH);
+    await fsyncDirectory(CONFIG_DIR);
+  } catch (error) {
+    try { await unlink(tempPath); } catch {}
+    throw error;
+  }
+  const ctx = createContext('config', 'saveConfig');
+  safeLogInfo(ctx, 'Config saved successfully');
+}
+
+// Save the full configuration. Wallet-replacement callers must supply the snapshot
+// they reviewed; a concurrent MCP key/settings update then fails instead of vanishing.
+export async function saveConfig(config, { expectedConfig } = {}) {
+  return withSaveConfigLock(async () => {
+    if (expectedConfig !== undefined && JSON.stringify(await loadConfig()) !== JSON.stringify(expectedConfig)) {
+      throw new Error('Configuration changed; open the review again');
     }
-
-    const ctx = createContext('config', 'saveConfig');
-    safeLogInfo(ctx, 'Config saved successfully');
+    await writeConfigUnlocked(config);
   });
 }
 
 // Update specific config field
 export async function updateConfig(field, value) {
-  const config = await loadConfig();
-  
-  // Handle nested fields (e.g., 'strategies.stopLoss')
-  const keys = field.split('.');
-  let target = config;
-  
-  for (let i = 0; i < keys.length - 1; i++) {
-    if (!target[keys[i]]) {
-      target[keys[i]] = {};
+  return mutateConfig(config => {
+    const keys = field.split('.');
+    let target = config;
+    for (let i = 0; i < keys.length - 1; i++) {
+      if (!target[keys[i]]) target[keys[i]] = {};
+      target = target[keys[i]];
     }
-    target = target[keys[i]];
-  }
-  
-  target[keys[keys.length - 1]] = value;
-  await saveConfig(config);
-  return config;
+    target[keys[keys.length - 1]] = value;
+    return config;
+  });
 }
 
 // Get notification settings with defaults
@@ -200,11 +210,11 @@ export async function getNotificationSettings() {
 
 // Update a single notification setting
 export async function setNotificationSetting(key, value) {
-  const config = await loadConfig();
-  if (!config.notifications) config.notifications = {};
-  config.notifications[key] = value;
-  await saveConfig(config);
-  return config;
+  return mutateConfig(config => {
+    if (!config.notifications) config.notifications = {};
+    config.notifications[key] = value;
+    return config;
+  });
 }
 
 // Check if language is configured

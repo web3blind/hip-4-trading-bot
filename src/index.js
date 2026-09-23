@@ -16,6 +16,7 @@ import { getDecryptedPrivateKey } from './modules/auth.js';
 import { activateHLClient, createConfiguredHLClient } from './modules/bot/runtime.js';
 import { validateWalletConfig } from './modules/auth.js';
 import { acquireRuntimeLock } from './modules/process-lock.js';
+import { startMcpBroker, stopMcpBroker } from './modules/mcp/broker.js';
 
 // Patch console first to catch any SDK secret leakage
 patchConsoleForRedaction();
@@ -33,6 +34,11 @@ async function shutdown(signal = 'unknown', exitCode = 0) {
   const ctx = createContext('index', 'shutdown');
   safeLogInfo(ctx, 'Shutting down application', { signal, exitCode });
 
+  try {
+    await stopMcpBroker();
+  } catch {
+    safeLogError(ctx, new Error('MCP broker shutdown failed'));
+  }
   try {
     await stopWorkers();
   } catch (error) {
@@ -176,6 +182,12 @@ async function runBot() {
 
   // Activate scoped database/client/workers before accepting updates.
   await activateHLClient(hlClient);
+  try {
+    await startMcpBroker();
+    safeLogInfo(ctx, 'Private MCP broker ready');
+  } catch {
+    safeLogError(ctx, new Error('Private MCP broker unavailable'));
+  }
   await startBot({ onFatal: () => shutdown('polling_error', 1) });
 
   safeLogInfo(ctx, 'Bot is running');

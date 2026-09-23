@@ -37,6 +37,7 @@ export async function showSettings(ctx) {
   keyboard.text(`${t('network_label')}: ${network}`, 'settings:network').row();
   keyboard.text(t('notifications_btn'), 'settings:notifications').row();
   keyboard.text(t('outcome_rewards'), 'rewards').row();
+  keyboard.text(t('mcp_title'), 'settings:mcp').row();
   keyboard.text(t('api_wallet_connect'), 'wallet:connect_api').row();
 
   if (!config.walletAddress) {

@@ -1,5 +1,12 @@
 # HIP-4 audit remediation
 
+## Current task: private MCP access to bot functions
+- Outcome: Perp-Prime-style split MCP frontend and in-process bot broker. Frontend is loopback-only; broker uses a private Unix socket. Generate/rotate/revoke independent read and trade keys from the authorized private Telegram Settings menu; persist only hashes. Read tools return bounded safe fields; trade tools queue *requests* requiring a fresh owner-only Telegram confirmation before any exchange write. MCP cannot approve itself, operate wallet/key/settings, transfer/withdraw, or bypass funding and resting-order safeguards.
+- Internal contract: frontend `127.0.0.1:19120/mcp` forwards Bearer-authenticated `GET /auth` and `POST /rpc` over a mode-0600 Unix socket in the private data runtime directory. Operation is tool name, `args` object. Never publish an Internet endpoint, pass raw keys via CLI/URLs, or return secrets in tool data. Read-only broker rejects all unlisted operations. On startup broker may run with no keys; keys are generated only in private Telegram settings.
+- Scope: this repository only for implementation; configure remote Hermes only after an issued key can be installed without exposing it in chat, transcript, or config output. No actual key or wallet data inspection, signed trade, cancellation, transfer, or permission change in tests. Production restart/new service needs verified backup and connectivity/security preflight.
+- Verification: isolated synthetic bot+broker and real SDK client protocol (auth, read isolation, invalid/rotated keys, retry/stale/replay, one-time Telegram approval and no writes until approval), full `npm test`, source/diff review, staging integration. Stop on live-credential delivery, public exposure or financial action without safe authorized path.
+
+
 ## Current task: Position unrealized return percentage
 - Read-only `spotClearinghouseState` supplies each held outcome's `total` and `entryNtl`; `allMids` supplies an indicative market price. Display `(total * mid / entryNtl - 1) * 100` as signed *unrealized* return, only when price and positive entry notional are valid. Zero/unknown cost or missing/invalid mid must show unavailable, never invented 0% or realized PnL.
 - Keep existing position buttons, account/network isolation and EN/RU; label midpoint estimate and omission of fees. Tests use synthetic balances only, with positive/negative/zero, alias, missing data and invalid values. No secrets or live trading actions.

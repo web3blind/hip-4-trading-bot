@@ -104,7 +104,7 @@ export async function startPersistentAgentConnection({ port = 8787, fetchImpl = 
           if (await decrypt(await readFile(backup, 'utf8'), key) !== current.baseline) throw new Error('Backup verification failed');
         }
         if (closed || await disk() !== current.baseline) throw problem(409, 'Current config changed; review again');
-        await saveConfig(config);
+        await saveConfig(config, { expectedConfig: current.previous });
         const readback = await loadConfig();
         if (JSON.stringify(readback) !== JSON.stringify(config) || await validateWalletConfig(readback) !== current.privateKey) throw new Error('Readback verification failed');
         saved = true;

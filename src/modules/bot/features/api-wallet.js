@@ -98,13 +98,13 @@ export async function interceptApiWalletInput(ctx, next) {
     let activationAttempted = false;
     try {
       await saveApiWalletConnection({ accountAddress: s.owner, privateKey: text, network: s.network, expectedConfig: s.expectedConfig,
-        persist: async saved => {
+        persist: async (saved, previous) => {
           const client = await createConfiguredHLClient(saved);
           if (!valid(s) || userStates.get(ctx.chat.id) !== s || !isDeepStrictEqual(await loadConfig(), s.expectedConfig)) throw new Error('Expired');
           // No await gap: activation reserves the shared transition synchronously.
           busyLocks.delete(ctx.chat.id);
           activationAttempted = true;
-          await activateHLClient(client, { persist: () => saveConfig(saved) });
+          await activateHLClient(client, { persist: () => saveConfig(saved, { expectedConfig: previous }) });
           // Keep updates blocked until encrypted disk read-back is verified too.
           busyLocks.set(ctx.chat.id, true);
         },

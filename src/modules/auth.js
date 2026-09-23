@@ -210,7 +210,7 @@ export function initializeWallet() {
     }
     const { walletAddress, encryptedPrivateKey } = await generateWallet();
     await saveConfig({ ...config, authMode: 'wallet', agentAddress: '', walletAddress,
-      encrypted: { ...config.encrypted, privateKey: encryptedPrivateKey } });
+      encrypted: { ...config.encrypted, privateKey: encryptedPrivateKey } }, { expectedConfig: config });
     return { address: walletAddress, warning: `New wallet: ${walletAddress}\nExport and save its private key securely.` };
   });
   walletInitialization = run.catch(() => {});
