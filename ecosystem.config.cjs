@@ -21,7 +21,7 @@ module.exports = {
     },
     {
       name: 'hip-4-mcp',
-      script: 'src/mcp-server.js',
+      script: 'src/mcp-main.js',
       cwd: __dirname,
       exec_mode: 'fork',
       instances: 1,

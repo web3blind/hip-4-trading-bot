@@ -21,7 +21,7 @@
     "pm2:stop": "pm2 stop hip-4-mcp && pm2 stop hip-4-telegram-bot",
     "pm2:delete": "pm2 delete hip-4-mcp && pm2 delete hip-4-telegram-bot",
     "pm2:logs": "pm2 logs hip-4-telegram-bot --lines 200",
-    "mcp:start": "node src/mcp-server.js",
+    "mcp:start": "node src/mcp-main.js",
     "pm2:mcp:start": "pm2 start ecosystem.config.cjs --only hip-4-mcp --env production",
     "pm2:mcp:restart": "pm2 restart hip-4-mcp",
     "pm2:mcp:logs": "pm2 logs hip-4-mcp --lines 200"
