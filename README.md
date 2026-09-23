@@ -76,7 +76,7 @@ Markets and limit orders require a review/confirmation. Market orders are aggres
 - `WORKERS_SYNC_POSITIONS_MS`, `WORKERS_MONITOR_ORDERS_MS`, `WORKERS_MONITOR_PRICES_MS` control worker intervals in milliseconds.
 - `HIP4_DATA_DIR` selects an absolute isolated data root; when set, normal project `.env` auto-loading is disabled in the config module. Test harnesses also set `DOTENV_CONFIG_PATH` to a disposable path.
 
-Catalog metadata uses current `outcomeMeta.outcomes/questions`, a short client/network-specific TTL, parent expiry and settled-member filtering. Display summaries are conveniences; raw resolution descriptions and actual market quote tokens remain authoritative.
+Catalog metadata comes from `outcomeMeta.outcomes/questions`, cached for five minutes per client/network and invalidated at market expiry. Markets opens **Filters**: choose a category, then a market; you can refine it by deployer (Hyperliquid `venue`, e.g. `out` = Outcome). Hyperliquid does not publish category tags in this metadata, so Sports/Prices/Economy/Business/Other are inferred from market template types. List prices can be up to five minutes old; opening details refreshes prices, and order reviews use live books. Settled/expired members are excluded. Raw resolution descriptions and actual market quote tokens remain authoritative.
 
 For persistent stored-wallet operation, explicitly install PM2 and inspect process state before using `npm run pm2:start`. The ecosystem and scripts use the same name: `hip-4-telegram-bot`. Other commands: `npm run pm2:logs`, `npm run pm2:restart`, `npm run pm2:stop`, `npm run pm2:delete`. Never restart during an uncertain financial action. PM2 configuration is not the ephemeral connection workflow.
 

@@ -1,5 +1,13 @@
 # HIP-4 audit remediation
 
+## Current task: Market filters and five-minute catalog cache
+- Markets opens a filters screen: category first, then a filtered event/market list. The list has Filters as its first button, followed by market buttons. Category and deployer (venue) filters can be combined and survive pagination/event navigation.
+- The public Hyperliquid outcomeMeta has no category field; derive a small explicit category set from outcome/question template names, with Other for unknown types. Its outcome `venue` maps via root `deployers` to the deployer; never conflate the Outcome builder with the `out` deployer.
+- Cache metadata-derived catalog for 300 seconds per client/network, coalesce parallel loads, never serve stale market details after expiry/network changes. Preserve active/settled rules, trade callbacks, accessibility and EN/RU.
+- Safe validation: synthetic metadata including unknown/mixed/expired markets, pagination/filters/restart-style callbacks, TTL concurrent/failure tests, full offline suite and read-only public schema smoke. No secrets, live trades or PM2 restart without explicit authorization.
+- Completed locally: current public metadata reports 229 outcomes, 22 questions, and deployer venues `out`, `skew`, `txyz`; no category tags. Actual Grammy `/markets` command and callback routing verified. Offline tests: 193 passed across 29 isolated files; no exchange writes. Production PM2 has not been restarted.
+
+
 ## Current task: Unified USDC for HIP-4 outcomes
 - Public API, with only the address supplied in chat, confirms `unifiedAccount`: spot USDC is available while perp withdrawable is zero. No wallet secrets or config were read.
 - Correct unified/portfolio available funds to Spot USDC; label the wallet view accurately and prevent transfers to perp on unified accounts. Preserve manual-mode owner transfers.

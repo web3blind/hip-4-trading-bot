@@ -9,21 +9,45 @@ import { OUTCOMES_PAGE_SIZE } from '../constants.js';
 import { upsertOutcome } from '../../database.js';
 import { loadConfig } from '../../config.js';
 import { getTranslator } from '../../i18n.js';
-import { outcomesListKeyboard, eventOutcomesKeyboard, backKeyboard } from '../ui/keyboards.js';
+import { outcomesListKeyboard, eventOutcomesKeyboard, filtersKeyboard, backKeyboard } from '../ui/keyboards.js';
 import { formatEventsList, formatEventOutcomes, getPriceBucketOutcomeLabel, formatTemplateTitle } from '../ui/formatters.js';
 
 const PAGE_SIZE = OUTCOMES_PAGE_SIZE;
+const CATEGORIES = ['all', 'sports', 'prices', 'economy', 'business', 'other'];
+const venueToken = venue => typeof venue === 'string' && /^[a-z0-9_]{1,16}$/.test(venue);
+export const normalizeMarketFilters = (category = 'all', venue = 'all') => ({
+  category: CATEGORIES.includes(category) ? category : 'all',
+  venue: venue === 'all' || venue === 'unknown' || venueToken(venue) ? venue : 'all',
+});
+export function categoryOf(name, description = '') {
+  if (/^template:sports/i.test(name || '')) return 'sports';
+  if (/^template:(binaryPrice|priceTouch)/i.test(name || '') || /^class:priceBinary/.test(description || '')) return 'prices';
+  if (/^template:policyRate/i.test(name || '')) return 'economy';
+  if (/^template:companyIpo/i.test(name || '')) return 'business';
+  return 'other';
+}
+let knownVenues = new Map();
+let pendingFetch = null;
+function filteredEvents(events, category, venue) {
+  return events.flatMap(event => {
+    if (category !== 'all' && event.category !== category) return [];
+    if (event.type === 'standalone') return venue === 'all' || event.venue === venue ? [event] : [];
+    const outcomes = event.outcomes.filter(o => venue === 'all' || o.venue === venue);
+    return outcomes.length ? [{ ...event, outcomes, outcomeCount: outcomes.length }] : [];
+  });
+}
+const selectedVenue = venue => venue === 'all' || venue === 'unknown' || knownVenues.has(venue) ? venue : 'all';
 
 let cachedEvents = [];
 let cachedOutcomeMap = new Map();
-export const OUTCOME_CACHE_TTL_MS = 30_000;
+export const OUTCOME_CACHE_TTL_MS = 300_000;
 let cachedAt = 0;
 let cachedClient = null;
 let cachedNetwork = null;
 let generation = 0;
 export function resetOutcomeCache() {
   cachedEvents = []; cachedOutcomeMap = new Map(); cachedAt = 0;
-  cachedClient = null; cachedNetwork = null; generation += 1;
+  cachedClient = null; cachedNetwork = null; knownVenues = new Map(); pendingFetch = null; generation += 1;
 }
 function cacheValid(client) {
   return cachedClient === client && cachedNetwork === client?.network && Date.now() - cachedAt < OUTCOME_CACHE_TTL_MS
@@ -46,9 +70,17 @@ function isExpired(outcome) {
 
 export async function fetchAndCacheOutcomes(hlClient) {
   if (cacheValid(hlClient)) return cachedEvents;
+  if (pendingFetch?.client === hlClient && pendingFetch.network === hlClient.network) return pendingFetch.promise;
   resetOutcomeCache();
   const fetchGeneration = generation;
   const fetchNetwork = hlClient.network;
+  const promise = rebuildCatalog(hlClient, fetchGeneration, fetchNetwork).finally(() => {
+    if (pendingFetch?.promise === promise) pendingFetch = null;
+  });
+  pendingFetch = { client: hlClient, network: fetchNetwork, promise };
+  return promise;
+}
+async function rebuildCatalog(hlClient, fetchGeneration, fetchNetwork) {
   const meta = await hlClient.getOutcomeMeta();
   if (!Array.isArray(meta?.outcomes) || !Array.isArray(meta?.questions)) throw new Error('Invalid outcome metadata');
   const rawOutcomes = meta.outcomes;
@@ -61,6 +93,10 @@ export async function fetchAndCacheOutcomes(hlClient) {
     mids = {};
   }
 
+  const venues = new Map();
+  for (const entry of meta.deployers || []) {
+    if (venueToken(entry?.venue) && /^0x[0-9a-fA-F]{40}$/.test(entry?.deployer || '')) venues.set(entry.venue, entry.deployer);
+  }
   const outcomeMap = new Map();
   for (const entry of rawOutcomes) {
     const oid = entry.outcome;
@@ -73,6 +109,8 @@ export async function fetchAndCacheOutcomes(hlClient) {
     const outcome = {
       ...entry,
       outcomeId: oid,
+      category: categoryOf(entry.name, entry.description),
+      venue: venues.has(entry.venue) ? entry.venue : 'unknown',
       rawName: entry.name,
       question: formatTemplateTitle(entry.name, entry.description) || entry.name || `Outcome #${oid}`,
       name: formatTemplateTitle(entry.name, entry.description) || entry.name || `Outcome #${oid}`,
@@ -125,6 +163,7 @@ export async function fetchAndCacheOutcomes(hlClient) {
       events.push({
         type: 'question',
         questionId: q.question,
+        category: categoryOf(q.name, q.description),
         name: formatTemplateTitle(q.name, q.description) || q.name,
         rawName: q.name,
         description: q.description || '',
@@ -155,6 +194,8 @@ export async function fetchAndCacheOutcomes(hlClient) {
     events.push({
       type: 'standalone',
       outcomeId: oid,
+      category: outcome.category,
+      venue: outcome.venue,
       name: displayName,
       description: outcome.description,
       yesPrice: outcome.yesPrice,
@@ -182,36 +223,63 @@ export async function fetchAndCacheOutcomes(hlClient) {
   }
   cachedEvents = events;
   cachedOutcomeMap = outcomeMap;
+  knownVenues = venues;
   cachedAt = Date.now(); cachedClient = hlClient; cachedNetwork = hlClient.network;
   return events;
 }
 
-export async function showOutcomesList(ctx, hlClient, page = 1) {
+export async function showMarketFilters(ctx, hlClient, category = 'all', venue = 'all') {
+  const config = await loadConfig();
+  const t = await getTranslator(config.language || 'en');
+  try {
+    const events = await fetchAndCacheOutcomes(hlClient);
+    const normalized = normalizeMarketFilters(category, venue);
+    const selected = { category: normalized.category, venue: selectedVenue(normalized.venue) };
+    const categories = CATEGORIES.filter(key => key === 'all' || filteredEvents(events, key, 'all').length);
+    const venues = [...knownVenues.keys()].filter(key => filteredEvents(events, selected.category, key).length);
+    if (filteredEvents(events, selected.category, 'unknown').length) venues.push('unknown');
+    const text = `${t('market_filters_title')}\n${t('market_category')}: ${t(`market_category_${selected.category}`)}\n${t('market_deployer')}: ${selected.venue === 'all' ? t('market_all') : selected.venue === 'unknown' ? t('market_unknown_deployer') : selected.venue}\n${t('market_category_note')}`;
+    const reply_markup = filtersKeyboard(categories, venues, selected, t);
+    try { await ctx.editMessageText(text, { reply_markup }); }
+    catch { await ctx.reply(text, { reply_markup }); }
+  } catch {
+    const text = t('could_not_load', { scope: t('menu_markets') });
+    try { await ctx.editMessageText(text, { reply_markup: backKeyboard('back_menu', t) }); }
+    catch { await ctx.reply(text, { reply_markup: backKeyboard('back_menu', t) }); }
+  }
+}
+
+export async function showOutcomesList(ctx, hlClient, page = 1, category = 'all', venue = 'all') {
   const config = await loadConfig();
   const t = await getTranslator(config.language || 'en');
 
   try {
-    try { await ctx.editMessageText(t('loading_markets')); } catch {}
+    if (!cacheValid(hlClient)) { try { await ctx.editMessageText(t('loading_markets')); } catch {} }
 
     const events = await fetchAndCacheOutcomes(hlClient);
+    const filters = normalizeMarketFilters(category, venue);
+    const selected = { category: filters.category, venue: selectedVenue(filters.venue) };
+    const visible = filteredEvents(events, selected.category, selected.venue);
 
-    if (events.length === 0) {
+    if (visible.length === 0) {
       const text = t('no_active_markets');
+      const reply_markup = filtersKeyboard([], [], selected, t);
       try {
-        await ctx.editMessageText(text, { reply_markup: backKeyboard('back_menu', t) });
+        await ctx.editMessageText(text, { reply_markup });
       } catch {
-        await ctx.reply(text, { reply_markup: backKeyboard('back_menu', t) });
+        await ctx.reply(text, { reply_markup });
       }
       return;
     }
 
-    const totalPages = Math.max(1, Math.ceil(events.length / PAGE_SIZE));
+    const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
     const safePage = Math.max(1, Math.min(page, totalPages));
     const startIndex = (safePage - 1) * PAGE_SIZE;
-    const pageEvents = events.slice(startIndex, startIndex + PAGE_SIZE);
+    const pageEvents = visible.slice(startIndex, startIndex + PAGE_SIZE);
 
-    const text = formatEventsList(pageEvents, safePage, totalPages, t);
-    const keyboard = outcomesListKeyboard(pageEvents, safePage, totalPages, t);
+    const heading = `${t(`market_category_${selected.category}`)} · ${selected.venue === 'all' ? t('market_all') : selected.venue}`;
+    const text = `${heading}\n${formatEventsList(pageEvents, safePage, totalPages, t)}\n${t('market_cached_prices_note')}`;
+    const keyboard = outcomesListKeyboard(pageEvents, safePage, totalPages, t, selected);
 
     try {
       await ctx.editMessageText(text, { reply_markup: keyboard });
@@ -228,17 +296,18 @@ export async function showOutcomesList(ctx, hlClient, page = 1) {
   }
 }
 
-export async function showEventOutcomes(ctx, hlClient, questionId) {
+export async function showEventOutcomes(ctx, hlClient, questionId, category = 'all', venue = 'all') {
   const config = await loadConfig();
   const t = await getTranslator(config.language || 'en');
 
   try {
-    await fetchAndCacheOutcomes(hlClient);
-
-    const event = cachedEvents.find(e => e.type === 'question' && e.questionId === questionId);
+    const events = await fetchAndCacheOutcomes(hlClient);
+    const filters = normalizeMarketFilters(category, venue);
+    const selected = { category: filters.category, venue: selectedVenue(filters.venue) };
+    const event = filteredEvents(events, selected.category, selected.venue).find(e => e.type === 'question' && e.questionId === questionId);
     if (!event) {
       try {
-        await ctx.editMessageText(t('event_no_markets'), { reply_markup: backKeyboard('outcomes:page:1', t) });
+        await ctx.editMessageText(t('event_no_markets'), { reply_markup: backKeyboard(`outcomes:page:1:${selected.category}:${selected.venue}`, t) });
       } catch {}
       return;
     }
@@ -247,8 +316,8 @@ export async function showEventOutcomes(ctx, hlClient, questionId) {
     const totalPages = Math.max(1, Math.ceil(event.outcomes.length / PAGE_SIZE));
     const page = Math.min(totalPages, Math.max(1, Math.floor(requestedPage)));
     const view = { ...event, page, totalPages, outcomes: event.outcomes.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE) };
-    const text = formatEventOutcomes(view, t);
-    const keyboard = eventOutcomesKeyboard(view, t);
+    const text = `${formatEventOutcomes(view, t)}\n${t('market_cached_prices_note')}`;
+    const keyboard = eventOutcomesKeyboard(view, t, selected);
 
     try {
       await ctx.editMessageText(text, { reply_markup: keyboard });

@@ -30,7 +30,7 @@ export function mainMenuKeyboard(t, { walletConfigured = true } = {}) {
     return kb;
   }
 
-  kb.text(label(t, 'menu_markets', 'Markets'), 'outcomes:page:1')
+  kb.text(label(t, 'menu_markets', 'Markets'), 'outcomes:filters:all:all')
     .text(label(t, 'menu_positions', 'Positions'), 'positions')
     .row()
     .text(label(t, 'menu_orders', 'Orders'), 'orders')
@@ -50,28 +50,47 @@ export async function getMainMenuKeyboard(lang) {
   return mainMenuKeyboard(t, { walletConfigured: configured });
 }
 
+// ─── Market filters (category first, optional deployer/venue) ─────
+export function filtersKeyboard(categories, venues, selection, t) {
+  const { category = 'all', venue = 'all' } = selection;
+  const kb = new InlineKeyboard();
+  if (!categories.length) kb.text(label(t, 'market_filters_title', 'Filters'), `outcomes:filters:${category}:${venue}`).row();
+  for (const key of categories) {
+    kb.text(`${key === category ? '✓ ' : ''}${label(t, `market_category_${key}`, key)}`, `outcomes:page:1:${key}:${venue}`).row();
+  }
+  kb.text(`${venue === 'all' ? '✓ ' : ''}${label(t, 'market_all_deployers', 'All deployers')}`, `outcomes:page:1:${category}:all`).row();
+  for (const key of venues) {
+    const name = key === 'out' ? 'Outcome (out)' : key === 'unknown' ? label(t, 'market_unknown_deployer', 'Unknown') : key.toUpperCase();
+    kb.text(`${key === venue ? '✓ ' : ''}${name}`, `outcomes:page:1:${category}:${key}`).row();
+  }
+  kb.text(label(t, 'back', 'Back'), 'back_menu');
+  return kb;
+}
+
 // ─── Events list (Level 1: questions + standalones) ─────────────
 
-export function outcomesListKeyboard(events, page, totalPages, t) {
+export function outcomesListKeyboard(events, page, totalPages, t, selection = { category: 'all', venue: 'all' }) {
   const keyboard = new InlineKeyboard();
+  const { category, venue } = selection;
+  keyboard.text(label(t, 'market_filters_title', 'Filters'), `outcomes:filters:${category}:${venue}`).row();
 
   if (events && events.length > 0) {
     events.forEach((event) => {
       if (event.type === 'question') {
         const lbl = (event.name || 'Event').slice(0, 50);
-        keyboard.text(lbl, `event:${event.questionId}`).row();
+        keyboard.text(lbl, `event:${event.questionId}:1:${category}:${venue}`).row();
       } else {
         // Standalone outcome — go directly to detail
         const lbl = (event.name || 'Outcome').slice(0, 50);
-        keyboard.text(lbl, `outcome:${event.outcomeId}`).row();
+        keyboard.text(lbl, `outcome:${event.outcomeId}:${category}:${venue}`).row();
       }
     });
   }
 
   // Pagination
   const navButtons = [];
-  if (page > 1) navButtons.push({ text: label(t, 'prev', '< Prev'), data: `outcomes:page:${page - 1}` });
-  if (page < totalPages) navButtons.push({ text: label(t, 'next', 'Next >'), data: `outcomes:page:${page + 1}` });
+  if (page > 1) navButtons.push({ text: label(t, 'prev', '< Prev'), data: `outcomes:page:${page - 1}:${category}:${venue}` });
+  if (page < totalPages) navButtons.push({ text: label(t, 'next', 'Next >'), data: `outcomes:page:${page + 1}:${category}:${venue}` });
   if (navButtons.length > 0) {
     navButtons.forEach(btn => keyboard.text(btn.text, btn.data));
     keyboard.row();
@@ -83,27 +102,28 @@ export function outcomesListKeyboard(events, page, totalPages, t) {
 
 // ─── Event outcomes (Level 2: outcomes within a question) ───────
 
-export function eventOutcomesKeyboard(event, t) {
+export function eventOutcomesKeyboard(event, t, selection = { category: 'all', venue: 'all' }) {
   const keyboard = new InlineKeyboard();
+  const { category, venue } = selection;
 
   if (event.outcomes && event.outcomes.length > 0) {
     for (const o of event.outcomes) {
       const price = o.yesPrice != null ? ` (${(o.yesPrice * 100).toFixed(0)}%)` : '';
       const lbl = ((o.displayName || o.name) + price).slice(0, 50);
-      keyboard.text(lbl, `outcome:${o.outcomeId}`).row();
+      keyboard.text(lbl, `outcome:${o.outcomeId}:${category}:${venue}`).row();
     }
   }
 
-  if (event.page > 1) keyboard.text('‹', `event:${event.questionId}:${event.page - 1}`);
-  if (event.page < event.totalPages) keyboard.text('›', `event:${event.questionId}:${event.page + 1}`);
+  if (event.page > 1) keyboard.text('‹', `event:${event.questionId}:${event.page - 1}:${category}:${venue}`);
+  if (event.page < event.totalPages) keyboard.text('›', `event:${event.questionId}:${event.page + 1}:${category}:${venue}`);
   if (event.totalPages > 1) keyboard.row();
-  keyboard.text(label(t, 'back_to_markets', 'Back to markets'), 'outcomes:page:1');
+  keyboard.text(label(t, 'back_to_markets', 'Back to markets'), `outcomes:page:1:${category}:${venue}`);
   return keyboard;
 }
 
 // ─── Outcome detail ────────────────────────────────────────────
 
-export function outcomeDetailKeyboard(outcomeId, t, tradeable) {
+export function outcomeDetailKeyboard(outcomeId, t, tradeable, backCallback = 'outcomes:page:1') {
   const kb = new InlineKeyboard();
   const tr = tradeable || { yesBuy: true, yesSell: true, noBuy: true, noSell: true };
 
@@ -140,7 +160,7 @@ export function outcomeDetailKeyboard(outcomeId, t, tradeable) {
     kb.text(splitLabel, `split:${outcomeId}`).row();
   }
 
-  kb.text(label(t, 'back_to_list', 'Back to list'), 'outcomes:page:1');
+  kb.text(label(t, 'back_to_list', 'Back to list'), backCallback);
   return kb;
 }
 

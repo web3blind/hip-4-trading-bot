@@ -12,7 +12,7 @@ import { createContext, safeLogError } from '../../logger.js';
 import { busyLocks, confirmationLocks, userStates, hlClient, consumeConfirmation, invalidateUserState, isAuthorizedPrivateContext, runtimeTransitioning } from '../runtime.js';
 import { mainMenuKeyboard, getMainMenuKeyboard } from '../ui/keyboards.js';
 
-import { showOutcomesList, showEventOutcomes } from '../features/outcomes.js';
+import { showMarketFilters, showOutcomesList, showEventOutcomes, normalizeMarketFilters } from '../features/outcomes.js';
 import { showOutcomeDetail } from '../features/outcome-details.js';
 import { createTradeMarketFeature } from '../features/trade-market.js';
 import { createTradeLimitFeature } from '../features/trade-limit.js';
@@ -119,14 +119,20 @@ export async function handleCallbackQuery(ctx) {
 
     if (data.startsWith('outcomes:')) {
       const parts = data.split(':');
-      const page = parseInt(parts[2], 10) || 1;
       if (!hlClient) {
         await editOrReply(ctx, 'Trading is not ready yet. Create or import a wallet first.', {
           reply_markup: new InlineKeyboard().text('Back', 'back_menu'),
         });
         return;
       }
-      await showOutcomesList(ctx, hlClient, page);
+      if (parts[1] === 'filters') {
+        const { category, venue } = normalizeMarketFilters(parts[2], parts[3]);
+        await showMarketFilters(ctx, hlClient, category, venue);
+      } else if (parts[1] === 'page') {
+        const page = Math.max(1, Math.min(1000, Number.parseInt(parts[2], 10) || 1));
+        const { category, venue } = normalizeMarketFilters(parts[3], parts[4]);
+        await showOutcomesList(ctx, hlClient, page, category, venue);
+      }
       return;
     }
 
@@ -138,7 +144,8 @@ export async function handleCallbackQuery(ctx) {
         });
         return;
       }
-      await showEventOutcomes(ctx, hlClient, questionId);
+      const { category, venue } = normalizeMarketFilters(data.split(':')[3], data.split(':')[4]);
+      await showEventOutcomes(ctx, hlClient, questionId, category, venue);
       return;
     }
 
@@ -150,7 +157,8 @@ export async function handleCallbackQuery(ctx) {
         });
         return;
       }
-      await showOutcomeDetail(ctx, hlClient, outcomeId);
+      const { category, venue } = normalizeMarketFilters(data.split(':')[2], data.split(':')[3]);
+      await showOutcomeDetail(ctx, hlClient, outcomeId, `outcomes:page:1:${category}:${venue}`);
       return;
     }
 

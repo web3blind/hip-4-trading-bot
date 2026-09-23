@@ -47,7 +47,7 @@ test('event pagination uses existing event route and bounds message/keyboard',as
  const c=client({outcomes:Array.from({length:25},(_,i)=>entry(i)),questions:[{question:7,name:'Many',namedOutcomes:Array.from({length:25},(_,i)=>i)}]});
  const sent=[]; const ctx={callbackQuery:{data:'event:7:2'},async editMessageText(text,options){sent.push({text,options});},async reply(text,options){sent.push({text,options});}};
  await showEventOutcomes(ctx,c,7);assert.equal(sent.length,1);assert.ok(sent[0].text.length<4096);
- const buttons=sent[0].options.reply_markup.inline_keyboard.flat();assert.ok(buttons.some(b=>b.callback_data==='event:7:3'));assert.ok(buttons.some(b=>b.callback_data==='event:7:1'));
+ const buttons=sent[0].options.reply_markup.inline_keyboard.flat();assert.ok(buttons.some(b=>b.callback_data==='event:7:3:all:all'));assert.ok(buttons.some(b=>b.callback_data==='event:7:1:all:all'));
  assert.ok(buttons.filter(b=>b.callback_data.startsWith('outcome:')).length<=5);
 });
 test('parent expiry applies during TTL and stale network refresh cannot publish', async(t)=>{

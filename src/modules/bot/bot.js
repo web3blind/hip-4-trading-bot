@@ -35,7 +35,7 @@ import {
   showLanguageSettingsMenu,
   handleSettingsLanguageChangeAction,
 } from './features/language.js';
-import { showOutcomesList } from './features/outcomes.js';
+import { showMarketFilters } from './features/outcomes.js';
 import { showOutcomeDetail } from './features/outcome-details.js';
 import { createTradeMarketFeature } from './features/trade-market.js';
 import { createTradeLimitFeature } from './features/trade-limit.js';
@@ -110,7 +110,7 @@ export async function initBot(token, allowedUserId) {
       await ctx.reply('HyperLiquid client not initialised yet. Try again shortly.');
       return;
     }
-    await showOutcomesList(ctx, runtimeHLClient, 1);
+    await showMarketFilters(ctx, runtimeHLClient);
   });
   botInstance.command('positions', async (ctx) => {
     if (!runtimeHLClient) {

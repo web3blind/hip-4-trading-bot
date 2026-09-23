@@ -113,7 +113,7 @@ export async function fetchOutcomeDetails(hlClient, outcomeId) {
  * @param {HLClient} hlClient - HyperLiquid client
  * @param {number} outcomeId - Outcome ID
  */
-export async function showOutcomeDetail(ctx, hlClient, outcomeId) {
+export async function showOutcomeDetail(ctx, hlClient, outcomeId, backCallback = 'outcomes:page:1') {
   const config = await loadConfig();
   const t = await getTranslator(config.language || 'en');
 
@@ -128,19 +128,19 @@ export async function showOutcomeDetail(ctx, hlClient, outcomeId) {
 
     if (!details) {
       const text = t('outcome_not_found', { id: outcomeId });
-      await ctx.editMessageText(text, { reply_markup: backKeyboard('outcomes:page:1', t) });
+      await ctx.editMessageText(text, { reply_markup: backKeyboard(backCallback, t) });
       return;
     }
 
     const { outcome, orderbook, prices, tradeable } = details;
     const text = formatOutcomeDetail(outcome, orderbook, prices, t);
-    const keyboard = outcomeDetailKeyboard(outcomeId, t, tradeable);
+    const keyboard = outcomeDetailKeyboard(outcomeId, t, tradeable, backCallback);
 
     await ctx.editMessageText(text, { reply_markup: keyboard });
   } catch (error) {
     const errorText = t('error_loading_outcome');
     try {
-      await ctx.editMessageText(errorText, { reply_markup: backKeyboard('outcomes:page:1', t) });
+      await ctx.editMessageText(errorText, { reply_markup: backKeyboard(backCallback, t) });
     } catch {
       // Best effort
     }
