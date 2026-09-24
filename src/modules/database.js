@@ -45,6 +45,9 @@ export function initDatabase(scope = {}) {
   createPriceAlertsTable();
   createCompleteSetAttemptsTable();
   createCompleteSetAlertsTable();
+  if (!db.pragma('table_info(complete_set_alerts)').some(column => column.name === 'last_net_floor')) {
+    db.exec('ALTER TABLE complete_set_alerts ADD COLUMN last_net_floor REAL');
+  }
 
   return db;
 }
@@ -180,26 +183,37 @@ export function getCompleteSetAttempts(states = ['submitting','submitted_unknown
     .all(...states,...(limit===null?[]:[limit])).map(row=>({...row, coins:JSON.parse(row.coins_json), legs:JSON.parse(row.legs_json)}));
 }
 
+export function getPendingCompleteSetQuestionIds(account, network) {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(account || '') || !['mainnet','testnet'].includes(network))
+    throw new Error('Invalid account or network');
+  return new Set(db.prepare(`SELECT DISTINCT question_id FROM complete_set_attempts
+    WHERE account = ? AND network = ? AND state IN ('submitting','submitted_unknown','partial')`)
+    .all(account.toLowerCase(), network).map(row => row.question_id));
+}
+
 function createCompleteSetAlertsTable() {
   db.exec(`CREATE TABLE IF NOT EXISTS complete_set_alerts (
     question_id INTEGER PRIMARY KEY,
     last_alert_at INTEGER NOT NULL DEFAULT 0,
     miss_count INTEGER NOT NULL DEFAULT 0,
-    active INTEGER NOT NULL DEFAULT 0
+    active INTEGER NOT NULL DEFAULT 0,
+    last_net_floor REAL
   )`);
 }
 
 export function getCompleteSetAlertState(questionId) {
   return db.prepare('SELECT * FROM complete_set_alerts WHERE question_id = ?').get(questionId)
-    ?? {question_id:questionId,last_alert_at:0,miss_count:0,active:0};
+    ?? {question_id:questionId,last_alert_at:0,miss_count:0,active:0,last_net_floor:null};
 }
 
-export function updateCompleteSetAlertState(questionId, lastAlertAt, missCount, active) {
+export function updateCompleteSetAlertState(questionId, lastAlertAt, missCount, active, lastNetFloor=null) {
   if (!Number.isSafeInteger(questionId) || questionId<0 || !Number.isSafeInteger(lastAlertAt) || lastAlertAt<0 ||
-      !Number.isSafeInteger(missCount) || missCount<0 || ![0,1].includes(active)) throw new Error('Invalid alert state');
-  db.prepare(`INSERT INTO complete_set_alerts (question_id,last_alert_at,miss_count,active) VALUES (?,?,?,?)
+      !Number.isSafeInteger(missCount) || missCount<0 || ![0,1].includes(active) ||
+      (lastNetFloor!==null && (!Number.isFinite(lastNetFloor) || lastNetFloor<=0))) throw new Error('Invalid alert state');
+  db.prepare(`INSERT INTO complete_set_alerts (question_id,last_alert_at,miss_count,active,last_net_floor) VALUES (?,?,?,?,?)
     ON CONFLICT(question_id) DO UPDATE SET last_alert_at=excluded.last_alert_at,
-    miss_count=excluded.miss_count,active=excluded.active`).run(questionId,lastAlertAt,missCount,active);
+    miss_count=excluded.miss_count,active=excluded.active,last_net_floor=excluded.last_net_floor`)
+    .run(questionId,lastAlertAt,missCount,active,lastNetFloor);
 }
 
 // ─── Outcomes ─────────────────────────────────────────────────

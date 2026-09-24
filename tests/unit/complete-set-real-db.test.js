@@ -2,6 +2,7 @@ import {test} from 'node:test';
 import {randomUUID} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
+import Database from 'better-sqlite3';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {meta,templates,fees,account,fixedNow} from '../fixtures/complete-set.js';
@@ -46,5 +47,24 @@ test('confirmed route writes actual scoped SQLite attempt with fee digest and cl
   db.updateCompleteSetAttempt(pending,'submitted_unknown');
   const queue=db.getCompleteSetAttempts(['submitted_unknown','filled'],{limit:30,unnotifiedFilled:true});
   assert.equal(queue[0].id,pending);assert.equal(queue.length,2);
- } finally {db.closeDatabase();runtime.userStates.delete(77);runtime.setHLClient(null);setSessionConfig(null);rmSync(root,{recursive:true,force:true});}
+  assert.deepEqual([...db.getPendingCompleteSetQuestionIds(account,'mainnet')],[999]);
+  assert.equal(db.getPendingCompleteSetQuestionIds(account,'testnet').size,0);
+  db.updateCompleteSetAttempt(pending,'rejected');
+  assert.equal(db.getPendingCompleteSetQuestionIds(account,'mainnet').size,0);
+ } finally {db.closeDatabase();runtime.userStates.delete(77);runtime.setHLClient(null);setSessionConfig(null);}
+});
+
+test('legacy alert row survives additive floor migration and repeated database opens',()=>{
+ const legacy=new Database(join(root,'cache-testnet-unconfigured.sqlite'));
+ legacy.exec('CREATE TABLE complete_set_alerts (question_id INTEGER PRIMARY KEY,last_alert_at INTEGER NOT NULL DEFAULT 0,miss_count INTEGER NOT NULL DEFAULT 0,active INTEGER NOT NULL DEFAULT 0)');
+ legacy.prepare('INSERT INTO complete_set_alerts VALUES (325, 123, 0, 1)').run();legacy.close();
+ try {
+  db.initDatabase({network:'testnet'});
+  assert.equal(db.getCompleteSetAlertState(325).last_net_floor,null);
+  assert.equal(db.getCompleteSetAlertState(325).last_alert_at,123);
+  db.updateCompleteSetAlertState(325,456,0,1,.49);
+  db.closeDatabase();db.initDatabase({network:'testnet'});
+  assert.equal(db.getCompleteSetAlertState(325).last_net_floor,.49);
+  assert.equal(db.getCompleteSetAlertState(325).last_alert_at,456);
+ } finally {db.closeDatabase();rmSync(root,{recursive:true,force:true});}
 });

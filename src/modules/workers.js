@@ -366,7 +366,8 @@ export async function monitorCompleteSetsWorker() {
   const budget=Number(config.notifications?.completeSetScanBudget);
   const readOnly={network:hlClient.network,address:hlClient.address,builder:hlClient.builder,
     getOutcomeMeta:()=>hlClient.getOutcomeMeta(),getOutcomeTemplates:()=>hlClient.getOutcomeTemplates(),
-    getUserFees:()=>hlClient.getUserFees(),getOrderbook:coin=>hlClient.getOrderbook(coin),
+    getUserFees:()=>hlClient.getUserFees(),getUserBalances:address=>hlClient.getUserBalances(address),
+    getOrderbook:coin=>hlClient.getOrderbook(coin),
     prepareOrder:order=>hlClient.prepareOrder(order)};
   await scanCompleteSets(readOnly,{enabled:true,budget:Number.isFinite(budget)&&budget>=40&&budget<=1000?budget:100});
 }
