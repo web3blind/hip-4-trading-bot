@@ -37,6 +37,7 @@ export function createCompleteSetWatcher({onAlert,now=()=>Date.now(),cooldownMs=
       let quote;
       try {
         const feeEvidence=await getCompleteSetFeeEvidence(client,q,now(),fees);
+        if (!feeEvidence) throw new Error('Invalid complete-set fee evidence');
         quote=await quoteCompleteSet(client,q,budget,{now:now(),feeEvidence});
       } catch {continue;} // Network errors do not reset dedup.
       const state=alerts.get(q.question);

@@ -14,6 +14,8 @@ async function editOrReply(ctx, text, reply_markup) {
   catch { await ctx.reply(text, { reply_markup }); }
 }
 const fmt = n => Number(n).toFixed(2);
+const percentages = [10,30,50,70,80,90,100];
+const cents = n => Math.floor(n*100+1e-8)/100;
 const idOf = value => /^[1-9][0-9]{0,14}$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null;
 function questionName(q) {
   const a = q.description.match(/(?:^|\|)participantA:([^|]+)/)?.[1] || '';
@@ -22,6 +24,8 @@ function questionName(q) {
 }
 async function findQuestion(client, id, now) {
   const [meta,templates] = await Promise.all([client.getOutcomeMeta(),client.getOutcomeTemplates()]);
+  if (!Array.isArray(meta?.questions) || !Array.isArray(meta?.outcomes) || !Array.isArray(templates))
+    throw new Error('Invalid complete-set metadata');
   return completeSetQuestions(meta, templates, now).find(q => q.question === id) || null;
 }
 function legLabel(t,q,index) {
@@ -56,19 +60,46 @@ export function createCompleteSetFeature(deps = {}) {
     const config = await loadConfig(), t = await getTranslator(config.language || 'en');
     const id = idOf(String(rawId));
     if (id === null || !client()) return editOrReply(ctx, t('set_unavailable'), mainMenuKeyboard());
-    const q = await findQuestion(client(), id, now());
-    if (!q) return editOrReply(ctx, t('set_unavailable'), mainMenuKeyboard());
-    const minButton=Math.ceil((q.outcomes.length*10*1.03)/10)*10;
-    runtime.userStates.set(ctx.chat.id, { state:'AWAITING_SET_AMOUNT', questionId:id });
-    await editOrReply(ctx, `${t('set_title')}\n${questionName(q)}\n\n${t('set_enter_budget',{count:q.outcomes.length})}`, new InlineKeyboard()
-      .text(`$${minButton}`, `set_amount:${id}:${minButton}`).text(`$${minButton*2}`, `set_amount:${id}:${minButton*2}`).row()
-      .text(`$${minButton*5}`, `set_amount:${id}:${minButton*5}`).text(t('cancel'), 'back_menu'));
+    if (runtime.busyLocks.get(ctx.chat.id)) return expired(ctx);
+    const opening={state:'OPENING_SET',questionId:id,account:runtime.runtimeBinding()};
+    runtime.userStates.set(ctx.chat.id,opening);
+    const current=()=>runtime.userStates.get(ctx.chat.id)===opening && opening.account===runtime.runtimeBinding() && !runtime.runtimeTransitioning;
+    try {
+      const c=client(), q=await findQuestion(c,id,now());
+      if (!current()) return;
+      if (!q) {runtime.userStates.delete(ctx.chat.id);return editOrReply(ctx,t('set_unavailable'),mainMenuKeyboard());}
+      const feeEvidence=await getCompleteSetFeeEvidence(c,q,now());
+      if (!feeEvidence) throw new Error('Invalid fee evidence');
+      const minimum=await quoteCompleteSet(c,q,100_000,{now:now(),feeEvidence,minimum:true});
+      if (!current()) return;
+      if (!minimum) {runtime.userStates.delete(ctx.chat.id);return editOrReply(ctx,t('set_no_opportunity'),mainMenuKeyboard());}
+      const balance=await c.getAvailableUsdc();
+      if (!current()) return;
+      if (!Number.isFinite(balance) || balance<0) throw new Error('Invalid balance');
+      const token=randomBytes(6).toString('hex');
+      const state={state:'AWAITING_SET_AMOUNT',questionId:id,token,account:runtime.runtimeBinding()};
+      runtime.userStates.set(ctx.chat.id,state);
+      const keyboard=new InlineKeyboard();
+      const minimumBudget=Math.ceil((minimum.maxSpend-1e-8)*100)/100;
+      if (cents(balance)>=minimumBudget)
+        keyboard.text(`${t('set_minimum_button')} (${fmt(minimumBudget)} $)`, `set_amount:${id}:${token}:min`).row();
+      for (const pct of percentages) {
+        const amount=cents(balance*pct/100);
+        if (amount>=minimumBudget && amount<=100_000)
+          keyboard.text(pct===100?`100% (${t('set_max')}, ${fmt(amount)} $)`:`${pct}% (${fmt(amount)} $)`, `set_amount:${id}:${token}:${pct}`).row();
+      }
+      keyboard.text(t('cancel'),'back_menu');
+      await editOrReply(ctx, `${t('set_title')}\n${questionName(q)}\n\n${t('set_available')}: $${fmt(balance)}\n${t('set_minimum')}: $${fmt(Math.ceil((minimum.maxSpend-1e-8)*100)/100)}\n${t('set_enter_budget',{count:q.outcomes.length})}${balance+1e-8<minimum.maxSpend?'\n'+t('set_budget_short'):''}`,keyboard);
+    } catch {
+      if (current()) {runtime.userStates.delete(ctx.chat.id);await editOrReply(ctx,t('set_data_error'),mainMenuKeyboard());}
+    }
   }
 
-  async function chooseAmount(ctx, rawId, rawAmount) {
+  async function chooseAmount(ctx, rawId, token, choice) {
     const state = runtime.userStates.get(ctx.chat.id);
-    if (state?.state !== 'AWAITING_SET_AMOUNT' || state.questionId !== idOf(String(rawId))) return expired(ctx);
-    await review(ctx, rawAmount);
+    if (state?.state !== 'AWAITING_SET_AMOUNT' || state.questionId !== idOf(String(rawId)) || state.token!==token) return expired(ctx);
+    if (choice!=='min' && !percentages.includes(Number(choice))) return expired(ctx);
+    await review(ctx,choice==='min'?'min':Number(choice));
   }
   async function inputAmount(ctx, state, text) {
     if (runtime.userStates.get(ctx.chat.id) !== state || state.state !== 'AWAITING_SET_AMOUNT') return expired(ctx);
@@ -81,24 +112,33 @@ export function createCompleteSetFeature(deps = {}) {
   async function review(ctx, rawBudget) {
     const config=await loadConfig(), t=await getTranslator(config.language || 'en');
     const state=runtime.userStates.get(ctx.chat.id);
-    if (state?.state !== 'AWAITING_SET_AMOUNT' || !client()) return expired(ctx);
-    const budget=Number(String(rawBudget).trim().replace(',','.'));
-    if (!Number.isFinite(budget) || budget <= 0 || budget > 100_000) {
-      await ctx.reply(t('set_min_budget',{count:2}));
-      return;
-    }
+    if (state?.state !== 'AWAITING_SET_AMOUNT' || state.account!==runtime.runtimeBinding() || !client() || runtime.busyLocks.get(ctx.chat.id)) return expired(ctx);
+    state.state='REVIEWING_SET';
+    const current=()=>runtime.userStates.get(ctx.chat.id)===state && state.state==='REVIEWING_SET' && state.account===runtime.runtimeBinding() && !runtime.runtimeTransitioning;
     try {
-      const q=await findQuestion(client(),state.questionId,now());
+      const c=client(), q=await findQuestion(c,state.questionId,now());
+      if (!current()) return;
       if (!q) { await editOrReply(ctx,t('set_unavailable'),mainMenuKeyboard());return; }
-      if (budget<q.outcomes.length*10) {await ctx.reply(t('set_min_budget',{count:q.outcomes.length}));return;}
-      const feeEvidence=await getCompleteSetFeeEvidence(client(),q,now());
-      const quote=await quoteCompleteSet(client(),q,budget,{now:now(),feeEvidence});
+      const feeEvidence=await getCompleteSetFeeEvidence(c,q,now());
+      if (!feeEvidence) throw new Error('Invalid fee evidence');
+      const minimum=await quoteCompleteSet(c,q,100_000,{now:now(),feeEvidence,minimum:true});
+      if (!current()) return;
+      if (!minimum) {await editOrReply(ctx,t('set_no_opportunity'),new InlineKeyboard().text(t('back'),`set_open:${state.questionId}`));return;}
+      const balance=await c.getAvailableUsdc();
+      if (!current()) return;
+      if (!Number.isFinite(balance) || balance<0) throw new Error('Invalid balance');
+      const budget=rawBudget==='min'?Math.ceil((minimum.maxSpend-1e-8)*100)/100:
+        percentages.includes(Number(rawBudget)) && typeof rawBudget==='number'?cents(balance*rawBudget/100):Number(String(rawBudget).trim().replace(',','.'));
+      if (!Number.isFinite(budget) || budget<=0 || budget>100_000) {await ctx.reply(t('set_invalid_budget'));return;}
+      if (budget+1e-8<minimum.maxSpend) {await ctx.reply(t('set_budget_too_small',{amount:fmt(Math.ceil((minimum.maxSpend-1e-8)*100)/100)}));return;}
+      if (budget>balance+1e-8) {await ctx.reply(t('insufficient_balance',{balance:fmt(balance)}));return;}
+      const quote=await quoteCompleteSet(c,q,budget,{now:now(),feeEvidence});
+      if (!current()) return;
       if (!quote) {
-        await editOrReply(ctx, t('set_no_quote'), new InlineKeyboard().text(t('back'), `set_open:${state.questionId}`));
+        await editOrReply(ctx, t('set_changed'), new InlineKeyboard().text(t('back'), `set_open:${state.questionId}`));
         return;
       }
-      const balance=await client().getAvailableUsdc();
-      if (!Number.isFinite(balance) || balance < quote.maxSpend) {
+      if (balance < quote.maxSpend) {
         await editOrReply(ctx,t('insufficient_balance',{balance:fmt(balance||0)}),new InlineKeyboard().text(t('back'),'back_menu'));
         return;
       }
@@ -109,8 +149,8 @@ export function createCompleteSetFeature(deps = {}) {
       await editOrReply(ctx, `${t('set_review')}\n${summary(t,q,quote)}\n\n${t('set_confirm_risk')}`,
         new InlineKeyboard().text(t('confirm'),callback).text(t('cancel'),'back_menu'));
     } catch {
-      await editOrReply(ctx,t('set_unavailable'),new InlineKeyboard().text(t('back'),'back_menu'));
-    }
+      if (current()) await editOrReply(ctx,t('set_data_error'),new InlineKeyboard().text(t('back'),'back_menu'));
+    } finally {if(current()) state.state='AWAITING_SET_AMOUNT';}
   }
 
   async function confirm(ctx) {
@@ -119,6 +159,7 @@ export function createCompleteSetFeature(deps = {}) {
     if (state?.state !== 'CONFIRMING_SET_BUY' || !client() || state.account !== runtime.runtimeBinding()) return expired(ctx);
     if (runtime.busyLocks.get(chatId)) return;
     runtime.busyLocks.set(chatId,true);
+    let submitted=false;
     try {
       const q=await findQuestion(client(),state.questionId,now());
       if (!q || q.ruleDigest!==state.quote.ruleDigest ||
@@ -126,8 +167,10 @@ export function createCompleteSetFeature(deps = {}) {
         await editOrReply(ctx,t('set_changed'),mainMenuKeyboard());return;
       }
       const feeEvidence=await getCompleteSetFeeEvidence(client(),q,now());
+      if (!feeEvidence) {await editOrReply(ctx,t('set_data_error'),mainMenuKeyboard());return;}
       const quote=await quoteCompleteSet(client(),q,state.budget,{shares:state.quote.shares,now:now(),feeEvidence});
       const freshBalance=await client().getAvailableUsdc();
+      if (!Number.isFinite(freshBalance) || freshBalance<0) {await editOrReply(ctx,t('set_data_error'),mainMenuKeyboard());return;}
       if (!quote || quote.shares!==state.quote.shares || feeEvidence?.digest!==state.quote.feeEvidence.digest ||
           quote.orders.length!==state.quote.orders.length ||
           quote.orders.some((o,i)=>o.coin!==state.quote.orders[i].coin || o.size!==state.quote.orders[i].size ||
@@ -147,6 +190,7 @@ export function createCompleteSetFeature(deps = {}) {
       catch { await editOrReply(ctx,t('set_unavailable'),mainMenuKeyboard());return; }
       // IOC is not atomic. Never retry or auto-transfer after this single call.
       let result;
+      submitted=true;
       try { result=await client().placeOrders(orders,{throwOnError:false}); }
       catch {
         try { attempts.update(attemptId,'submitted_unknown'); } catch { /* No retry after ambiguous exchange result. */ }
@@ -179,7 +223,7 @@ export function createCompleteSetFeature(deps = {}) {
       await editOrReply(ctx, `${t(attemptState==='filled'?'set_submitted':attemptState==='rejected'?'set_rejected':'set_partial')}\n${lines.join('\n')}\n\n${t('set_monitor_note')}${persistenceFailed?'\n'+t('set_persist_warning'):''}`,
         new InlineKeyboard().text(t('menu_positions'),'positions:refresh').text(t('view_orders'),'orders:refresh'));
     } catch {
-      await editOrReply(ctx,t('set_unknown'),new InlineKeyboard().text(t('view_orders'),'orders:refresh'));
+      await editOrReply(ctx,submitted?t('set_unknown'):t('set_data_error'),new InlineKeyboard().text(t('view_orders'),'orders:refresh'));
     } finally { runtime.userStates.delete(chatId);runtime.busyLocks.delete(chatId); }
   }
   return {open,chooseAmount,inputAmount,confirm};

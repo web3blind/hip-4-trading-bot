@@ -27,5 +27,16 @@ test('depth, each-leg minimum, and worst net after conservative fee bound',async
  assert.equal(await quoteCompleteSet(c,cq,40,{now:fixedNow}),null);
  assert.equal(await quoteCompleteSet(c,cq,40,{now:fixedNow,feeEvidence:{...fee,rate:0.02}}),null);
  assert.equal(await quoteCompleteSet(c,cq,40,{now:fixedNow+120_000,feeEvidence:fee}),null);
- assert.equal(await quoteCompleteSet(client({'#44830':[[],[]]}),cq,40,{now:fixedNow,feeEvidence:fee}),null);
+ await assert.rejects(quoteCompleteSet(client({'#44830':[[],[]]}),cq,40,{now:fixedNow,feeEvidence:fee}),/order book/);
+});
+test('minimum quote skips a rounded-under-$10 candidate and retains equal executable legs',async()=>{
+ const cq=discovered()[0],c=client(),fee=await getCompleteSetFeeEvidence(c,cq,fixedNow);
+ const ordinary=await quoteCompleteSet(c,cq,100_000,{now:fixedNow,feeEvidence:fee,minimum:true});assert(ordinary);
+ const original=c.prepareOrder;c.prepareOrder=async order=>{
+  if(order.size===ordinary.shares) throw Error('Minimum $10 notional after rounding');
+  return original(order);
+ };
+ const next=await quoteCompleteSet(c,cq,100_000,{now:fixedNow,feeEvidence:fee,minimum:true});
+ assert(next);assert(next.shares>ordinary.shares);assert(next.maxSpend>ordinary.maxSpend);
+ assert(next.orders.every(o=>o.size===next.shares && o.price*o.size>=10));
 });

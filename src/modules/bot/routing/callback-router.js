@@ -237,9 +237,9 @@ export async function handleCallbackQuery(ctx) {
       return;
     }
     if (data.startsWith('set_amount:')) {
-      const match = /^set_amount:([1-9][0-9]{0,8}):(40|100|250)$/.exec(data);
+      const match = /^set_amount:([1-9][0-9]{0,14}):([0-9a-f]{12}):(min|10|30|50|70|80|90|100)$/.exec(data);
       if (!match) { await editOrReply(ctx,t('session_expired')); return; }
-      await completeSet.chooseAmount(ctx,match[1],match[2]);
+      await completeSet.chooseAmount(ctx,match[1],match[2],match[3]);
       return;
     }
     if (data === 'confirm_set_buy') {

@@ -20,10 +20,23 @@ test('real router: owner-only open, amount step, review, stale replay rejected',
       answerCallbackQuery:async()=>{},editMessageText:async(text,extra)=>messages.push({text,extra}),reply:async(text,extra)=>messages.push({text,extra})};
     const route=async data=>{ctx.callbackQuery.data=data;await handleCallbackQuery(ctx)};
     await route('set_open:325');assert.equal(userStates.get(123)?.state,'AWAITING_SET_AMOUNT');
-    await route('set_amount:325:40');assert.equal(userStates.get(123)?.state,'CONFIRMING_SET_BUY');
+    const first=messages.at(-1).extra.reply_markup.inline_keyboard.flat().find(b=>b.callback_data?.endsWith(':min'))?.callback_data;
+    assert(first);
+    await route(first);assert.equal(userStates.get(123)?.state,'CONFIRMING_SET_BUY');
     const confirm=messages.at(-1).extra?.reply_markup?.inline_keyboard.flat().find(b=>b.callback_data?.startsWith('confirm_set_buy:'))?.callback_data;
     assert(confirm);assert.equal(writes,0);
-    await route('set_open:325');await route(confirm);assert.equal(writes,0);
+    await route('set_open:325');await route(first);assert.equal(userStates.get(123)?.state,'AWAITING_SET_AMOUNT');
+    await route(confirm);assert.equal(writes,0);
     ctx.chat.type='group';await route('set_open:325');assert.equal(userStates.get(123)?.state,'AWAITING_SET_AMOUNT');
+    ctx.chat.type='private';setSessionConfig({language:'ru',hlNetwork:'mainnet',notifications:{}});
+    await route('set_open:325');
+    const buttons=messages.at(-1).extra.reply_markup.inline_keyboard.flat();
+    assert.equal(buttons.at(-1).text,'Отмена');
+    assert.equal(buttons.at(-1).callback_data,'back_menu');
+    const stale=buttons[0].callback_data;
+    await route(buttons.at(-1).callback_data);
+    assert.equal(userStates.has(123),false);
+    await route(stale);await route(confirm);
+    assert.equal(userStates.has(123),false);assert.equal(writes,0);
   } finally { Date.now=realNow;await invalidateUserState(123);setHLClient(null); }
 });

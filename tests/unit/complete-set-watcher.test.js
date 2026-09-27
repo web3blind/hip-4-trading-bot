@@ -47,5 +47,11 @@ test('held leg or pending attempt suppresses question without clearing dedup; ma
  await assert.rejects(watcher(client,{enabled:true,budget:100}),/balances offline/);
  assert.equal(state.active,1);assert.equal(state.miss_count,0);assert.equal(sends,0);
  client.getUserBalances=async()=>emptyBalances;
+ client.getUserFees=async()=>({});assert.equal(await watcher(client,{enabled:true,budget:100}),0);
+ assert.equal(state.active,1);assert.equal(state.miss_count,0);
+ client.getUserFees=async()=>fees;client.getOrderbook=async()=>({levels:[[],[]]});
+ assert.equal(await watcher(client,{enabled:true,budget:100}),0);
+ assert.equal(state.active,1);assert.equal(state.miss_count,0);
+ client.getOrderbook=async coin=>({levels:[[],[{px:{'#44830':'.26','#44840':'.24','#44850':'.42'}[coin],sz:'500'}]]});
  assert.equal(await watcher(client,{enabled:true,budget:100}),1);assert.equal(sends,1);
 });

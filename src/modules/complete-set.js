@@ -25,7 +25,7 @@ function depthCost(levels,shares) {
   return null;
 }
 /** Read-only verified rules+fees+depth quote. A positive gross gap alone is ineligible. */
-export async function quoteCompleteSet(client, question, budget, {now=Date.now(),feeEvidence,minNetMargin=0.005,minNetProfit=0.10,shares:fixedShares=null}={}) {
+export async function quoteCompleteSet(client, question, budget, {now=Date.now(),feeEvidence,minNetMargin=0.005,minNetProfit=0.10,shares:fixedShares=null,minimum=false}={}) {
   const legCount=question?.outcomes?.length;
   if (!Number.isSafeInteger(legCount) || legCount<2 || legCount>8 ||
       !Number.isSafeInteger(question?.question) || !/^[0-9a-f]{64}$/.test(question?.ruleDigest||'') ||
@@ -37,7 +37,7 @@ export async function quoteCompleteSet(client, question, budget, {now=Date.now()
       (fixedShares!==null && (!Number.isSafeInteger(fixedShares) || fixedShares<1 || fixedShares>MAX_SHARES))) return null;
   const coins=question.outcomes.map(o=>toCoin(o.outcome,SIDES.YES));
   const levels=await Promise.all(coins.map(async coin=>asksFromBook(await client.getOrderbook(coin))));
-  if (levels.some(l=>!l)) return null;
+  if (levels.some(l=>!l)) throw new Error('Invalid or missing complete-set order book');
   const maxShares=Math.min(MAX_SHARES,...levels.map(l=>Math.floor(l.reduce((n,x)=>n+x.size,0))));
   let best=null;
   for (let shares=fixedShares??1;shares<=(fixedShares??maxShares);shares++) {
@@ -46,13 +46,26 @@ export async function quoteCompleteSet(client, question, budget, {now=Date.now()
     const worstCost=legs.reduce((n,l)=>n+l.limitPrice*shares,0);
     const net=shares-worstCost-shares*feeEvidence.rate;
     if (net<Math.max(minNetProfit,shares*minNetMargin)-1e-8 || worstCost*1.01>budget+1e-8) continue;
-    if (!best || net>best.net) best={shares,legs,net,expectedCost:legs.reduce((n,l)=>n+l.cost,0)};
+    if (!best || net>best.net) {
+      const candidate={shares,legs,net,expectedCost:legs.reduce((n,l)=>n+l.cost,0)};
+      if (minimum) {
+        let orders;
+        try {orders=await Promise.all(coins.map((coin,i)=>client.prepareOrder({coin,isBuy:true,price:legs[i].limitPrice,size:shares,orderType:'Market'})));}
+        catch (error) {if (/minimum \$10 notional after rounding/i.test(String(error?.message))) continue;throw error;}
+        if (orders.some(o=>o.size!==shares || !Number.isFinite(o.price) || o.price*o.size<MIN_NOTIONAL || !Number.isFinite(o.maxSpend))) continue;
+        const maxSpend=orders.reduce((n,o)=>n+o.maxSpend,0),worstCost=orders.reduce((n,o)=>n+o.price*o.size,0);
+        const feeMax=shares*feeEvidence.rate,netLowerBound=shares-worstCost-feeMax;
+        if (maxSpend>budget+1e-8 || netLowerBound<Math.max(minNetProfit,shares*minNetMargin)-1e-8) continue;
+        best={...candidate,orders,maxSpend,worstCost,feeMax,netLowerBound};break;
+      }
+      best=candidate;
+    }
   }
   if (!best) return null;
-  const orders=await Promise.all(coins.map((coin,i)=>client.prepareOrder({coin,isBuy:true,price:best.legs[i].limitPrice,size:best.shares,orderType:'Market'})));
+  const orders=best.orders??await Promise.all(coins.map((coin,i)=>client.prepareOrder({coin,isBuy:true,price:best.legs[i].limitPrice,size:best.shares,orderType:'Market'})));
   if (orders.some(o=>o.size!==best.shares || !Number.isFinite(o.price) || o.price*o.size<MIN_NOTIONAL || !Number.isFinite(o.maxSpend))) return null;
-  const maxSpend=orders.reduce((n,o)=>n+o.maxSpend,0),worstCost=orders.reduce((n,o)=>n+o.price*o.size,0);
-  const feeMax=best.shares*feeEvidence.rate,netLowerBound=best.shares-worstCost-feeMax;
+  const maxSpend=best.maxSpend??orders.reduce((n,o)=>n+o.maxSpend,0),worstCost=best.worstCost??orders.reduce((n,o)=>n+o.price*o.size,0);
+  const feeMax=best.feeMax??best.shares*feeEvidence.rate,netLowerBound=best.netLowerBound??best.shares-worstCost-feeMax;
   if (maxSpend>budget+1e-8 || netLowerBound<Math.max(minNetProfit,best.shares*minNetMargin)-1e-8) return null;
   return {questionId:question.question,ids:question.coveredIds,name:question.description,coverage:question.coverage,
     ruleDigest:question.ruleDigest,feeEvidence,shares:best.shares,cost:best.expectedCost,gross:best.shares-best.expectedCost,
