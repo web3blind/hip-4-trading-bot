@@ -18,6 +18,15 @@ export async function notifyCompleteSetUpdate(bot, chatId, attempt) {
   } catch {return false;}
 }
 
+export async function notifyBundlePortfolio(bot,chatId,snapshot,kind) {
+  if(!bot || !chatId) return false;
+  const config=await loadConfig(),t=await getTranslator(config.language||'en');
+  const amount=kind==='closed'?snapshot.net:snapshot.indicativePnl;
+  const percent=typeof snapshot.cost==='number' && snapshot.cost>0?` (${(amount/snapshot.cost*100).toFixed(2)}%)`:'';
+  return sendNotification(bot,chatId,`${t('bundle_title')} ${String(snapshot.label||'#'+snapshot.questionId).slice(0,100)}\n${t(kind==='closed'?'bundle_net':'bundle_indicative')}: $${amount.toFixed(2)}${percent}\n${kind==='closed'?'':t('bundle_caveat')}`,
+    {reply_markup:{inline_keyboard:[[{text:t('bundle_title'),callback_data:`bundle_detail:${snapshot.id}`}]]}});
+}
+
 export async function notifyCompleteSet(bot, chatId, question, quote) {
   const config = await loadConfig();
   const t = await getTranslator(config.language || 'en');

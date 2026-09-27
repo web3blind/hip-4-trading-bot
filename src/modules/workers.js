@@ -21,9 +21,13 @@ import {
   getOutcomeByCoin,
   getPriceAlertState,
   updatePriceAlertState,
+  getBundleAttempts,
+  getBundleSnapshot,
+  getBundleCloseOids,
 } from './database.js';
 import { createContext, safeLogError, safeLogWarn, safeLogInfo } from './logger.js';
-import { notifyOrderFilled, notifyPositionChange, notifyCompleteSet, notifyCompleteSetUpdate } from './bot/notifications.js';
+import { notifyOrderFilled, notifyPositionChange, notifyCompleteSet, notifyCompleteSetUpdate, notifyBundlePortfolio } from './bot/notifications.js';
+import {loadBundlePortfolio,monitorBundlePortfolio,bundleCoveredCoins,reconcileBundleCloseRequests} from './bundle-portfolio.js';
 import { createCompleteSetWatcher } from './complete-set-watcher.js';
 import { reconcileCompleteSetAttempts } from './complete-set-monitor.js';
 
@@ -129,6 +133,9 @@ export async function syncPositionsWorker() {
     const dbPositions = getDbPositions();
     const dbMap = new Map(dbPositions.map((p) => [p.coin, p]));
     const liveCoinSet = new Set();
+    const priorCovered=bundleCoveredCoins(getBundleAttempts(hlClient.address,hlClient.network).map(a=>getBundleSnapshot(a.id)?.snapshot).filter(Boolean));
+    let bundleCovered=new Map();
+    try {bundleCovered=bundleCoveredCoins(await loadBundlePortfolio(hlClient,{balances}));} catch {}
 
     for (const bal of outcomeBalances) {
       const coin = bal.coin.replace(/^\+/, '#');
@@ -163,13 +170,16 @@ export async function syncPositionsWorker() {
       // Notify if position changed significantly and this isn't first sync
       if (existingPos && sizeChanged && notifyChatId && botInstance) {
         const question = outcome?.question || coin;
+        const oldStandalone=Math.max(0,Number(existingPos.size)-Math.min(Number(existingPos.size),priorCovered.get(coin)||0));
+        const newStandalone=Math.max(0,total-(bundleCovered.get(coin)||0));
+        if(Math.abs(oldStandalone-newStandalone)<=0.001) continue;
         try {
           await notifyPositionChange(botInstance, notifyChatId, {
             coin,
             question,
             side,
-            oldSize: existingPos.size,
-            newSize: total.toString(),
+            oldSize: String(oldStandalone),
+            newSize: String(newStandalone),
           });
         } catch (err) {
           safeLogWarn(ctx, 'Failed to send position change notification', { message: err?.message });
@@ -201,6 +211,8 @@ export async function monitorOrdersWorker() {
     const live = await hlClient.getOpenOrders(config.walletAddress);
     if (!Array.isArray(live)) throw new Error('Invalid open orders response');
     const tracked = getDbOrders().filter(o => ['open', 'partial', 'unknown'].includes(o.status) || (o.status === 'filled' && o.fill_notification_status === 'pending'));
+    const bundleBuyOids=new Set(getBundleAttempts(hlClient.address,hlClient.network).flatMap(a=>a.legs.map(l=>String(l.oid||''))));
+    const bundleCloseOids=new Set(getBundleCloseOids(hlClient.address,hlClient.network));
     const liveOids = new Set();
     for (const order of live.filter(o => isOutcomeToken(o.coin))) {
       const oid = canonicalOid(order.oid ?? order.orderId ?? order.id);
@@ -236,8 +248,9 @@ export async function monitorOrdersWorker() {
       const validFills = unique.length > 0 && unique.every(f =>
         Number.isFinite(Number(f.sz)) && Number(f.sz) > 0 &&
         Number.isFinite(Number(f.px)) && Number(f.px) > 0 && Number(f.px) <= 1);
+      if((bundleBuyOids.has(oid)||bundleCloseOids.has(oid)) && status==='filled') markOrderFillNotificationDelivered(oid);
       if (status === 'filled' && validFills && Number.isFinite(filledSize) && Number.isFinite(fillNtl) &&
-          getOrderByOid(oid).fill_notification_status === 'pending' && botInstance && notifyChatId) {
+          getOrderByOid(oid).fill_notification_status === 'pending' && botInstance && notifyChatId && !bundleBuyOids.has(oid) && !bundleCloseOids.has(oid)) {
         const delivered = await notifyOrderFilled(botInstance, notifyChatId, { oid, coin: order.coin,
           question: getOutcomeByCoin(order.coin)?.question || order.coin, side: order.side,
           price: fillNtl / filledSize, size: String(filledSize) });
@@ -271,6 +284,10 @@ async function monitorPricesWorker() {
       mids = await hlClient.getAllMids();
     } catch { return; }
 
+    let covered=new Map();
+    try {covered=bundleCoveredCoins(await loadBundlePortfolio(hlClient,{mids}));} catch {}
+
+
     for (const pos of positions) {
       const coin = pos.coin;
       if (!coin) continue;
@@ -281,6 +298,10 @@ async function monitorPricesWorker() {
       // Ordinary @ spot coins must never use outcome prices.
       if (!isOutcomeToken(coin)) continue;
       const normCoin = coin.startsWith('+') ? '#' + coin.slice(1) : coin;
+
+      // Mixed holdings retain ordinary alerts for their standalone remainder.
+      if((covered.get(normCoin)||0)>=size-1e-7) continue;
+      const alertSize=Math.max(0,size-(covered.get(normCoin)||0));
 
       const currentPriceStr = mids[normCoin];
       if (!currentPriceStr) continue;
@@ -313,7 +334,7 @@ async function monitorPricesWorker() {
 
       // Send notification
       const direction = currentPrice >= entryPrice ? '+' : '-';
-      const value = (size * currentPrice).toFixed(2);
+      const value = (alertSize * currentPrice).toFixed(2);
       const { formatPrice } = await import('./bot/ui/formatters.js');
 
       // Resolve outcome name
@@ -330,7 +351,7 @@ async function monitorPricesWorker() {
         `Entry: ${formatPrice(entryPrice)}\n` +
         `Change: ${direction}${changePercent.toFixed(1)}%\n` +
         `Value: $${value}\n` +
-        `Shares: ${size.toFixed(4)}`;
+        `Shares: ${alertSize.toFixed(4)}`;
 
       try {
         await botInstance.api.sendMessage(notifyChatId, message, {
@@ -356,6 +377,15 @@ export async function monitorCompleteSetAttemptsWorker() {
     await reconcileCompleteSetAttempts(hlClient,ownerOnly
       ? attempt=>notifyCompleteSetUpdate(botInstance,notifyChatId,attempt) : null);
   } catch(error) {safeLogError(createContext('workers','completeSetAttempts'),error);}
+}
+
+export async function monitorBundlePortfolioWorker() {
+  if(!hlClient) return;
+  const ownerOnly=botInstance && notifyChatId && String(notifyChatId)===String(process.env.TELEGRAM_ALLOWED_USER_ID||'');
+  try {const config=await loadConfig(),n=config.notifications||{};await reconcileBundleCloseRequests(hlClient);await monitorBundlePortfolio(hlClient,ownerOnly
+    ? (snapshot,kind)=>notifyBundlePortfolio(botInstance,notifyChatId,snapshot,kind)
+    : async()=>false,{threshold:Number(n.priceChangePercent??10),repeatStep:Number(n.priceRepeatStepPercent??2),cooldownMs:Number(n.alertCooldownSeconds??300)*1000});}
+  catch(error) {safeLogError(createContext('workers','bundles'),error);}
 }
 
 export async function monitorCompleteSetsWorker() {
@@ -402,6 +432,7 @@ export function startWorkers(options = {}) {
   scheduleWorker('syncPositions', syncMs, syncPositionsWorker);
   scheduleWorker('monitorOrders', monitorMs, monitorOrdersWorker);
   scheduleWorker('completeSetAttempts', monitorMs, monitorCompleteSetAttemptsWorker);
+  scheduleWorker('bundles', monitorPricesMs, monitorBundlePortfolioWorker);
   scheduleWorker('monitorPrices', monitorPricesMs, monitorPricesWorker);
   scheduleWorker('completeSets', DEFAULT_COMPLETE_SETS_MS, monitorCompleteSetsWorker);
 

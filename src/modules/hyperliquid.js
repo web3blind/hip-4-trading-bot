@@ -502,6 +502,11 @@ export class HLClient {
     return this._infoRequest({ type: 'userFills', user: addr });
   }
 
+  async getUserFillsByTime(startTime, endTime, address = this.address) {
+    if (!address || !Number.isSafeInteger(startTime) || !Number.isSafeInteger(endTime) || startTime < 0 || endTime < startTime) throw new Error('Invalid fill history range');
+    return this._infoRequest({ type: 'userFillsByTime', user: address, startTime, endTime, aggregateByTime: false });
+  }
+
   async getOpenOrders(address) {
     const addr = address || this.address;
     if (!addr) throw new Error('No address provided and no wallet configured');

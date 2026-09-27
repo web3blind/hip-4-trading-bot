@@ -66,6 +66,8 @@ Bootstrap checks local configuration/encryption without Telegram polling or trad
 
 Markets and limit orders require a review/confirmation. Market orders are aggressive IOC orders; inspect reported fills, resting orders and unknown results rather than assuming execution. Paired buys are not settlement-atomic: one leg can fail or fill differently. No automatic profit or reward is promised. Network changes require confirmation. Stale confirmations expire. The Positions view shows indicative unrealized return as a signed percentage of Hyperliquid's remaining `entryNtl` cost basis, valued at current mid-price; unavailable cost or price is shown as N/A, and realized PnL/fees are not included.
 
+**Bundles** in the main menu lists tracked outcome-set purchases (including partial purchases), with paginated history, per-set dollar and percentage PnL, and aggregate active/closed dollar totals. Active value uses mid prices, not executable proceeds. Realized closed results require identifiable original buy fills, a consistent trade/balance chain, settlement or sell fills, and USDC fees; incomplete evidence displays Unknown rather than zero profit. A close is available only when the remaining shares are uniquely attributable and unlocked. Review quotes conservatively account for outcome/deployer fees and submit separate immediate-or-cancel sell orders after confirmation; some outcomes may sell partially or not at all. Inspect exchange orders/fills before retrying an uncertain execution. No automatic selling occurs.
+
 ## Configuration and operation
 
 `.env.example` lists supported environment settings:

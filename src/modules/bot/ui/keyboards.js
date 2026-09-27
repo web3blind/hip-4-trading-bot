@@ -33,6 +33,7 @@ export function mainMenuKeyboard(t, { walletConfigured = true } = {}) {
   kb.text(label(t, 'menu_markets', 'Markets'), 'outcomes:filters:all:all')
     .text(label(t, 'menu_positions', 'Positions'), 'positions')
     .row()
+    .text(label(t, 'bundle_title', 'Bundles'), 'bundles').row()
     .text(label(t, 'menu_orders', 'Orders'), 'orders')
     .text(label(t, 'menu_wallet', 'Wallet'), 'wallet')
     .row()

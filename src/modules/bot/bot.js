@@ -46,6 +46,7 @@ import { showWalletInfo, handleWalletCallback } from './features/security.js';
 import { handleCallbackQuery } from './routing/callback-router.js';
 import { handleTextMessage } from './routing/text-router.js';
 import { interceptApiWalletInput } from './features/api-wallet.js';
+import { createBundlesFeature } from './features/bundles.js';
 
 // ─── Bot lifecycle ───────────────────────────────────────────────
 
@@ -120,6 +121,7 @@ export async function initBot(token, allowedUserId) {
     const positions = createPositionsFeature({ hlClient: runtimeHLClient });
     await positions.showPositions(ctx);
   });
+  botInstance.command('bundles', async ctx => createBundlesFeature().list(ctx));
   botInstance.command('orders', async (ctx) => {
     if (!runtimeHLClient) {
       await ctx.reply('HyperLiquid client not initialised yet.');

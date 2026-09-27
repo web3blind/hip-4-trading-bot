@@ -45,6 +45,7 @@ export function initDatabase(scope = {}) {
   createPriceAlertsTable();
   createCompleteSetAttemptsTable();
   createCompleteSetAlertsTable();
+  createBundleTables();
   if (!db.pragma('table_info(complete_set_alerts)').some(column => column.name === 'last_net_floor')) {
     db.exec('ALTER TABLE complete_set_alerts ADD COLUMN last_net_floor REAL');
   }
@@ -189,6 +190,75 @@ export function getPendingCompleteSetQuestionIds(account, network) {
   return new Set(db.prepare(`SELECT DISTINCT question_id FROM complete_set_attempts
     WHERE account = ? AND network = ? AND state IN ('submitting','submitted_unknown','partial')`)
     .all(account.toLowerCase(), network).map(row => row.question_id));
+}
+
+export function getBundleAttempts(account, network) {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(account||'') || !['mainnet','testnet'].includes(network)) throw new Error('Invalid bundle scope');
+  return db.prepare("SELECT * FROM complete_set_attempts WHERE account=? AND network=? AND state IN ('filled','partial','closed') ORDER BY created_at DESC")
+    .all(account.toLowerCase(),network).map(row=>({...row,coins:JSON.parse(row.coins_json),legs:JSON.parse(row.legs_json)}));
+}
+function createBundleTables() {
+  db.exec(`CREATE TABLE IF NOT EXISTS bundle_snapshots (
+    attempt_id TEXT PRIMARY KEY, status TEXT NOT NULL, snapshot_json TEXT NOT NULL,
+    alert_value REAL, alert_at INTEGER NOT NULL DEFAULT 0, final_notified INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS bundle_close_requests (
+    id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL, account TEXT NOT NULL, network TEXT NOT NULL,
+    state TEXT NOT NULL, legs_json TEXT NOT NULL, created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS bundle_fill_evidence (
+    attempt_id TEXT PRIMARY KEY, cursor INTEGER NOT NULL, fills_json TEXT NOT NULL
+  )`);
+}
+export function getBundleFillEvidence(id) {
+  const row=db.prepare('SELECT cursor,fills_json FROM bundle_fill_evidence WHERE attempt_id=?').get(id);
+  return row && {cursor:row.cursor,fills:JSON.parse(row.fills_json)};
+}
+export function putBundleFillEvidence(id,cursor,fills) {
+  if(!Number.isSafeInteger(cursor) || !Array.isArray(fills)) throw new Error('Invalid fill evidence');
+  db.prepare(`INSERT INTO bundle_fill_evidence(attempt_id,cursor,fills_json) VALUES (?,?,?)
+    ON CONFLICT(attempt_id) DO UPDATE SET cursor=excluded.cursor,fills_json=excluded.fills_json WHERE excluded.cursor>=bundle_fill_evidence.cursor`)
+    .run(id,cursor,JSON.stringify(fills));
+}
+export function getBundleSnapshot(id) {
+  const row=db.prepare('SELECT * FROM bundle_snapshots WHERE attempt_id=?').get(id);
+  return row && {...row,snapshot:JSON.parse(row.snapshot_json)};
+}
+export function putBundleSnapshot(id,snapshot) {
+  db.prepare(`INSERT INTO bundle_snapshots(attempt_id,status,snapshot_json,updated_at) VALUES (?,?,?,?)
+    ON CONFLICT(attempt_id) DO UPDATE SET status=excluded.status,snapshot_json=excluded.snapshot_json,updated_at=excluded.updated_at`)
+    .run(id,snapshot.status,JSON.stringify(snapshot),Date.now());
+}
+export function markBundleAlert(id,value,time) {
+  db.prepare('UPDATE bundle_snapshots SET alert_value=?,alert_at=? WHERE attempt_id=?').run(value,time,id);
+}
+export function markBundleFinalNotified(id) {
+  db.prepare('UPDATE bundle_snapshots SET final_notified=1 WHERE attempt_id=?').run(id);
+}
+export function createBundleCloseRequest({id,attemptId,account,network,legs}) {
+  db.transaction(()=>{
+    const last=getBundleCloseRequest(attemptId);
+    if(last && last.state!=='reconciled') throw new Error('Previous close not reconciled');
+    db.prepare("INSERT INTO bundle_close_requests VALUES (?,?,?,?, 'submitting', ?, ?)")
+      .run(id,attemptId,account.toLowerCase(),network,JSON.stringify(legs),Date.now());
+  })();
+}
+export function updateBundleCloseRequest(id,state,legs) {
+  db.prepare('UPDATE bundle_close_requests SET state=?,legs_json=? WHERE id=?')
+    .run(state,JSON.stringify(legs),id);
+}
+export function getBundleCloseRequest(attemptId) {
+  const row=db.prepare('SELECT * FROM bundle_close_requests WHERE attempt_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1').get(attemptId);
+  return row && {...row,legs:JSON.parse(row.legs_json)};
+}
+export function getPendingBundleCloseRequests(account,network) {
+  return db.prepare("SELECT * FROM bundle_close_requests WHERE account=? AND network=? AND state IN ('submitting','unknown','partial','filled')")
+    .all(account.toLowerCase(),network).map(row=>({...row,legs:JSON.parse(row.legs_json)}));
+}
+export function getBundleCloseOids(account,network) {
+  return db.prepare('SELECT legs_json FROM bundle_close_requests WHERE account=? AND network=?')
+    .all(account.toLowerCase(),network).flatMap(row=>JSON.parse(row.legs_json).map(l=>String(l.oid||''))).filter(Boolean);
 }
 
 function createCompleteSetAlertsTable() {

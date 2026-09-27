@@ -50,7 +50,7 @@ export function createCompleteSetFeature(deps = {}) {
   const client = () => deps.client ?? runtime.hlClient;
   const persist = deps.persistOrder ?? upsertOrder;
   const attempts = deps.attempts ?? {create:createCompleteSetAttempt,update:updateCompleteSetAttempt};
-  const now = deps.now ?? Date.now;
+  const now = deps.now ?? (() => Date.now());
 
   async function open(ctx, rawId) {
     const config = await loadConfig(), t = await getTranslator(config.language || 'en');

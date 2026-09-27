@@ -29,6 +29,7 @@ import { createSearchFeature } from '../features/search.js';
 import { createWithdrawFeature } from '../features/withdraw.js';
 import { createSplitBuyFeature } from '../features/split-buy.js';
 import { createCompleteSetFeature } from '../features/complete-set.js';
+import { createBundlesFeature } from '../features/bundles.js';
 import { isApiWalletStep } from '../features/api-wallet.js';
 import { showMcpSettings, handleMcpKeyAction } from '../features/mcp-settings.js';
 import { handleMcpApproval, handleMcpRejection } from '../../mcp/operations.js';
@@ -38,6 +39,7 @@ const tradeLimit = createTradeLimitFeature({});
 const withdraw = createWithdrawFeature({});
 const splitBuy = createSplitBuyFeature({});
 const completeSet = createCompleteSetFeature({});
+const bundles = createBundlesFeature();
 
 async function editOrReply(ctx, text, extra = {}) {
   try {
@@ -244,6 +246,11 @@ export async function handleCallbackQuery(ctx) {
       await completeSet.confirm(ctx);
       return;
     }
+    if(data==='bundles') {await bundles.list(ctx);return;}
+    if(/^bundle_page:\d+$/.test(data)) {await bundles.list(ctx,Number(data.slice(12)));return;}
+    if(data.startsWith('bundle_detail:')) {await bundles.detail(ctx,data.slice('bundle_detail:'.length));return;}
+    if(data.startsWith('bundle_review:')) {await bundles.review(ctx,data.slice('bundle_review:'.length));return;}
+    if(data==='confirm_bundle_close') {await bundles.confirm(ctx);return;}
     // ── Split Buy (Arbitrage) ─────────────────────────────────────
     if (data.startsWith('split:')) {
       const outcomeId = parseInt(data.split(':')[1], 10);
