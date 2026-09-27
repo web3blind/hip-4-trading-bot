@@ -7,6 +7,7 @@
 import { createContext, safeLogWarn } from '../logger.js';
 import { loadConfig } from '../config.js';
 import { getTranslator } from '../i18n.js';
+import {localizeBundleLabel} from '../bundle-label.js';
 
 export async function notifyCompleteSetUpdate(bot, chatId, attempt) {
   if (!bot || !chatId) return false;
@@ -22,8 +23,17 @@ export async function notifyBundlePortfolio(bot,chatId,snapshot,kind) {
   if(!bot || !chatId) return false;
   const config=await loadConfig(),t=await getTranslator(config.language||'en');
   const amount=kind==='closed'?snapshot.net:snapshot.indicativePnl;
-  const percent=typeof snapshot.cost==='number' && snapshot.cost>0?` (${(amount/snapshot.cost*100).toFixed(2)}%)`:'';
-  return sendNotification(bot,chatId,`${t('bundle_title')} ${String(snapshot.label||'#'+snapshot.questionId).slice(0,100)}\n${t(kind==='closed'?'bundle_net':'bundle_indicative')}: $${amount.toFixed(2)}${percent}\n${kind==='closed'?'':t('bundle_caveat')}`,
+  if(typeof amount!=='number' || !Number.isFinite(amount)) return false;
+  const ru=config.language==='ru',decimal=n=>n.replace('.',ru?',':'.');
+  const signed=(n,d)=>(n>0?'+':n<0?'-':'')+decimal(Math.abs(n).toFixed(d));
+  const percent=typeof snapshot.cost==='number' && snapshot.cost>0?` (${signed(amount/snapshot.cost*100,2)}%)`:'';
+  const title=kind==='closed'?'bundle_finished':'bundle_title';
+  const direction=amount>0?'profit':amount<0?'loss':'even';
+  const value=`${signed(amount,3)} USDC${percent}`;
+  const label=localizeBundleLabel(String(snapshot.label||'#'+snapshot.questionId),config.language||'en');
+  const text=`${t(title)}: ${label.slice(0,100)}\n${t(kind==='closed'?`bundle_${direction}`:'bundle_indicative')}: ${value}`+
+    (kind==='closed'?'':`\n${t('bundle_caveat')}`);
+  return sendNotification(bot,chatId,text,
     {reply_markup:{inline_keyboard:[[{text:t('bundle_title'),callback_data:`bundle_detail:${snapshot.id}`}]]}});
 }
 

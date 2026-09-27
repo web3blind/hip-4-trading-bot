@@ -22,7 +22,7 @@ test('connected worker persists aggregate alert and deduplicates retry',async()=
   await stopWorkers();
   startWorkers({hlClient:client,bot,chatId:'712'});
   await stopWorkers();
-  assert.equal(sent.filter(text=>text.startsWith('Bundles #71')).length,1);
+  assert.equal(sent.filter(text=>text.startsWith('Bundles: #71')).length,1);
   assert(getBundleSnapshot(id)?.alert_at>0);
  } finally {await stopWorkers();closeDatabase();if(prior===undefined) delete process.env.TELEGRAM_ALLOWED_USER_ID;else process.env.TELEGRAM_ALLOWED_USER_ID=prior;}
 });

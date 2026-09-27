@@ -5,6 +5,7 @@ import {getTranslator} from '../../i18n.js';
 import {getBundleCloseRequest,createBundleCloseRequest,updateBundleCloseRequest} from '../../database.js';
 import {loadBundlePortfolio,quoteBundleClose,verifyBundleOrigin} from '../../bundle-portfolio.js';
 import {orderStatuses} from '../../hyperliquid.js';
+import {localizeBundleLabel} from '../../bundle-label.js';
 import * as runtime from '../runtime.js';
 
 const money = n => n===null || n===undefined ? 'N/A' : `$${Number(n).toFixed(2)}`;
@@ -19,11 +20,12 @@ export function createBundlesFeature({client=()=>runtime.hlClient,load=loadBundl
   async function list(ctx,page=0) {
     const t=await language(),c=client();
     if(!c) return screen(ctx,t('bundle_unavailable'),new InlineKeyboard().text(t('back'),'back_menu'));
+    const {language:lang}=await loadConfig();
     const rows=await load(c);
     const kb=new InlineKeyboard();
     const active=rows.filter(r=>r.status!=='closed'),closed=rows.filter(r=>r.status==='closed');
     const ordered=[...active,...closed],offset=Math.max(0,Math.min(Math.floor(Number(page)||0),Math.ceil(ordered.length/20)-1))*20;
-    for(const r of ordered.slice(offset,offset+20)) kb.text(`${String(r.label||'#'+r.questionId).slice(0,24)} · ${t(`bundle_${r.status}`)} · ${pnl(r.status==='closed'?r.net:r.indicativePnl,r.cost)}`.slice(0,64),`bundle_detail:${r.id}`).row();
+    for(const r of ordered.slice(offset,offset+20)) kb.text(`${String(localizeBundleLabel(r.label||'#'+r.questionId,lang)).slice(0,24)} · ${t(`bundle_${r.status}`)} · ${pnl(r.status==='closed'?r.net:r.indicativePnl,r.cost)}`.slice(0,64),`bundle_detail:${r.id}`).row();
     if(offset) kb.text(t('bundle_previous'),`bundle_page:${offset/20-1}`);
     if(offset+20<ordered.length) kb.text(t('bundle_next'),`bundle_page:${offset/20+1}`);
     if(offset || offset+20<ordered.length) kb.row();
@@ -38,7 +40,8 @@ export function createBundlesFeature({client=()=>runtime.hlClient,load=loadBundl
     if(!c || !validId(id)) return screen(ctx,t('session_expired'),new InlineKeyboard().text(t('back'),'bundles'));
     const s=(await load(c)).find(r=>r.id===id);
     if(!s) return screen(ctx,t('session_expired'),new InlineKeyboard().text(t('back'),'bundles'));
-    const text=`${t('bundle_title')} ${String(s.label||'#'+s.questionId).slice(0,100)}\n${t(`bundle_${s.status}`)}\n${t('bundle_bought')}: ${new Date(s.createdAt).toISOString()}\n`+
+    const {language:lang}=await loadConfig();
+    const text=`${t('bundle_title')} ${String(localizeBundleLabel(s.label||'#'+s.questionId,lang)).slice(0,100)}\n${t(`bundle_${s.status}`)}\n${t('bundle_bought')}: ${new Date(s.createdAt).toISOString()}\n`+
       `${t('bundle_cost')}: ${money(s.cost)}\n${t('bundle_proceeds')}: ${money(s.proceeds)}\n`+
       (s.status==='closed'?`${t('bundle_net')}: ${pnl(s.net,s.cost)}`:
         `${t('bundle_value')}: ${money(s.value)}\n${t('bundle_indicative')}: ${pnl(s.indicativePnl,s.cost)}`)+
@@ -57,11 +60,12 @@ export function createBundlesFeature({client=()=>runtime.hlClient,load=loadBundl
       if(!s) throw new Error('Missing bundle');
       await verifyBundleOrigin(c,s);
       const q=await quote(c,s);
+      const {language:lang}=await loadConfig();
       const binding=runtime.runtimeBinding();
       const callback=runtime.confirmationCallback(ctx.chat.id,'confirm_bundle_close',{
         state:'CONFIRMING_BUNDLE_CLOSE',id,binding,orders:q.orders,expected:q.expected,net:q.net,expiresAt:now()+120000
       });
-      return screen(ctx,`${t('bundle_close_review')} ${s.label}\n${q.orders.map(o=>`${t('bundle_outcome')} ${String(s.remaining.find(l=>l.coin===o.coin)?.label||o.coin).slice(0,80)} (${o.coin}): ${o.size} ${t('bundle_shares')}, ${t('bundle_limit_price')} ${o.price}`).join('\n')}\n`+
+      return screen(ctx,`${t('bundle_close_review')} ${localizeBundleLabel(s.label,lang)}\n${q.orders.map(o=>`${t('bundle_outcome')} ${String(s.remaining.find(l=>l.coin===o.coin)?.label||o.coin).slice(0,80)} (${o.coin}): ${o.size} ${t('bundle_shares')}, ${t('bundle_limit_price')} ${o.price}`).join('\n')}\n`+
         `${t('bundle_expected')}: ${money(q.expected)}\n${t('bundle_net_estimate')}: ${pnl(q.net,s.cost)}\n${t('bundle_close_risk')}`,
         new InlineKeyboard().text(t('confirm'),callback).text(t('cancel'),'bundles'));
     } catch {return screen(ctx,t('bundle_blocked'),new InlineKeyboard().text(t('back'),'bundles'));}

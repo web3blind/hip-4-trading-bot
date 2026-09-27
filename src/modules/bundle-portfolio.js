@@ -1,5 +1,6 @@
 import {getBundleAttempts,getBundleSnapshot,putBundleSnapshot,markBundleAlert,markBundleFinalNotified,getPendingBundleCloseRequests,updateBundleCloseRequest,getOutcomeByCoin,getBundleFillEvidence,putBundleFillEvidence} from './database.js';
 import {getCompleteSetFeeEvidence} from './complete-set-fees.js';
+import {bundleEventLabel} from './bundle-label.js';
 
 const coinOf = coin => /^[#+][0-9]+0$/.test(String(coin)) ? `#${String(coin).slice(1)}` : null;
 const num = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value)) ? Number(value) : null;
@@ -113,16 +114,21 @@ export function evaluateBundle(attempt,allAttempts,fills,balances,mids={}) {
 export async function loadBundlePortfolio(client,{attempts=getBundleAttempts,history=bundleFillHistory,balances=null,mids=null,evidence={get:getBundleFillEvidence,put:putBundleFillEvidence}}={}) {
   const rows=attempts(client.address,client.network);
   if(!rows.length) return [];
+  const completed=new Map(rows.map(r=>[r.id,getBundleSnapshot(r.id)?.snapshot]).filter(([,s])=>s?.status==='closed'));
+  const outcomesFor=coins=>(coins||[]).map(coin=>{try {return getOutcomeByCoin(coin);} catch {return null;}});
+  let meta=null;
+  if(typeof client.getOutcomeMeta==='function' && rows.some(r=>{
+    const snapshot=completed.get(r.id)||{questionId:r.question_id,coins:r.coins};
+    return bundleEventLabel(snapshot,outcomesFor(r.coins)).startsWith('#');
+  })) try {meta=await client.getOutcomeMeta();} catch {}
   const withLabel=s=>{
-    let label=s.label;
-    if(!label) try {label=getOutcomeByCoin(s.coins[0])?.question||null;} catch {}
-    return {...s,label:label||`#${s.questionId}`,remaining:(s.remaining||[]).map(l=>{
+    const outcomes=outcomesFor(s.coins);
+    return {...s,label:bundleEventLabel(s,outcomes,meta),remaining:(s.remaining||[]).map(l=>{
       let legLabel=l.label;
       if(!legLabel) try {legLabel=getOutcomeByCoin(l.coin)?.question||null;} catch {}
       return {...l,label:legLabel||l.coin};
     })};
   };
-  const completed=new Map(rows.map(r=>[r.id,getBundleSnapshot(r.id)?.snapshot]).filter(([,s])=>s?.status==='closed'));
   if(completed.size===rows.length) return rows.map(r=>withLabel(completed.get(r.id)));
   const pending=rows.filter(r=>!completed.has(r.id));
   let live,prices;
