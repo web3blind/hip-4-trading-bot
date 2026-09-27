@@ -9,7 +9,8 @@ it is not a complete user manual or feature catalogue.
 - This is a single-user Telegram bot for HyperLiquid HIP-4 outcome markets.
 - The current product supports market discovery/search, outcome details,
   market and limit orders, split-buy arbitrage, positions, orders, wallet
-  funding/withdrawal, notifications, and English/Russian UI.
+  funding/withdrawal, complete-set bundles with aggregate PnL/history and guarded
+  exits, MCP access, notifications, and English/Russian UI.
 - Markets open through bot-derived categories; the deployer filter comes from
   `outcomeMeta` and combines with category. Catalog results are cached for five
   minutes, not authoritative execution quotes.
@@ -36,9 +37,10 @@ it is not a complete user manual or feature catalogue.
   and live credentials removed. Run this wrapper, not `node --test` directly
   or any live-exchange probe, even from a checkout next to production data.
 - Syntax check changed files with `node --check <path>`.
-- PM2 scripts and `ecosystem.config.cjs` currently name `hip-4-telegram-bot`,
-  but inspect the live process ID, cwd, script, and singleton lock before any
-  restart; do not act on a guessed name or touch neighboring PM2 processes.
+- PM2 manages `hip-4-telegram-bot` (polling and private broker) and `hip-4-mcp`
+  (protocol frontend). `npm run pm2:restart` restarts both; prefer the verified
+  individual process for a scoped change. Inspect live PID/cwd/script and lock;
+  never restart neighboring projects or launch a second polling/signing instance.
 
 ## Project Map
 
@@ -59,6 +61,14 @@ it is not a complete user manual or feature catalogue.
   orders, and price alerts.
 - `src/modules/workers.js` — position sync, order reconciliation, and price
   monitoring; workers must not overlap their previous run.
+- `src/modules/complete-set-*.js` — opportunity rules/fees, purchase and fill
+  reconciliation; a filled purchase is not a settled event.
+- `src/modules/bundle-portfolio.js`, `bundle-label.js`, and
+  `bot/features/bundles.js` — inventory attribution, aggregate PnL/history,
+  event-level labels and owner-confirmed close UI.
+- `src/mcp-main.js`, `src/mcp-server.js`, and `src/modules/mcp/` — MCP frontend
+  and private broker. Keep signing inside the bot; money-moving MCP requests
+  require expiring, one-use owner approval in Telegram, not an MCP bypass.
 - `src/modules/bot/bot.js` — Grammy assembly, single-user middleware, commands,
   rate limiting, and router registration.
 - `src/modules/bot/runtime.js` — shared bot/client references and in-memory
@@ -80,9 +90,8 @@ it is not a complete user manual or feature catalogue.
 ## HIP-4 Data Invariants
 
 - Encoding is `10 * outcomeId + side`, where `0 = YES` and `1 = NO`.
-- Canonical exchange coin form is `#<encoding>`; API/UI data may also expose
-  `+<encoding>` or `@<encoding>`. Normalize aliases before matching positions,
-  orders, outcomes, or mids.
+- Canonical outcome coin form is `#<encoding>`; only `+<encoding>` is its alias.
+  `@<index>` denotes ordinary spot and must never alias an outcome token.
 - Validate the complete numeric suffix and require decoded side `0` or `1`.
   `parseInt` alone accepts malformed values such as `#123abc`.
 - Exchange asset ID is `100_000_000 + encoding`. Do not apply regular spot
@@ -139,6 +148,29 @@ it is not a complete user manual or feature catalogue.
 
 ## Telegram, UX, And Accessibility
 
+### Bundle accounting and notifications
+
+- Preserve `complete_set_attempts`, `bundle_snapshots`, `bundle_fill_evidence`,
+  and `bundle_close_requests`. Attribute buys by order/trade identity; validate
+  `startPosition` inventory continuity and live balances. Ambiguous ownership,
+  missing history or unknown fees must not become a claimed profit or sale.
+- Settlement fills legitimately have prices 0 and 1. Compute realized net from
+  actual buys, exits and fees; disappearing balances alone do not prove closure.
+  Open midpoint PnL is indicative, not an executable return.
+- Accept either chronological API response order, deduplicate trade IDs and
+  handle capped time windows. Persist validated evidence rather than scanning
+  from epoch zero; missing initial history leaves the bundle Unknown.
+- Bundle close is an explicitly confirmed IOC batch without automatic retry or
+  GTC fallback. Revalidate binding, expiry, holdings, fee evidence and quote
+  immediately before signing; persist intent first and reconcile each leg.
+- Active bundle shares use aggregate alerts with configured threshold/repeat/
+  cooldown. Preserve standalone alerts; closed snapshots must not suppress a
+  subsequent ordinary purchase. Preserve `final_notified` across label fixes.
+- Derive bundle names from the parent event or constituent participants, never
+  the first outcome. Keep RU/EN notification copy synchronized: completed event,
+  profit/loss/break-even, signed USDC to 3 decimals and percent to 2; RU uses
+  decimal commas. Localize country names via `bundle-label.js`, not event IDs.
+
 - Access control is enforced by `TELEGRAM_ALLOWED_USER_ID`; keep it ahead of all
   command, callback, and text handlers.
 - Callback data is the public routing contract. When changing a callback, update
@@ -166,8 +198,10 @@ it is not a complete user manual or feature catalogue.
 - API-wallet setup must stay in an authorized private Telegram chat. Confirm
   Telegram deleted the message containing the dedicated API key *before*
   validating/persisting it; on deletion failure, store nothing.
-- `data/database.sqlite` uses WAL mode. Treat the database plus `-wal`/`-shm` as
-  one consistency unit; use a SQLite backup or stopped-process snapshot.
+- Runtime SQLite is scoped as `data/cache-<network>-<account>.sqlite` (or under
+  `HIP4_DATA_DIR`); legacy `data/database.sqlite` need not be the live database.
+  Resolve the actual scope first. Treat WAL/SHM as one consistency unit and use
+  SQLite online backup or a stopped-process snapshot, not a lone file copy.
 - Preserve `data/`, `.env`, logs, and migration artifacts across deploys. Never
   use broad reset/clean/sync-delete commands against the project root.
 - `saveConfig()` serializes writes, writes a mode-`0600` temporary file, fsyncs,
@@ -196,8 +230,8 @@ it is not a complete user manual or feature catalogue.
 - Outcome size precision can fall back to zero decimals when spot metadata was
   not populated; do not assume fractional HIP-4 size support without a focused
   rounding test.
-- `.env.example` advertises worker interval variables that `workers.js` does not
-  currently read. Verify runtime consumers before documenting a setting as live.
+- Worker intervals are read in `startWorkers()`; verify actual consumers and
+  config notification settings before changing or documenting their behavior.
 - Migration scripts still depend on obsolete Polymarket L2 credentials and are
   not covered by an end-to-end round-trip test. Treat them as unavailable until
   repaired and validated with synthetic secrets.
@@ -208,7 +242,7 @@ it is not a complete user manual or feature catalogue.
   `npm test -- <test-name-substring>`. Its child processes isolate data,
   disable file logging, and block network. Never bypass the wrapper or run a
   second bot instance with the production Telegram token.
-- For `hyperliquid.js` or encoding changes, cover `#`/`+`/`@` normalization,
+- For `hyperliquid.js` or encoding changes, cover `#`/`+` aliasing and `@` rejection,
   asset IDs, price/size rounding, nonce/signing payload shape, batch statuses,
   and partial errors with mocked exchange calls that do not spend funds.
 - For config/auth/database changes, isolate tests from real `.env` and `data/`;
