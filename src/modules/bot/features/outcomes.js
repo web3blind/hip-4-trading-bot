@@ -21,7 +21,7 @@ export const normalizeMarketFilters = (category = 'all', venue = 'all') => ({
 });
 export function categoryOf(name, description = '') {
   if (/^template:sports/i.test(name || '')) return 'sports';
-  if (/^template:(binaryPrice|priceTouch)/i.test(name || '') || /^class:priceBinary/.test(description || '')) return 'prices';
+  if (/^template:(binaryPrice|priceTouch)/i.test(name || '') || /^class:price(?:Binary|Bucket)(?:\||$)/.test(description || '')) return 'prices';
   if (/^template:policyRate/i.test(name || '')) return 'economy';
   if (/^template:companyIpo/i.test(name || '')) return 'business';
   return 'other';

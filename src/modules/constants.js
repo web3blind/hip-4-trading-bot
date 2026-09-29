@@ -21,6 +21,9 @@ export const OUTCOME_ASSET_BASE = 100_000_000;
 export const OUTCOME_SIDE_YES = 0;
 export const OUTCOME_SIDE_NO = 1;
 
+// Bounded complete sets: eight named outcomes plus mandatory fallback.
+export const MAX_COMPLETE_SET_LEGS = 9;
+
 // USDC decimals on HyperLiquid
 export const USDC_DECIMALS = 6;
 export const USDC_BASE = 10n ** 6n;

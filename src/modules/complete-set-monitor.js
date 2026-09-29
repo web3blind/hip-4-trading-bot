@@ -1,3 +1,4 @@
+import { MAX_COMPLETE_SET_LEGS } from './constants.js';
 import {getCompleteSetAttempts,updateCompleteSetAttempt,markCompleteSetAttemptNotified} from './database.js';
 
 const validId = v => v != null && /^\d+$/.test(String(v)) ? String(v) : null;
@@ -17,7 +18,7 @@ export async function reconcileCompleteSetAttempts(client, notify, repo={
   let changed=0;
   for(const attempt of attempts) {
     if (attempt.account?.toLowerCase()!==client.address.toLowerCase() || attempt.network!==client.network ||
-        !Array.isArray(attempt.legs) || attempt.legs.length<2 || attempt.legs.length>8) continue;
+        !Array.isArray(attempt.legs) || attempt.legs.length<2 || attempt.legs.length>MAX_COMPLETE_SET_LEGS) continue;
     const legs=[];
     for(const leg of attempt.legs) {
       if(!/^0x[0-9a-f]{32}$/.test(leg.cloid||'')) {legs.push(leg);continue;}

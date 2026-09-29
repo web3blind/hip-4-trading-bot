@@ -55,6 +55,21 @@ test('categories are explicitly inferred, not treated as exchange-supplied tags;
   assert.equal(events.find(e => e.outcomeId === 3).venue, 'skew');
 });
 
+test('recurring price bucket is reachable through prices category and event callbacks', async () => {
+  catalog.resetOutcomeCache();
+  const c=client();c.getOutcomeMeta=async()=>({deployers:metadata.deployers,
+    outcomes:[item(31,'Recurring Named Outcome','out'),item(32,'Recurring Named Outcome','out'),item(33,'Recurring Fallback','out')],
+    questions:[{question:30,name:'Recurring',description:'class:priceBucket|underlying:BTC|expiry:20990101-0600|priceThresholds:81479,84804|period:1d',namedOutcomes:[31,32],fallbackOutcome:33,settledNamedOutcomes:[]}]});
+  runtime.setHLClient(c);
+  const events=await catalog.fetchAndCacheOutcomes(c);assert.equal(events[0].category,'prices');
+  const list=context('outcomes:page:1:prices:out');await handleCallbackQuery(list);
+  assert(cb(list).includes('event:30:1:prices:out'));
+  const event=context('event:30:1:prices:out');await handleCallbackQuery(event);
+  assert(cb(event).includes('outcome:31:prices:out'));
+  assert.equal(catalog.categoryOf('Recurring','class:priceBinary|underlying:ETH'),'prices');
+  assert.equal(catalog.categoryOf('Unknown','class:priceBucketOther|underlying:BTC'),'other');
+});
+
 test('Filters opens first; category then markets; venue refines and pagination retains both filters', async () => {
   catalog.resetOutcomeCache(); const c = client(); runtime.setHLClient(c);
   const filters = context('outcomes:filters:all:all'); await handleCallbackQuery(filters);

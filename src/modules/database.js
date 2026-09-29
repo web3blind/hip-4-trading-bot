@@ -1,3 +1,4 @@
+import { MAX_COMPLETE_SET_LEGS } from './constants.js';
 import Database from 'better-sqlite3';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -143,7 +144,7 @@ export function createCompleteSetAttempt({ id, questionId, budget, shares, coins
       !Number.isSafeInteger(shares) || shares <= 0 || !Number.isFinite(Number(budget)) || Number(budget) <= 0 ||
       !/^0x[0-9a-fA-F]{40}$/.test(account || '') || !['mainnet','testnet'].includes(network) ||
       !/^[0-9a-f]{64}$/.test(ruleDigest || '') || !/^[0-9a-f]{64}$/.test(feeDigest || '') ||
-      !Array.isArray(coins) || coins.length < 2 || coins.length > 8 ||
+      !Array.isArray(coins) || coins.length < 2 || coins.length > MAX_COMPLETE_SET_LEGS ||
       !coins.every(coin => /^#[0-9]+0$/.test(coin)) || !Array.isArray(legs) || legs.length !== coins.length ||
       legs.some((leg,i) => leg.coin !== coins[i] || !/^0x[0-9a-f]{32}$/.test(leg.cloid || '') ||
         !Number.isFinite(leg.price) || leg.price <= 0 || leg.price >= 1 || leg.size !== shares) ||

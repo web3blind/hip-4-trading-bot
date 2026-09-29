@@ -1,3 +1,4 @@
+import { MAX_COMPLETE_SET_LEGS } from './constants.js';
 import { toCoin, SIDES } from './hl-encoding.js';
 import { completeSetQuestions } from './complete-set-rules.js';
 import { feeEvidenceValid } from './complete-set-fees.js';
@@ -27,7 +28,7 @@ function depthCost(levels,shares) {
 /** Read-only verified rules+fees+depth quote. A positive gross gap alone is ineligible. */
 export async function quoteCompleteSet(client, question, budget, {now=Date.now(),feeEvidence,minNetMargin=0.005,minNetProfit=0.10,shares:fixedShares=null,minimum=false}={}) {
   const legCount=question?.outcomes?.length;
-  if (!Number.isSafeInteger(legCount) || legCount<2 || legCount>8 ||
+  if (!Number.isSafeInteger(legCount) || legCount<2 || legCount>MAX_COMPLETE_SET_LEGS ||
       !Number.isSafeInteger(question?.question) || !/^[0-9a-f]{64}$/.test(question?.ruleDigest||'') ||
       question.coveredIds?.length!==legCount || !feeEvidenceValid(feeEvidence,client,now) ||
       Number(client.builder?.f??0)!==0 ||
