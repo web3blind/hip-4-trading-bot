@@ -402,6 +402,14 @@ export async function monitorCompleteSetsWorker() {
   await scanCompleteSets(readOnly,{enabled:true,budget:Number.isFinite(budget)&&budget>=40&&budget<=1000?budget:100});
 }
 
+export async function monitorLiquidityWorker() {
+  if(!hlClient) return;
+  try {
+    const {tickLiquidity}=await import('./liquidity/coordinator.js');
+    await tickLiquidity();
+  } catch(error) {safeLogError(createContext('workers','liquidity'),error);}
+}
+
 // ─── Public API ──────────────────────────────────────────────────
 
 /**
@@ -435,6 +443,7 @@ export function startWorkers(options = {}) {
   scheduleWorker('bundles', monitorPricesMs, monitorBundlePortfolioWorker);
   scheduleWorker('monitorPrices', monitorPricesMs, monitorPricesWorker);
   scheduleWorker('completeSets', DEFAULT_COMPLETE_SETS_MS, monitorCompleteSetsWorker);
+  scheduleWorker('liquidity', 15_000, monitorLiquidityWorker);
 
   workersStarted = true;
 

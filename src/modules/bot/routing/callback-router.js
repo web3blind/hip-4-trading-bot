@@ -30,6 +30,7 @@ import { createWithdrawFeature } from '../features/withdraw.js';
 import { createSplitBuyFeature } from '../features/split-buy.js';
 import { createCompleteSetFeature } from '../features/complete-set.js';
 import { createBundlesFeature } from '../features/bundles.js';
+import { createLiquidityFeature } from '../features/liquidity.js';
 import { isApiWalletStep } from '../features/api-wallet.js';
 import { showMcpSettings, handleMcpKeyAction } from '../features/mcp-settings.js';
 import { handleMcpApproval, handleMcpRejection } from '../../mcp/operations.js';
@@ -40,6 +41,7 @@ const withdraw = createWithdrawFeature({});
 const splitBuy = createSplitBuyFeature({});
 const completeSet = createCompleteSetFeature({});
 const bundles = createBundlesFeature();
+const liquidity = createLiquidityFeature();
 
 async function editOrReply(ctx, text, extra = {}) {
   try {
@@ -61,7 +63,7 @@ export async function handleCallbackQuery(ctx) {
     if (!data) { try { await ctx.answerCallbackQuery('Confirmation expired. Open a new review.'); } catch {} return; }
   } else {
     const step = /^(mkt_(buy|sell)_pct:|lim_(buy|sell)_pct:|split_pct:|withdraw_pct:|set_amount:)/.test(data);
-    if (!step && !isApiWalletStep(data)) await invalidateUserState(chatId);
+    if (!step && !isApiWalletStep(data) && !(data.startsWith('liq:back:') && userStates.get(chatId)?.state === 'LIQUIDITY_INPUT')) await invalidateUserState(chatId);
   }
   if (isConfirm) {
     if (confirmationLocks.get(chatId)) {
@@ -108,6 +110,16 @@ export async function handleCallbackQuery(ctx) {
     }
 
     await ack();
+
+    if (data === 'liq:menu') { await liquidity.menu(ctx); return; }
+    if (data === 'liq:campaigns') { await liquidity.campaigns(ctx); return; }
+    if (data === 'liq:cancel') { await liquidity.cancel(ctx); return; }
+    if (data === 'liq:new:observe' || data === 'liq:new:live') { await liquidity.start(ctx, data.slice(8)); return; }
+    if (data.startsWith('liq:back:')) { await liquidity.stepBack(ctx, data.slice(9)); return; }
+    if (data.startsWith('liq:session:')) { await liquidity.session(ctx, data.slice(12)); return; }
+    if (data.startsWith('liq:review:')) { await liquidity.showReview(ctx, data.slice(11)); return; }
+    if (data.startsWith('liq:stop:')) { await liquidity.stop(ctx, data.slice(9)); return; }
+    if (data === 'confirm_liquidity_session') { await liquidity.confirm(ctx); return; }
 
     if (data === 'menu' || data === 'back_menu') {
       userStates.delete(chatId);

@@ -21,6 +21,7 @@ import { createSplitBuyFeature } from '../features/split-buy.js';
 import { createCompleteSetFeature } from '../features/complete-set.js';
 import { handleCustomThresholdInput } from '../features/settings.js';
 import { interceptApiWalletInput } from '../features/api-wallet.js';
+import { createLiquidityFeature } from '../features/liquidity.js';
 
 // Instantiate features
 const tradeMarket = createTradeMarketFeature({});
@@ -28,6 +29,7 @@ const tradeLimit = createTradeLimitFeature({});
 const withdrawFeature = createWithdrawFeature({});
 const splitBuyFeature = createSplitBuyFeature({});
 const completeSetFeature = createCompleteSetFeature({});
+const liquidity = createLiquidityFeature();
 
 // ─── Confirmation states that bypass the busy lock ──────────────
 
@@ -69,6 +71,9 @@ export async function handleTextMessage(ctx) {
 
   try {
     switch (state.state) {
+      case 'LIQUIDITY_INPUT':
+        await liquidity.input(ctx, state, text);
+        break;
       // ── Market trade amounts ──
       case 'AWAITING_MARKET_BUY_AMOUNT':
         await tradeMarket.handleMarketBuyAmount(ctx, state, text);

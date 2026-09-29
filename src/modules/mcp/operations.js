@@ -133,6 +133,10 @@ export async function handleMcpRejection(ctx) {
 export async function mcpOperation(operation, args, credential, dependencies = {}) {
   if (!credential || typeof args !== 'object' || !args || Array.isArray(args)) throw new Error('Invalid request');
   if (!await isMcpCredentialCurrent(credential)) throw new Error('MCP key revoked');
+  if (operation.startsWith('liquidity_')) {
+    const {liquidityMcpOperation}=await import('../liquidity/mcp.js');
+    return liquidityMcpOperation(operation,args,credential);
+  }
   const client = dependencies.client ?? hlClient;
   const accountBinding = dependencies.binding?.() ?? runtimeBinding();
   prune();

@@ -77,6 +77,7 @@ test('real MCP client lists all tools and forwards bounded calls after per-reque
   assert.deepEqual(listed.tools.map(tool => tool.name).sort(), [
     'get_action_status', 'get_balances', 'get_bot_status', 'get_market',
     'get_open_orders', 'get_orderbook', 'get_positions', 'get_recent_fills',
+    'liquidity_campaigns', 'liquidity_request_session', 'liquidity_session_status', 'liquidity_sessions', 'liquidity_stop_session',
     'list_markets', 'request_cancel_orders', 'request_limit_order', 'request_market_order'
   ]);
   assert.match(listed.tools.find(tool => tool.name === 'request_market_order').description, /Telegram approval/i);
@@ -114,6 +115,19 @@ test('trade calls only request broker approval and schemas reject unsafe or unbo
   const invalid = await client.callTool({ name: 'request_cancel_orders', arguments: { coin: '#21460', oids: Array.from({ length: 6 }, (_, i) => i + 1), request_id: 'test-req-5678' } });
   assert.equal(invalid.isError, true);
   assert.equal(f.events.filter(event => event.type === 'rpc').length, 1);
+});
+
+test('liquidity tools forward bounded session proposals and expose no self-approval tool',async t=>{
+  const f=await fixture(t);const {client,transport}=clientFor(f.url);await client.connect(transport);t.after(()=>client.close());
+  const tools=await client.listTools();assert(!tools.tools.some(x=>/liquidity.*approve/.test(x.name)));
+  const args={request_id:'session-test-123',mode:'observe',coin:'#100',durationMinutes:60,budgetUsdc:100,
+    maxInventoryShares:50,orderSizeShares:20,minPrice:.3,maxPrice:.7,minSpread:.02,maxLossUsdc:10,maxActions:10};
+  const result=await client.callTool({name:'liquidity_request_session',arguments:args});assert.equal(result.isError,undefined);
+  assert.deepEqual(f.events.find(x=>x.type==='rpc').body,{operation:'liquidity_request_session',args});
+  for(const change of [{durationMinutes:1441},{maxActions:0},{coin:'@100'},{mode:'unlimited'},{maxPrice:1}]) {
+    const rejected=await client.callTool({name:'liquidity_request_session',arguments:{...args,...change}});assert.equal(rejected.isError,true);
+  }
+  assert.equal(f.events.filter(x=>x.type==='rpc').length,1);
 });
 
 test('strict transport rejects bad host, origin, bearer, oversized bodies, and emits no CORS headers', async t => {

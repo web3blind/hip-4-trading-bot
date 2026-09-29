@@ -131,6 +131,8 @@ export function activateHLClient(client, options = {}) {
     runtimeTransitioning = true;
     try {
       if ([...busyLocks.values()].some(Boolean)) throw new Error('Financial operation is running');
+      const { shutdownLiquidity } = await import('../liquidity/coordinator.js');
+      await shutdownLiquidity(hlClient);
       const { stopWorkers, startWorkers } = await import('../workers.js');
       await stopWorkers();
       // Fail closed if persistence or database activation fails: never retain an

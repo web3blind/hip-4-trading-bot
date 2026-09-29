@@ -62,6 +62,17 @@ function registerTools(server, callBroker) {
     ['request_cancel_orders', 'Request owner Telegram approval to cancel up to five explicit OIDs on one HIP-4 coin; never submits directly.', {
       coin, oids: z.array(oid).min(1).max(5), request_id: requestId
     }],
+    ['liquidity_campaigns', 'Read current public liquidity reward pools and freshness; not a wallet eligibility or earnings guarantee.', {}],
+    ['liquidity_sessions', 'Read up to 20 liquidity sessions; does not grant trading authority.', {}],
+    ['liquidity_session_status', 'Read one bounded liquidity session.', {session_id:z.string().min(1).max(80)}],
+    ['liquidity_request_session', 'Propose a bounded observation or maker session for one private-owner Telegram approval. NEVER starts quoting by itself; ordinary trading tools retain per-action approval.', {
+      request_id:requestId,mode:z.enum(['observe','live']),coin,
+      durationMinutes:z.number().int().positive().max(1440),
+      budgetUsdc:amount,maxInventoryShares:amount,orderSizeShares:amount,
+      minPrice:z.number().positive().lt(1),maxPrice:z.number().positive().lt(1),
+      minSpread:z.number().positive().lt(1),maxLossUsdc:amount,maxActions:z.number().int().positive().max(1000)
+    }],
+    ['liquidity_stop_session', 'Revoke your credential-owned session and cancel only its recorded orders. Never liquidates holdings or cancels unrelated orders; unresolved cancellations remain visible.', {session_id:z.string().min(1).max(80)}],
     ['get_action_status', 'Get status of a previously requested Telegram approval action.', { action_id: z.string().regex(/^[a-f0-9]{20}$/) }]
   ];
 

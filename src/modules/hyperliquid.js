@@ -541,7 +541,7 @@ export class HLClient {
   async _buildOrderWire({ coin, isBuy, price, size, orderType = 'Limit', maxSpend, cloid }) {
     price = positive(price, 'price'); size = positive(size, 'size');
     if (cloid != null && (typeof cloid !== 'string' || !/^0x[0-9a-fA-F]{32}$/.test(cloid))) throw new Error('Invalid client order ID');
-    if (price >= 1 || typeof isBuy !== 'boolean' || !['Limit', 'Market'].includes(orderType)) throw new Error('Invalid outcome order');
+    if (price >= 1 || typeof isBuy !== 'boolean' || !['Limit', 'Market', 'PostOnly'].includes(orderType)) throw new Error('Invalid outcome order');
     coin = normalizeOutcomeCoin(coin);
     const roundedSize = await this._roundSize(coin, size);
     if (roundedSize <= 0) throw new Error('Order size too small after rounding');
@@ -559,7 +559,7 @@ export class HLClient {
       is_buy: isBuy,
       limit_px: formattedPrice,
       sz: roundedSize,
-      order_type: this._orderTypeToWire(orderType),
+      order_type: orderType === 'PostOnly' ? { limit: { tif: 'Alo' } } : this._orderTypeToWire(orderType),
       reduce_only: false,
       cloid,
     }, assetIndex);
@@ -585,6 +585,19 @@ export class HLClient {
     if (ref >= 1) throw new Error('Invalid book price');
     const price = isBuy ? Math.min(ref * (1 + slippagePct / 100), 0.99999) : Math.max(ref * (1 - slippagePct / 100), 0.00001);
     return this.prepareOrder({ coin, isBuy, price, ...(isBuy ? { budget: amount } : { size: amount }), orderType: 'Market' });
+  }
+
+  async prepareMakerOrder({ coin, isBuy, price, size }) {
+    if (typeof price !== 'number' || typeof size !== 'number') throw new Error('Maker price and size must be numbers');
+    return this.prepareOrder({ coin, isBuy, price, size, orderType: 'PostOnly' });
+  }
+
+  /** ALO only, with no IOC/GTC fallback on rejection or unknown submission. */
+  async placeMakerOrders(requests) {
+    if (!Array.isArray(requests) || !requests.length || requests.some(r =>
+      r?.orderType !== 'PostOnly' || !/^0x[0-9a-fA-F]{32}$/.test(r?.cloid || '') ||
+      typeof r.price !== 'number' || typeof r.size !== 'number')) throw new Error('Invalid maker requests');
+    return this.placeOrders(requests, { throwOnError: false });
   }
 
   async _checkFeeReserve() {

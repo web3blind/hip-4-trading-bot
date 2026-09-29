@@ -37,6 +37,7 @@ export function mainMenuKeyboard(t, { walletConfigured = true } = {}) {
     .text(label(t, 'menu_orders', 'Orders'), 'orders')
     .text(label(t, 'menu_wallet', 'Wallet'), 'wallet')
     .row()
+    .text(label(t, 'liq_title', 'Liquidity'), 'liq:menu').row()
     .text(label(t, 'menu_search', 'Search'), 'search_markets')
     .text(label(t, 'menu_settings', 'Settings'), 'settings');
   return kb;

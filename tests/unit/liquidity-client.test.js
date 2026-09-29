@@ -1,0 +1,20 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { HLClient } from '../../src/modules/hyperliquid.js';
+const key='0x'+'1'.repeat(64);
+test('dedicated maker path signs ALO and preserves legacy limit/market wire',async()=>{
+  const c=new HLClient(key,'testnet');
+  c.getOutcomeMeta=async()=>({outcomes:[{outcome:30,quoteToken:'USDC',szDecimals:0}]});
+  c._infoRequest=async()=>({userSpotCrossRate:'0.001'});
+  const actions=[];c._exchangeRequest=async payload=>{actions.push(payload.action);return {status:'ok',response:{type:'order',data:{statuses:[{resting:{oid:101}}]}}};};
+  const prepared=await c.prepareMakerOrder({coin:'#300',isBuy:true,price:0.5,size:30});
+  assert.equal(prepared.orderType,'PostOnly');
+  await c.placeMakerOrders([{...prepared,cloid:'0x'+'a'.repeat(32)}]);
+  assert.deepEqual(actions[0].orders[0].t,{limit:{tif:'Alo'}});
+  assert.equal(actions[0].orders[0].c,'0x'+'a'.repeat(32));
+  await assert.rejects(c.placeMakerOrders([{...prepared,orderType:'Limit',cloid:'0x'+'a'.repeat(32)}]));
+  await c.placeOrder('#300',true,0.5,30,'Limit');
+  await c.placeOrder('#300',true,0.5,30,'Market');
+  assert.equal(actions[1].orders[0].t.limit.tif,'Gtc');
+  assert.equal(actions[2].orders[0].t.limit.tif,'Ioc');
+});

@@ -52,6 +52,13 @@ async function shutdown(signal = 'unknown', exitCode = 0) {
   }
 
   try {
+    const {shutdownLiquidity}=await import('./modules/liquidity/coordinator.js');
+    await shutdownLiquidity();
+  } catch {
+    safeLogError(ctx, new Error('Liquidity cleanup incomplete; reconciliation required on restart'));
+  }
+
+  try {
     await flushLogger(1500);
   } catch {}
 
