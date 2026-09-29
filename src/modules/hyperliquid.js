@@ -589,7 +589,12 @@ export class HLClient {
 
   async prepareMakerOrder({ coin, isBuy, price, size }) {
     if (typeof price !== 'number' || typeof size !== 'number') throw new Error('Maker price and size must be numbers');
-    return this.prepareOrder({ coin, isBuy, price, size, orderType: 'PostOnly' });
+    const prepared=await this.prepareOrder({ coin, isBuy, price, size, orderType: 'PostOnly' });
+    // Round the reserve upward without quantize's price-tick tolerance: the
+    // signing boundary compares the raw floating-point cost against this cap.
+    if(isBuy) prepared.maxSpend=Math.max(prepared.maxSpend,
+      Math.ceil(prepared.price*prepared.size*(1+FEE_RESERVE)*1e6)/1e6);
+    return prepared;
   }
 
   /** ALO only, with no IOC/GTC fallback on rejection or unknown submission. */

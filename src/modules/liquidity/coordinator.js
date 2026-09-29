@@ -73,10 +73,8 @@ export function createLiquidityCoordinator({getClient=()=>runtime.hlClient,getOw
         const session=await s.get(id);if(!session) throw new Error('Session not found');
         if(session.credentialId && !await credentialCurrent({id:session.credentialId,generation:session.credentialGeneration,scope:'trade'})) throw new Error('MCP credential revoked');
         if(session.policy.mode==='live' && conflicts(session.policy)) throw new Error('Outcome belongs to another bundle');
-        // Historical payouts cannot establish an active incentive window, its
-        // band parameters or this frontend's qualification. Never substitute
-        // a wallet approval for verification of those external prerequisites.
-        if(session.policy.mode==='live') throw new Error('Live liquidity eligibility unverified');
+        // Trading consent is independent of reward-program eligibility.
+        // Market, account, risk and ownership checks still run in the engine.
         return s.approve(id,{ownerId:String(ownerId),client});
       });
     },

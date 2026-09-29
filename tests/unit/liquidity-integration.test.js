@@ -41,13 +41,14 @@ test('no session proposal overwrites pending ordinary Telegram confirmation or a
  finally{runtime.userStates.delete(77);}
  await assert.rejects(h.call('liquidity_request_session',{...args,account:'0x'+'2'.repeat(40)},credential),/Invalid session/);
 });
-test('unknown live campaign qualification cannot be overridden by owner approval; observation still activates',async()=>{
+test('unknown rewards do not override owner-approved trading; observation still activates',async()=>{
  const policy={...args,account:address,network:'mainnet'};delete policy.request_id;
  const s={id:'s',policy,status:'draft'};let approved=0;
  const c=createLiquidityCoordinator({getClient:()=>({address,network:'mainnet'}),getOwner:()=>77,locks:new Map(),conflicts:()=>false,
  loadModules:async()=>({createLiquidityStore:()=>({}),createLiquidityService:()=>({get:()=>s,recover:async()=>{},approve:async()=>{approved++;return s;}})})});
- await assert.rejects(c.approve('s',{ownerId:77}),/eligibility unverified/);assert.equal(approved,0);
- s.policy.mode='observe';await c.approve('s',{ownerId:77});assert.equal(approved,1);
+ await assert.rejects(c.approve('s',{ownerId:88}),/Owner/);assert.equal(approved,0);
+ await c.approve('s',{ownerId:77});assert.equal(approved,1);
+ s.policy.mode='observe';await c.approve('s',{ownerId:77});assert.equal(approved,2);
 });
 
 test('inactive coordinator shutdown neither opens storage nor calls exchange; owner guard remains module-only',async()=>{

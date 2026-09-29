@@ -40,7 +40,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
   async function failure(ctx, t) { await screen(ctx, t('liq_unavailable'), back(t)); }
   async function serviceFailure(ctx, t, error) {
     const message = error?.message;
-    const category = message === 'Live liquidity eligibility unverified' ? 'liq_live_blocked' : ['Short-expiry price market not supported live', 'Unavailable USDC outcome',
+    const category = ['Short-expiry price market not supported live', 'Unavailable USDC outcome',
       'Settled outcome', 'Market expiry unavailable or inside safety buffer',
       'Decision cutoff unavailable or near', 'Market expiry near'].includes(message) ? 'liq_market_blocked'
       : ['Existing inventory', 'Foreign orders or unavailable open orders',
@@ -62,7 +62,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
       }
     } catch { /* menu remains usable when storage is unavailable */ }
     kb.text(t('back'), 'back_menu');
-    await screen(ctx, `${t('liq_title')}\n${t('liq_intro')}\n${t('liq_live_blocked')}`, kb);
+    await screen(ctx, `${t('liq_title')}\n${t('liq_intro')}\n${t('liq_reward_notice')}`, kb);
   }
   async function campaigns(ctx) {
     if (!await guard(ctx)) return;
@@ -163,7 +163,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
       const callback = runtime.confirmationCallback(ctx.chat.id, 'confirm_liquidity_session', {
         state: 'CONFIRMING_LIQUIDITY_SESSION', sessionId: id, binding: runtime.runtimeBinding(),
       });
-      const lines = [t('liq_review'), `${t('liq_mode')}: ${t(`liq_${p.mode}`)}`, ...values.map((key, i) => `${t(['liq_coin_label', 'liq_network', 'liq_duration_label', 'liq_budget_label', 'liq_inventory_label', 'liq_order_label', 'liq_min_label', 'liq_max_label', 'liq_spread_label', 'liq_loss_label', 'liq_actions_label'][i])}: ${clean(p[key])}`), t('liq_budget_rule'), t('liq_risk'), p.mode === 'observe' ? t('liq_observe_rule') : t('liq_live_rule')];
+      const lines = [t('liq_review'), `${t('liq_mode')}: ${t(`liq_${p.mode}`)}`, ...values.map((key, i) => `${t(['liq_coin_label', 'liq_network', 'liq_duration_label', 'liq_budget_label', 'liq_inventory_label', 'liq_order_label', 'liq_min_label', 'liq_max_label', 'liq_spread_label', 'liq_loss_label', 'liq_actions_label'][i])}: ${clean(p[key])}`), t('liq_budget_rule'), t('liq_risk'), p.mode === 'observe' ? t('liq_observe_rule') : `${t('liq_live_rule')}\n${t('liq_reward_notice')}`];
       await screen(ctx, lines.join('\n'), new InlineKeyboard().text(t('liq_approve'), callback).row().text(t('cancel'), 'liq:cancel'));
     } catch { await failure(ctx, t); }
   }

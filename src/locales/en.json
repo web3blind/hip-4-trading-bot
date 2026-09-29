@@ -10,7 +10,7 @@
   "liq_inventory_unknown": "Held shares have not yet been reconciled.",
   "liq_spend_evidence": "Purchases including fees at last reconciliation",
   "liq_evidence_time": "Last reconciliation time (not a live balance)",
-  "liq_live_blocked": "Live maker sessions are unavailable until the current reward campaign conditions and this bot's eligibility are verified. Observation is available without placing orders.",
+  "liq_reward_notice": "Rewards are unverified. You authorize trading within these limits independently of program payouts; profit and rewards are not guaranteed.",
   "liq_campaigns": "Campaign information",
   "liq_history_title": "Program payout history",
   "liq_history_warning": "Past awards to all participants, not active pools or your earnings. Current conditions and bot eligibility are unverified.",
