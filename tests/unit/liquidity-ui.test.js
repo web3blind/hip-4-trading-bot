@@ -22,6 +22,13 @@ const policy = mode => ({ mode, coin: '#1230', account, network: 'testnet', dura
   budgetUsdc: 20, maxInventoryShares: 20, orderSizeShares: 10, minPrice: .2,
   maxPrice: .8, minSpread: .02, maxLossUsdc: 5, maxActions: 10 });
 
+test('expired session with unresolved owned order still offers Stop',async()=>{
+ setAllowedUserId(123);setSessionConfig({language:'en',hlNetwork:'testnet'});
+ const ctx=context(),s={id,policy:policy('live'),status:'expired',orders:[{state:'open'}]};
+ const feature=createLiquidityFeature({service:async()=>({getLiquiditySession:async()=>s})});
+ await feature.session(ctx,id);assert(buttons(ctx).includes(`liq:stop:${id}`));
+});
+
 // The service double never places orders: this verifies UI authorization rather
 // than pretending to test the exchange engine.
 test('wizard gathers all bounded fields, exposes one-use private review, and shows stop uncertainty', async () => {

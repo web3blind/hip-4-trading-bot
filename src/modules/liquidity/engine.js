@@ -73,7 +73,7 @@ export function createLiquidityService({store,ownerId,now=Date.now,authorize=asy
   const exclusive=async fn=>{if(busy) throw new Error('Liquidity service busy');busy=true;try{return await fn();}finally{busy=false;}};
   const save=s=>{store.save(s);return snapshot(s);};
   const load=id=>{const s=store.get(id);if(!s)throw new Error('Session not found');return s;};
-  const owned=s=>s.orders.filter(o=>!['closed','rejected'].includes(o.state));
+  const owned=s=>s.orders.filter(o=>!['closed','rejected','aborted'].includes(o.state));
   const unresolved=s=>s.policy.mode==='live' && owned(s).length>0;
   const halt=(s,reason,state='stopping')=>{s.status=state;s.reason=reason;save(s);};
   async function reconcile(s,client) {
@@ -82,6 +82,7 @@ export function createLiquidityService({store,ownerId,now=Date.now,authorize=asy
     const fills=await client.getUserFillsByTime(s.startedAt || s.createdAt,now(),s.policy.account);
     if(!Array.isArray(fills) || fills.length>=500) throw new Error('Fill history incomplete');
     for(const order of s.orders) {
+      if(['rejected','aborted'].includes(order.state)) continue;
       const response=await client.getOrderStatus(order.oid || order.cloid,s.policy.account);
       const {status,id}=orderState(response,{...order,coin:s.policy.coin},s.policy.account);
       if(id && order.oid && id!==order.oid) throw new Error('Order identity changed');
@@ -101,6 +102,8 @@ export function createLiquidityService({store,ownerId,now=Date.now,authorize=asy
       if(order.trades.reduce((n,t)=>n+t.sz,0)>order.size+1e-7) throw new Error('Fill exceeds order');
       order.state=open?'open':status==='filled' && order.trades.reduce((n,t)=>n+t.sz,0)<order.size-1e-7?'unknown':'closed';
       save(s);
+      if(['canceled','cancelled','expired','marginCanceled'].includes(status) && !order.cancelExpected &&
+          s.status==='active') throw new Error('outside_order_cancellation');
     }
     // Re-query account state after awaits; outside activity cannot be attributed to this session.
     const actual=inventory(await client.getUserBalances(s.policy.account),s.policy.coin);
@@ -135,7 +138,7 @@ export function createLiquidityService({store,ownerId,now=Date.now,authorize=asy
       if(!o.oid) continue;
       binding(s,c);
       if(!['open','unknown','prepared','cancel_unknown'].includes(o.state)) continue;
-      o.state='cancel_unknown';save(s); // durable cancel intent
+      o.state='cancel_unknown';o.cancelExpected=true;save(s); // durable cancel intent
       try {await c.cancelOrder(s.policy.coin,o.oid);} catch { /* read back below */ }
       try {await reconcile(s,c);verified=true;} catch {verified=false;o.state='cancel_unknown';save(s);}
     }
@@ -155,7 +158,7 @@ export function createLiquidityService({store,ownerId,now=Date.now,authorize=asy
     },
     async approve(id,{ownerId:who,client}={}) {return exclusive(async()=>{
       const s=load(id);if(who!==ownerId || s.status!=='draft') throw new Error('Owner approval required');binding(s,client);
-      if(store.list().some(other=>other.id!==id && ACTIVE.has(other.status))) throw new Error('Account has unresolved liquidity session');
+      if(store.list().some(other=>other.id!==id && (ACTIVE.has(other.status)||unresolved(other)))) throw new Error('Account has unresolved liquidity session');
       const at=now();
       const meta=await client.getOutcomeMeta(),m=market(meta,s.policy.coin,now(),s.policy.mode==='live');
       if(s.policy.mode==='live') {
@@ -164,12 +167,14 @@ export function createLiquidityService({store,ownerId,now=Date.now,authorize=asy
         if(!Array.isArray(open) || open.some(o=>o.coin===s.policy.coin || o.coin==='+'+s.policy.coin.slice(1))) throw new Error('Foreign orders or unavailable open orders');
         feeEvidence(await client.getUserFees(),m.feeScale);
       }
+      if(store.get(id)?.stopRequested) throw new Error('Session stopped during approval');
       if(now()>=m.expiry-3600000) throw new Error('Market expiry near');
       s.market=m;s.startedAt=now();s.expiresAt=Math.min(s.startedAt+s.policy.durationMinutes*60000,m.expiry-3600000);s.status=s.policy.mode==='live'?'active':'observing';
       if(s.expiresAt<=now()) throw new Error('Session expired during approval');return save(s);
     });},
     async tick(client) {return exclusive(async()=>{
-      const retry=store.list().find(x=>x.policy.mode==='live' && ['recovery_required','stopping','paused','error'].includes(x.status));
+      const retry=store.list().find(x=>x.policy.mode==='live' && (unresolved(x) && x.status!=='active' ||
+        ['recovery_required','stopping','paused','error'].includes(x.status) && x.reason!=='outside_order_cancellation'));
       if(retry) {binding(retry,client);return cleanup(retry,client);}
       const s=store.list().find(x=>x.status==='active'||x.status==='observing');if(!s)return null;binding(s,client);
       if(now()>=s.expiresAt) {halt(s,'duration_or_market_expiry','expired');return s.policy.mode==='live'?cleanup(s,client):save(s);}
@@ -179,10 +184,12 @@ export function createLiquidityService({store,ownerId,now=Date.now,authorize=asy
         const q=bookQuote(await client.getOrderbook(s.policy.coin),now(),s.policy);
         if(s.policy.mode==='observe') {s.proposals.push({at:now(),...q});s.proposals=s.proposals.slice(-100);return save(s);}
         await reconcile(s,client);
+        if(store.get(s.id).stopRequested) return cleanup(s,client);
         const open=await client.getOpenOrders(s.policy.account);
         if(!Array.isArray(open) || open.some(o=>(o.coin===s.policy.coin || o.coin==='+'+s.policy.coin.slice(1)) && !s.orders.some(own=>own.oid && own.oid===oid(o.oid)))) throw new Error('Foreign order or unavailable order inventory');
         // Bid marks remaining shares conservatively; no claimed realized PnL from this mark.
         if(s.exposure.spend-s.exposure.revenue-s.exposure.shares*q.bid>=s.policy.maxLossUsdc) {halt(s,'loss_stop');return cleanup(s,client);}
+        if(store.get(s.id).stopRequested) return cleanup(s,client);
         if(owned(s).length) return save(s); // unknown orders block replacement, even without an OID
         if(s.actions>=s.policy.maxActions) {halt(s,'action_limit');return cleanup(s,client);}
         const rate=feeEvidence(await client.getUserFees(),m.feeScale);
@@ -211,18 +218,41 @@ export function createLiquidityService({store,ownerId,now=Date.now,authorize=asy
         const cloid='0x'+randomBytes(16).toString('hex');
         s.orders.push({cloid,oid:null,isBuy,price:prepared.price,size:prepared.size,reserve,state:'prepared',trades:[]});s.actions++;save(s);
         const o=s.orders.at(-1);
+        const beforeSubmit=()=>{
+          const latest=store.get(s.id);
+          if(!latest || latest.status!=='active' || latest.stopRequested || now()>=latest.expiresAt ||
+              now()>=latest.market.expiry-3600000) {
+            const error=new Error('Liquidity grant expired or revoked before submission');
+            error.neverSubmitted=true;
+            throw error;
+          }
+          try {binding(s,client);} catch(error) {error.neverSubmitted=true;throw error;}
+        };
         try {
-          const result=await client.placeMakerOrders([{...prepared,cloid,maxSpend:reserve}]);
+          const result=await client.placeMakerOrders([{...prepared,cloid,maxSpend:reserve}],{beforeSubmit});
           const status=orderStatuses(result,1)[0];
           if(status.error) o.state='rejected'; else {o.oid=oid(status.resting?.oid??status.filled?.oid);o.state=status.resting?'open':'unknown';}
-        } catch {o.state='unknown';}
-        save(s);return save(s);
-      } catch(e) {halt(s,e.message,'paused');return cleanup(s,client);}
+        } catch(e) {o.state=e.neverSubmitted?'aborted':'unknown';}
+        save(s);
+        if(store.get(s.id).stopRequested || o.state==='aborted') {
+          if(!store.get(s.id).stopRequested) halt(s,'authorization_or_expiry');
+          return cleanup(s,client);
+        }
+        return save(s);
+      } catch(e) {halt(s,e.message,'paused');return e.message==='outside_order_cancellation'?save(s):cleanup(s,client);}
     });},
+    requestStop(id,{ownerId:who,client,reason='owner_stop'}={}) {
+      const s=load(id);if(who!==ownerId) throw new Error('Owner required');
+      if(TERMINAL.has(s.status)&&!unresolved(s)) return snapshot(s);
+      if(s.status!=='draft') binding(s,client);
+      const intent=store.requestStop(id,reason);
+      if(intent.startedAt==null && intent.orders.length===0) {intent.status='stopped';return save(intent);}
+      return snapshot(intent);
+    },
     async stop(id,{ownerId:who,client,reason='owner_stop'}={}) {return exclusive(async()=>{
       const s=load(id);if(who!==ownerId)throw new Error('Owner required');if(TERMINAL.has(s.status)&&!unresolved(s))return snapshot(s);
       if(s.status==='draft') {s.status='stopped';s.reason=reason;return save(s);}
-      binding(s,client);halt(s,reason);return cleanup(s,client);
+      binding(s,client);if(!s.stopRequested) halt(s,reason);return cleanup(s,client);
     });},
     async revokeCredential(id,generation,client) {return exclusive(async()=>{
       const results=[];for(const s of store.list().filter(s=>s.credentialId===id && s.credentialGeneration===generation && !TERMINAL.has(s.status))) {
@@ -231,7 +261,7 @@ export function createLiquidityService({store,ownerId,now=Date.now,authorize=asy
       }return results;
     });},
     async recover(client) {return exclusive(async()=>{
-      const results=[];for(const s of store.list().filter(s=>ACTIVE.has(s.status))) {
+      const results=[];for(const s of store.list().filter(s=>ACTIVE.has(s.status)||unresolved(s))) {
         if(s.policy.mode==='observe'){s.status='stopped';s.reason='restart_review_required';results.push(save(s));continue;}
         binding(s,client);halt(s,'restart_review_required','recovery_required');
         try{await reconcile(s,client);}catch{ /* unresolved evidence remains visible */ }

@@ -75,6 +75,7 @@
   "liq_reason_authorization_or_expiry": "Изменилось разрешение или истёк срок",
   "liq_reason_credential_revoked": "Ключ доступа отозван",
   "liq_reason_restart_review_required": "После перезапуска нужна новая проверка",
+  "liq_reason_outside_order_cancellation": "Ордер отменён вне сессии; выставление новых ордеров приостановлено",
   "liq_reason": "Причина",
   "liq_expiry": "Истекает",
   "liq_unknown": "Неизвестно",

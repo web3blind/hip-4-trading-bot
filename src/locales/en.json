@@ -75,6 +75,7 @@
   "liq_reason_authorization_or_expiry": "Authorization or expiry changed",
   "liq_reason_credential_revoked": "Access key revoked",
   "liq_reason_restart_review_required": "Restart requires new review",
+  "liq_reason_outside_order_cancellation": "Order canceled outside this session; quoting paused",
   "liq_reason": "Reason",
   "liq_expiry": "Expires",
   "liq_unknown": "Unknown",

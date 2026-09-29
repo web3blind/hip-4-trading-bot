@@ -598,11 +598,11 @@ export class HLClient {
   }
 
   /** ALO only, with no IOC/GTC fallback on rejection or unknown submission. */
-  async placeMakerOrders(requests) {
+  async placeMakerOrders(requests, { beforeSubmit } = {}) {
     if (!Array.isArray(requests) || !requests.length || requests.some(r =>
       r?.orderType !== 'PostOnly' || !/^0x[0-9a-fA-F]{32}$/.test(r?.cloid || '') ||
       typeof r.price !== 'number' || typeof r.size !== 'number')) throw new Error('Invalid maker requests');
-    return this.placeOrders(requests, { throwOnError: false });
+    return this.placeOrders(requests, { throwOnError: false, beforeSubmit });
   }
 
   async _checkFeeReserve() {
@@ -620,7 +620,7 @@ export class HLClient {
    * @param {boolean} options.throwOnError - throw if any status has error; defaults true
    * @returns {Promise<object>} Exchange response
    */
-  async placeOrders(orderRequests, { grouping = 'na', throwOnError = true } = {}) {
+  async placeOrders(orderRequests, { grouping = 'na', throwOnError = true, beforeSubmit } = {}) {
     if (!this.wallet) throw new Error('No wallet configured for signing');
     if (!Array.isArray(orderRequests) || orderRequests.length === 0) {
       throw new Error('No orders provided');
@@ -640,6 +640,8 @@ export class HLClient {
       ...(this.builder ? { builder: this.builder } : {}),
     };
 
+    // Synchronous maker grant check after all awaited preparation.
+    if (beforeSubmit) beforeSubmit();
     const nonce = this._nonce();
     const signature = await signL1Action(
       this.wallet,
@@ -656,7 +658,8 @@ export class HLClient {
       vaultAddress: null,
     };
 
-
+    // Signing can yield too; revoked grants must never reach the exchange.
+    if (beforeSubmit) beforeSubmit();
     const result = await this._exchangeRequest(payload);
     const orderErrors = orderStatuses(result, orderWires.length)
       .map((status, index) => ({ index, error: status?.error }))

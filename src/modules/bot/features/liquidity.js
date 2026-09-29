@@ -20,7 +20,8 @@ const numberOK = (field, n) => Number.isFinite(n) && n > 0 &&
   (field === 'minPrice' || field === 'maxPrice' ? n < 1 : true);
 const clean = value => String(value ?? '').replace(/[<>\x00-\x1f]/g, '').slice(0, 80);
 const reasons = new Set(['owner_stop', 'duration_or_market_expiry', 'action_limit', 'loss_stop',
-  'budget_or_inventory', 'authorization_or_expiry', 'credential_revoked', 'restart_review_required']);
+  'budget_or_inventory', 'authorization_or_expiry', 'credential_revoked', 'restart_review_required',
+  'outside_order_cancellation']);
 const statuses = new Set(['draft', 'active', 'observing', 'stopping', 'paused', 'recovery_required', 'error', 'stopped', 'expired']);
 const statusLabel = (t, value) => statuses.has(value) ? t(`liq_state_${value}`) : t('liq_unknown');
 const bindingMatches = policy => !!runtime.hlClient && policy?.network === runtime.hlClient.network &&
@@ -141,7 +142,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
       if (!s) return screen(ctx, t('session_expired'), back(t));
       const kb = new InlineKeyboard();
       if (s.status === 'draft') kb.text(t('liq_review_button'), `liq:review:${id}`).row();
-      if (['active', 'observing', 'stopping', 'paused', 'recovery_required', 'error'].includes(s.status)) kb.text(t('liq_stop'), `liq:stop:${id}`).row();
+      if (['active', 'observing', 'stopping', 'paused', 'recovery_required', 'error'].includes(s.status) || s.orders?.some(o=>!['closed','rejected','aborted'].includes(o.state))) kb.text(t('liq_stop'), `liq:stop:${id}`).row();
       kb.text(t('back'), 'liq:menu');
       const p = s.policy || {};
       const expiry = s.expiresAt ? new Date(s.expiresAt) : null;

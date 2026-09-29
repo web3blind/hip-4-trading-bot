@@ -80,7 +80,10 @@ export function createLiquidityCoordinator({getClient=()=>runtime.hlClient,getOw
     },
     async stop(id,{ownerId,reason='owner_stop'}) {
       ownerCheck(ownerId);
-      return locked(async()=>{const s=await service();return s.stop(id,{ownerId:String(ownerId),client:getClient(),reason});});
+      const client=getClient(),s=await service();
+      const intent=s.requestStop(id,{ownerId:String(ownerId),client,reason});
+      if(locks.get(Number(getOwner())) || locks.get(String(getOwner()))) return intent;
+      return locked(()=>s.stop(id,{ownerId:String(ownerId),client,reason}));
     },
     async tick() {
       if(!getClient() || transitioning() || locks.get(Number(getOwner())) || locks.get(String(getOwner()))) return;
@@ -91,7 +94,10 @@ export function createLiquidityCoordinator({getClient=()=>runtime.hlClient,getOw
           if(row.credentialId && !await credentialCurrent({id:row.credentialId,generation:row.credentialGeneration,scope:'trade'}))
             await s.stop(row.id,{ownerId:String(getOwner()),client,reason:'credential_revoked'});
         }
-        return s.tick(client);
+        const result=await s.tick(client);
+        for(const row of await s.list()) if(row.stopRequested && row.status!=='stopped')
+          await s.stop(row.id,{ownerId:String(getOwner()),client,reason:row.reason});
+        return result;
       });
     },
     async shutdown(client=getClient()) {

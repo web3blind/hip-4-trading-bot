@@ -19,6 +19,7 @@ export function createLiquidityStore(scope) {
   const all = db.prepare('SELECT payload FROM sessions ORDER BY rowid DESC');
   const byRequest = db.prepare('SELECT payload FROM sessions WHERE request_id = ?');
   const save = db.prepare('INSERT INTO sessions(id, request_id, payload) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload');
+  const stop = db.prepare(`UPDATE sessions SET payload=json_set(payload, '$.stopRequested', json('true'), '$.status', 'stopping', '$.reason', ?) WHERE id=?`);
   const account = scope.account.toLowerCase(), network = scope.network;
   return {
     account, network, path,
@@ -27,8 +28,16 @@ export function createLiquidityStore(scope) {
     list() { return all.all().map(row=>JSON.parse(row.payload)); },
     save(session) {
       if (session.policy.account !== account || session.policy.network !== network) throw new Error('Store scope mismatch');
+      // Do not let a worker with an old snapshot overwrite a durable revocation.
+      const latest=this.get(session.id);
+      if(latest?.stopRequested) {
+        session.stopRequested=true;
+        session.reason=latest.reason;
+        if(['active','observing'].includes(session.status)) session.status='stopping';
+      }
       save.run(session.id,session.requestId,JSON.stringify(session));
     },
+    requestStop(id,reason) {stop.run(reason,id);return this.get(id);},
     close() { db.close(); },
   };
 }

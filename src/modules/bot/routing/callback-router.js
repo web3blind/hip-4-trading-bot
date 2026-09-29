@@ -57,7 +57,7 @@ export async function handleCallbackQuery(ctx) {
   const chatId = ctx.chat.id;
 
   const isConfirm = data.startsWith('confirm_');
-  if (busyLocks.get(chatId) || confirmationLocks.get(chatId) || userStates.get(chatId)?.state === 'API_WALLET_SAVING') { try { await ctx.answerCallbackQuery(); } catch {} return; }
+  if ((busyLocks.get(chatId) && !/^liq:stop:[a-zA-Z0-9_-]{8,48}$/.test(data)) || confirmationLocks.get(chatId) || userStates.get(chatId)?.state === 'API_WALLET_SAVING') { try { await ctx.answerCallbackQuery(); } catch {} return; }
   if (isConfirm) {
     data = consumeConfirmation(chatId, data);
     if (!data) { try { await ctx.answerCallbackQuery('Confirmation expired. Open a new review.'); } catch {} return; }
@@ -104,7 +104,7 @@ export async function handleCallbackQuery(ctx) {
     }
 
     const isCancelAction = data === 'cancel_confirmation' || data === 'cancel_export_pk' || data.startsWith('trade_cancel:') || data === 'cancel_withdraw';
-    if (busyLocks.get(chatId) && !isCancelAction) {
+    if (busyLocks.get(chatId) && !isCancelAction && !/^liq:stop:[a-zA-Z0-9_-]{8,48}$/.test(data)) {
       await ack(t('error_busy'));
       return;
     }
