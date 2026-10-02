@@ -11,7 +11,7 @@ import { OUTCOMES_PAGE_SIZE } from '../constants.js';
 const coordinator = () => import('../../liquidity/coordinator.js');
 const fields = [
   ['durationMinutes', 'liq_duration'], ['budgetUsdc', 'liq_budget'],
-  ['maxInventoryShares', 'liq_inventory'], ['orderSizeShares', 'liq_order_size'],
+  ['orderSizeShares', 'liq_order_size'],
   ['minPrice', 'liq_min_price'], ['maxPrice', 'liq_max_price'], ['minSpread', 'liq_spread'],
   ['maxLossUsdc', 'liq_loss'], ['maxActions', 'liq_actions'],
 ];
@@ -169,10 +169,15 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
       return ctx.reply(t('liq_invalid'));
     }
     state.policy[field] = Number(value);
+    delete state.policy.maxInventoryShares;
     state.index++;
     if (state.index < fields.length) return prompt(ctx, state);
     // Core validates again. This check prevents an obviously inconsistent review.
     const p = state.policy;
+    // Budget / minimum price bounds all budget-feasible buys. Round up so a
+    // fractional holding is not cut short; retain the policy's 1..1e6 safety cap.
+    // Core still rejects unsupported monetary inputs and enforces spend + fees.
+    p.maxInventoryShares = Math.min(1_000_000, Math.max(1, Math.ceil(p.budgetUsdc / p.minPrice)));
     if (p.minPrice >= p.maxPrice || p.orderSizeShares > p.maxInventoryShares || p.maxLossUsdc > p.budgetUsdc) {
       state.index = 0; state.policy = { mode: p.mode, account: p.account, network: p.network, event: p.event };
       await ctx.reply(t('liq_inconsistent'));
@@ -197,6 +202,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     }
     state.index = Math.max(0, state.index - 1);
     delete state.policy[fields[state.index][0]];
+    delete state.policy.maxInventoryShares;
     await prompt(ctx, state);
   }
   async function cancel(ctx) {
@@ -256,6 +262,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
         ...a.legs.filter(l=>!l.unavailable).map(l=>`${clean(l.name)} · ${clean(l.sideName)} (${clean(l.coin)}) · ${t('liq_minimum_shares')}: ${l.minimumShares}; ${t('liq_order_label')}: ${l.size}`),
         ...(a.pairs||[]).filter(p=>!p.unavailable).map(p=>`${clean(a.legs.find(l=>l.outcomeId===p.outcomeId)?.name)} · ${t('liq_pair_net_edge')}: ${p.netMatchedEdgePerShare.toFixed(5)}`),
         ...values.map((key,i)=>`${t(['liq_network','liq_duration_label','liq_budget_label','liq_inventory_label','liq_order_label','liq_min_label','liq_max_label','liq_spread_label','liq_loss_label','liq_actions_label'][i])}: ${clean(p[key])}`),
+        ...(expectedState?.state==='LIQUIDITY_PROPOSING'?[t('liq_inventory_auto_note')]:[]),
         t('liq_budget_rule'),t('liq_risk'),t('liq_merged_book'),p.mode==='observe'?t('liq_observe_rule'):t('liq_live_rule')];
       if(!stillHere()) return false;
       const chunks=[];let part='';for(const line of lines){if(part.length+line.length+1>3500){chunks.push(part);part='';}part+=(part?'\n':'')+line;}if(part)chunks.push(part);

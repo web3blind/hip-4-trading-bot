@@ -34,7 +34,7 @@
   "liq_select_buttons": "Choose a market using the buttons above.",
   "liq_duration": "Duration in minutes (for example 30):",
   "liq_budget": "Maximum shared cumulative buy spend across ALL event sides in USDC, including pending reservations and fees (for example 100):",
-  "liq_inventory": "Maximum inventory across ALL event sides, in shares (for example 200):",
+  "liq_inventory_auto_note": "The inventory ceiling is calculated automatically: buy budget divided by minimum price, rounded up, with a safety maximum of 1,000,000 shares. The USDC budget, reservations and fees still apply.",
   "liq_order_size": "Shares per maker order (for example 10):",
   "liq_min_price": "Minimum price per share, 0 to 1 exclusive (for example 0.20):",
   "liq_max_price": "Maximum price per share, 0 to 1 exclusive (for example 0.80):",
