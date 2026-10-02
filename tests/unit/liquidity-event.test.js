@@ -13,7 +13,7 @@ test('entire event resolves active named outcomes, fallback and complementary si
   f.meta.questions[0].settledNamedOutcomes=[29];assert.equal(resolveLiquidityEvent(f.meta,f.policy.event).legs.length,6);
   for(const mutate of [m=>m.questions[0].namedOutcomes.push(30),m=>delete m.questions[0].fallbackOutcome,m=>m.outcomes.pop(),m=>m.outcomes[2].settled=true,m=>m.questions[0].settledNamedOutcomes.push(31)]) {
    const m=structuredClone(f.meta);mutate(m);assert.throws(()=>resolveLiquidityEvent(m,f.policy.event));
-   const a=await assessLiquidityEvent({...f.client,getOutcomeMeta:async()=>m},f.policy);assert.equal(a.suitability,'unsuitable');assert(a.legs.some(l=>l.unavailable));
+   const a=await assessLiquidityEvent({...f.client,getOutcomeMeta:async()=>m},f.policy);const settled=m.outcomes.some(o=>o.settled)||m.questions[0].settledNamedOutcomes.includes(31);assert.equal(a.suitability,settled?'unsuitable':'unavailable');assert(a.reasons.some(r=>r.code===(settled?'market_unsuitable':'membership_unavailable')));assert(a.legs.some(l=>l.unavailable));
   }
   assert.throws(()=>resolveLiquidityEvent(f.meta,{type:'standalone',id:30}),/Grouped member/);
  }finally{await f.close();}
@@ -41,8 +41,8 @@ for(const problem of ['empty fallback','missing fee scale','missing fees','missi
   if(problem==='insufficient budget') f.policy.budgetUsdc=30;
   if(problem==='thin depth') f.books['#321'].levels[1][0].sz='1';
   if(problem==='imbalanced depth') f.books['#320'].levels[1][0].sz='10000';
-  if(problem==='unmerged book') f.books['#321'].levels[0][0].px='.3';
-  const a=await assessLiquidityEvent(f.client,f.policy,()=>f.time);assert.equal(a.suitability,'unsuitable');assert.equal(a.legs.length,6);
+  if(problem==='unmerged book') f.books['#321'].levels[0][0].px='0.3';
+  const a=await assessLiquidityEvent(f.client,f.policy,()=>f.time);assert.equal(a.suitability,['missing fee scale','missing fees','missing deadline'].includes(problem)?'unavailable':'unsuitable');assert.equal(a.legs.length,6);
   if(problem==='low price') assert(a.legs.find(l=>l.coin==='#300').minimumShares>=10000);
   if(['empty fallback','missing fee scale'].includes(problem)) assert(a.reasons.some(r=>r.coin==='#320'));
   assert.equal(f.actions.length,0);
@@ -65,7 +65,7 @@ test('MCP → private one-use Telegram → SQLite → real HL signing covers all
   await assert.rejects(f.mcp('liquidity_request_session',f.args(),{...f.credential,scope:'read'}),/Trade scope/);
   await assert.rejects(f.mcp('liquidity_request_session',{...f.args(),coin:'#300'},f.credential),/Invalid session/);
   const s=await f.propose();assert.equal((await f.c.get(s.id)).status,'draft');assert.equal(f.actions.length,0);
-  const text=f.messages.at(-1).text;assert.match(text,/Championship/);assert.match(text,/Fallback/);assert.match(text,/YES/);assert.match(text,/NO/);assert.match(text,/conditional/i);assert(!/reward|campaign|payout/i.test(text));
+  const text=f.messages.map(m=>m.text).join('\n');assert.match(text,/Championship/);assert.match(text,/Fallback/);assert.match(text,/YES/);assert.match(text,/NO/);assert.match(text,/conditional/i);assert(!/reward|campaign|payout/i.test(text));
   const callback=f.messages.at(-1).extra.reply_markup.inline_keyboard.flat().find(b=>b.callback_data.startsWith('confirm_liquidity_session:')).callback_data;
   assert.equal(runtime.consumeConfirmation(f.owner,callback),'confirm_liquidity_session');await f.ui.confirm(f.ctx);await f.ui.confirm(f.ctx);
   assert.equal((await f.c.get(s.id)).status,'active');assert.equal(f.actions.length,0);

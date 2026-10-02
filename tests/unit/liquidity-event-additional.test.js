@@ -64,7 +64,7 @@ test('actual public Q289 metadata and all eight captured books preserve empty O3
   const assessment=await assessLiquidityEvent(Object.assign(Object.create(f.client),{getOutcomeMeta:async()=>a.meta,getOrderbook:async coin=>({...a.books[coin],time})}),{...f.policy,event:{type:'question',id:289}},()=>time);
   assert.equal(assessment.suitability,'unsuitable');
   assert(assessment.legs.filter(l=>l.fallback).every(l=>l.unavailable));
-  assert(assessment.reasons.some(r=>r.coin==='#35990'&&r.code==='leg_unavailable'));
+  assert(assessment.reasons.some(r=>r.coin==='#35990'&&r.code==='no_two_sided_book'));
   assert(!JSON.stringify(assessment).match(/reward|campaign|payout/i));
  }finally{await f.close();}
 });

@@ -63,7 +63,7 @@ export async function handleCallbackQuery(ctx) {
     if (!data) { try { await ctx.answerCallbackQuery('Confirmation expired. Open a new review.'); } catch {} return; }
   } else {
     const step = /^(mkt_(buy|sell)_pct:|lim_(buy|sell)_pct:|split_pct:|withdraw_pct:|set_amount:)/.test(data);
-    if (!step && !isApiWalletStep(data) && !/^(liq:back:|liq:pick:)/.test(data)) await invalidateUserState(chatId);
+    if (!step && !isApiWalletStep(data) && !/^(liq:back:|liq:pick:|liq:retry:)/.test(data)) await invalidateUserState(chatId);
   }
   if (isConfirm) {
     if (confirmationLocks.get(chatId)) {
@@ -116,6 +116,7 @@ export async function handleCallbackQuery(ctx) {
     if (data === 'liq:cancel') { await liquidity.cancel(ctx); return; }
     if (data === 'liq:new:observe' || data === 'liq:new:live') { await liquidity.start(ctx, data.slice(8)); return; }
     if (data.startsWith('liq:pick:')) { await liquidity.choose(ctx, data); return; }
+    if (data.startsWith('liq:retry:')) { await liquidity.retry(ctx, data.slice(10)); return; }
     if (data.startsWith('liq:back:')) { await liquidity.stepBack(ctx, data.slice(9)); return; }
     if (data.startsWith('liq:session:')) { await liquidity.session(ctx, data.slice(12)); return; }
     if (data.startsWith('liq:review:')) { await liquidity.showReview(ctx, data.slice(11)); return; }

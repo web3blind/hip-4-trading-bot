@@ -62,7 +62,7 @@ for(const language of ['en','ru']){
     const row=lines.find(l=>l.includes(leg.coin)&&l.includes(t('liq_minimum_shares')));assert(row);
     assert(row.includes(leg.name)&&row.includes(leg.sideName),row);
    }
-   const reason=lines.find(l=>l.includes('#321')&&l.includes(t('liq_assessment_leg_unavailable')));
+   const reason=lines.find(l=>l.includes('#321')&&l.includes(t('liq_assessment_no_two_sided_book')));
    assert.match(reason,/Fallback.*NO.*#321/);assert.equal(f.actions.length,0);
   }finally{await f.close();}
  });
@@ -116,15 +116,15 @@ test('standalone binary selects both sides; Back preserves event choice instead 
 test('deficient fallback named before launch; no confirmation when unsuitable',async()=>{
  const f=eventHarness();try {
   f.books['#320'].levels=[[],[]];const s=await f.propose();assert.equal((await f.c.get(s.id)).assessment.suitability,'unsuitable');
-  assert.match(f.messages.at(-1).text,/Fallback/);assert(f.messages.at(-1).text.includes('#320'));
+  const text=f.messages.map(m=>m.text).join('\n');assert.match(text,/Fallback/);assert(text.includes('#320'));
   assert(!buttons(f).some(b=>b.callback_data.startsWith('confirm_liquidity_session:')));await f.ui.confirm(f.ctx);assert.equal((await f.c.get(s.id)).status,'draft');assert.equal(f.actions.length,0);
  }finally{await f.close();}
 });
 test('missing mandatory fallback shows both deficient sides and unknown minimum before confirmation',async()=>{
  const f=eventHarness();try {
   delete f.meta.questions[0].fallbackOutcome;const s=await f.propose();
-  assert.equal(s.assessment.suitability,'unsuitable');assert.equal(s.assessment.requiredBudgetUsdc,null);assert.equal(s.assessment.minimumBudgetUsdc,null);assert.equal(s.legs.filter(l=>l.fallback).length,2);
-  const text=f.messages.map(m=>m.text).join('\n');assert.match(text,/Fallback missing/);assert.match(text,/Unsuitable/);assert(!buttons(f).some(b=>b.callback_data.startsWith('confirm_liquidity_session:')));assert.equal(f.actions.length,0);
+  assert.equal(s.assessment.suitability,'unavailable');assert.equal(s.assessment.requiredBudgetUsdc,null);assert.equal(s.assessment.minimumBudgetUsdc,null);assert.equal(s.legs.filter(l=>l.fallback).length,2);
+  const text=f.messages.map(m=>m.text).join('\n');assert.match(text,/Fallback missing/);assert.match(text,/Assessment unavailable/);assert(!buttons(f).some(b=>b.callback_data.startsWith('confirm_liquidity_session:')));assert.equal(f.actions.length,0);
  }finally{await f.close();}
 });
 test('group, foreign owner, stale or changed client binding cannot grant',async()=>{

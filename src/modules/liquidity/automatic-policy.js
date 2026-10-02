@@ -10,7 +10,7 @@ export async function automaticLiquidityPolicy(client, inputs, now=Date.now) {
     // cumulative cash, loss and all-member checks remain independently binding.
     maxActions:1000});
   const evidence=await assessLiquidityEvent(client,policy,now);
-  if(!evidence.legs.length || evidence.legs.some(l=>l.unavailable) ||
+  if(evidence.suitability==='unavailable' || !evidence.legs.length || evidence.legs.some(l=>l.unavailable) ||
       evidence.reasons.some(r=>r.code==='fees_unavailable' || r.code==='stale_event_snapshot')) {
     const error=new Error('Automatic liquidity evidence unavailable');
     error.assessment=evidence;

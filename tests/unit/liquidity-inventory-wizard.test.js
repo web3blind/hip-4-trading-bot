@@ -79,7 +79,7 @@ for(const defect of ['fallback','fees','stale','near deadline','narrow'])test(`a
   if(defect==='narrow')for(const book of Object.values(f.books))book.levels=[[{px:'0.499',sz:'1000'}],[{px:'0.501',sz:'1000'}]];
   await enter(f,await start(f));const [s]=await f.c.list();
   if(defect==='narrow'){assert(s);assert.equal(s.assessment.suitability,'unsuitable');assert.equal(s.legs.length,6);}
-  else {assert.equal(s,undefined);assert.match(f.messages.at(-1).text,/Automatic assessment blocked/);}
+  else {assert.equal(s,undefined);assert.match(f.messages.at(-1).text,defect==='fees'||defect==='stale'?/Assessment unavailable/:/Unsuitable/);assert.equal(runtime.userStates.get(f.owner).state,'LIQUIDITY_RETRY');assert(buttons(f).some(b=>b.callback_data.startsWith('liq:retry:')));}
   assert(!buttons(f).some(b=>b.callback_data.startsWith('confirm_liquidity')));assert.equal(f.actions.length,0);
  }finally{await f.close();}
 });

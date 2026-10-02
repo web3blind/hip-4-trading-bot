@@ -10,7 +10,7 @@ import {createLiquidityMcp} from '../../src/modules/liquidity/mcp.js';
 import * as runtime from '../../src/modules/bot/runtime.js';
 import {setSessionConfig} from '../../src/modules/config.js';
 import {initDatabase} from '../../src/modules/database.js';
-export function eventHarness({language='en',standalone=false,routed=false}={}) {
+export function eventHarness({language='en',standalone=false,routed=false,credentialCurrent}={}) {
  const dir=mkdtempSync(join(tmpdir(),'liq-event-connected-')),owner=77;
  const client=new HLClient('0x'+'1'.repeat(64),'testnet'),actions=[],orders=new Map(),fills=[],balances=new Map(),books={};
  let time=Date.now(),valid=true,spot=100,exchangeMode='normal';
@@ -44,7 +44,7 @@ export function eventHarness({language='en',standalone=false,routed=false}={}) {
   assess:routedCoordinator.assessLiquiditySession,propose:routedCoordinator.proposeLiquiditySession,
   approve:routedCoordinator.approveLiquiditySession,stop:routedCoordinator.stopLiquiditySession,
   tick:routedCoordinator.tickLiquidity,shutdown:routedCoordinator.shutdownLiquidity,
- }:createLiquidityCoordinator({getClient:()=>client,getOwner:()=>owner,dataDir:dir,now:()=>time,locks:new Map(),conflicts:()=>false,credentialCurrent:async()=>valid});
+ }:createLiquidityCoordinator({getClient:()=>client,getOwner:()=>owner,dataDir:dir,now:()=>time,locks:new Map(),conflicts:()=>false,credentialCurrent:credentialCurrent || (async()=>valid)});
  const api={listLiquiditySessions:()=>c.list(),getLiquiditySession:id=>c.get(id),assessLiquiditySession:id=>c.assess(id),proposeLiquiditySession:(p,o)=>c.propose(p,o),approveLiquiditySession:(id,o)=>c.approve(id,o),stopLiquiditySession:(id,o)=>c.stop(id,o)};
  const ui=createLiquidityFeature({service:async()=>api}),messages=[];
  const ctx={chat:{id:owner,type:'private'},from:{id:owner},messages,editMessageText:async(text,extra)=>messages.push({text,extra}),reply:async(text,extra)=>messages.push({text,extra}),answerCallbackQuery:async()=>{}};

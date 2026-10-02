@@ -92,11 +92,17 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     return true;
   }
   async function failure(ctx, t) { await screen(ctx, t('liq_unavailable'), back(t)); }
-  async function serviceFailure(ctx, t, error) {
+  async function serviceFailure(ctx, t, error, keyboard=back(t)) {
     if(error?.assessment) {
       const a=error.assessment;
       const rows=a.reasons.map(r=>{const l=a.legs.find(l=>l.coin===r.coin);return `${l?`${clean(l.name)} · ${clean(l.sideName)} (${clean(l.coin)}) · `:''}${t('liq_assessment_'+r.code)}`;});
-      return screen(ctx,[t('liq_automatic_blocked'),...rows].join('\n'),back(t));
+      const state=runtime.userStates.get(ctx.chat.id),binding=runtime.runtimeBinding(),client=runtime.hlClient;
+      const chunks=[];let part='';
+      for(const row of [t('liq_suitability_'+a.suitability),...rows]){if(part.length+row.length+1>3500){chunks.push(part);part='';}part+=(part?'\n':'')+row;}if(part)chunks.push(part);
+      const stillHere=()=>runtime.userStates.get(ctx.chat.id)===state && runtime.runtimeBinding()===binding && runtime.hlClient===client && !runtime.runtimeTransitioning;
+      for(const chunk of chunks.slice(0,-1)){if(!stillHere())return;await ctx.reply(chunk);}
+      if(stillHere())return screen(ctx,chunks.at(-1),keyboard);
+      return;
     }
     const message = error?.message;
     const category = ['Short-expiry price market not supported live', 'Unavailable USDC outcome',
@@ -106,7 +112,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
         'Account has unresolved liquidity session', 'Outcome belongs to another bundle'].includes(message) ? 'liq_account_blocked'
       : /^Invalid (?:durationMinutes|budgetUsdc|maxInventoryShares|orderSizeShares|minPrice|maxPrice|minSpread|maxLossUsdc|maxActions|liquidity policy fields)$/.test(message || '') || message === 'Inconsistent liquidity bounds' ? 'liq_limits_blocked'
       : null;
-    await screen(ctx, category ? t(category) : t('liq_unavailable'), back(t));
+    await screen(ctx, category ? t(category) : t('liq_unavailable'), keyboard);
   }
   async function menu(ctx) {
     if (!await guard(ctx)) return;
@@ -181,20 +187,39 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
       await ctx.reply(t('liq_inconsistent'));
       return prompt(ctx, state);
     }
+    return propose(ctx,state,t);
+  }
+  function retryKeyboard(state,t) {
+    state.state='LIQUIDITY_RETRY';state.token=randomBytes(8).toString('hex');
+    return new InlineKeyboard().text(t('liq_retry'),`liq:retry:${state.token}`).row()
+      .text(t('back'),`liq:back:${state.token}`).text(t('cancel'),'liq:cancel');
+  }
+  async function retry(ctx,token) {
+    if(!await guard(ctx))return;
+    const state=runtime.userStates.get(ctx.chat.id),t=await tr();
+    if(state?.state!=='LIQUIDITY_RETRY'||token!==state.token||!current(ctx,state))return screen(ctx,t('session_expired'),back(t));
+    state.state='LIQUIDITY_PROPOSING';state.token=randomBytes(8).toString('hex');
+    return propose(ctx,state,t);
+  }
+  async function propose(ctx,state,t) {
+    const p=state.policy;
     state.state = 'LIQUIDITY_PROPOSING';
     try {
+      if(state.draftId){await (await service()).stopLiquiditySession(state.draftId,{ownerId:ctx.from.id,reason:'owner_stop'});delete state.draftId;}
+      if(!current(ctx,state))return;
       const {automaticLiquidityPolicy}=await import('../../liquidity/automatic-policy.js');
       const derived=await automaticLiquidityPolicy(state.client,p,now);
       if(!current(ctx,state))return;
       const s = await (await service()).proposeLiquiditySession(derived, { requestId: randomBytes(16).toString('hex') });
       if (!current(ctx, state)) {await (await service()).stopLiquiditySession(s.id,{ownerId:ctx.from.id,reason:'owner_stop'});return;}
       return showReview(ctx, s.id, state);
-    } catch (error) { if (current(ctx, state)) { await runtime.invalidateUserState(ctx.chat.id); return serviceFailure(ctx, t, error); } }
+    } catch (error) { if (current(ctx, state)) return serviceFailure(ctx, t, error, retryKeyboard(state,t)); }
   }
   async function stepBack(ctx, token) {
     if (!await guard(ctx)) return;
     const state = runtime.userStates.get(ctx.chat.id), t = await tr();
-    if (state?.state !== 'LIQUIDITY_INPUT' || token !== state.token || !current(ctx, state)) return screen(ctx, t('session_expired'), back(t));
+    if (!['LIQUIDITY_INPUT','LIQUIDITY_RETRY'].includes(state?.state) || token !== state.token || !current(ctx, state)) return screen(ctx, t('session_expired'), back(t));
+    if(state.state==='LIQUIDITY_RETRY'){state.state='LIQUIDITY_INPUT';state.index=fields.length;}
     if (state.index === 0) {
       delete state.policy.event;
       state.state = 'LIQUIDITY_CATALOG'; state.token = randomBytes(8).toString('hex');
@@ -260,11 +285,11 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
         `${t('liq_spendable_spot')}: ${a.availableUsdc==null?t('liq_unknown'):a.availableUsdc.toFixed(2)} USDC`,
         `${t('liq_quote_deadline')}: ${a.legs.every(l=>Number.isSafeInteger(l.expiry))?new Date(Math.min(...a.legs.map(l=>l.expiry))-3600000).toISOString():t('liq_unknown')}`,
         ...a.reasons.map(r=>{const leg=a.legs.find(l=>l.coin===r.coin);return `${r.coin?(leg?`${clean(leg.name)} · ${clean(leg.sideName)} (${clean(r.coin)})`:clean(r.coin))+' · ':''}${t('liq_assessment_'+r.code)}${r.detail?' · '+clean(r.detail):''}`;}),
-        ...a.legs.filter(l=>!l.unavailable).map(l=>`${clean(l.name)} · ${clean(l.sideName)} (${clean(l.coin)}) · ${t('liq_minimum_shares')}: ${l.minimumShares}; ${t('liq_order_label')}: ${l.size}; ${t('liq_quote_prices')}: ${l.bid} / ${l.ask}; ${t('liq_available_spread')}: ${(l.ask-l.bid).toFixed(5)}; ${t('liq_fee_bound')}: ${l.feeRate}`),
+        ...a.legs.filter(l=>!l.unavailable).map(l=>`${clean(l.name)} · ${clean(l.sideName)} (${clean(l.coin)}) · ${t('liq_minimum_shares')}: ${l.minimumShares}; ${t('liq_order_label')}: ${l.size}; ${t('liq_quote_prices')}: ${l.bid} / ${l.ask}; ${t('liq_available_spread')}: ${(l.ask-l.bid).toFixed(5)}; ${t('liq_fee_bound')}: ${(Math.ceil(l.feeRate*1e7)/1e5).toFixed(5)}%`),
         ...(a.pairs||[]).filter(p=>!p.unavailable).map(p=>`${clean(a.legs.find(l=>l.outcomeId===p.outcomeId)?.name)} · ${t('liq_pair_net_edge')}: ${p.netMatchedEdgePerShare.toFixed(5)}`),
         ...values.filter(key=>key!=='orderSizeShares').map(key=>`${t({network:'liq_network',durationMinutes:'liq_duration_label',budgetUsdc:'liq_budget_label',maxInventoryShares:'liq_inventory_label',minPrice:'liq_min_label',maxPrice:'liq_max_label',minSpread:'liq_spread_label',maxLossUsdc:'liq_loss_label',maxActions:'liq_actions_label'}[key])}: ${clean(p[key])}${key==='minSpread'?` (${(p[key]*100).toFixed(3)} ${t('liq_percentage_points')})`:''}`),
         ...(expectedState?.state==='LIQUIDITY_PROPOSING'?[t('liq_inventory_auto_note'),t('liq_automatic_note')]:[]),
-        t('liq_budget_rule'),t('liq_risk'),t('liq_merged_book'),p.mode==='observe'?t('liq_observe_rule'):t('liq_live_rule')];
+        t('liq_fee_bound_note'),t('liq_budget_rule'),t('liq_risk'),t('liq_merged_book'),p.mode==='observe'?t('liq_observe_rule'):t('liq_live_rule')];
       if(!stillHere()) return false;
       const chunks=[];let part='';for(const line of lines){if(part.length+line.length+1>3500){chunks.push(part);part='';}part+=(part?'\n':'')+line;}if(part)chunks.push(part);
       for(const chunk of chunks.slice(0,-1)){if(!stillHere())return false;await ctx.reply(chunk);}
@@ -275,13 +300,22 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
         // Confirmation installs its own unique snapshot; retain ownership so a
         // failed send can clear only this review, never a newer wizard.
         reviewState=runtime.userStates.get(ctx.chat.id);
+        if(expectedState?.policy)reviewState.retryInputs=expectedState;
         kb.text(t('liq_approve'),callback).row();
+      }
+      if(a.suitability!=='conditional' && expectedState?.policy && now()<expectedState.expiresAt && bindingMatches(expectedState.policy) && expectedState.client===runtime.hlClient && stillHere()) {
+        runtime.userStates.set(ctx.chat.id,expectedState);expectedState.draftId=id;
+        await screen(ctx,chunks.at(-1),retryKeyboard(expectedState,t));return true;
       }
       kb.text(t('cancel'),'liq:cancel');
       await screen(ctx,chunks.at(-1),kb);
       return stillHere();
-    } catch {
+    } catch (error) {
       if(stillHere()) {
+        if(reviewState.state==='LIQUIDITY_REVIEW_LOADING' && expectedState?.policy && now()<expectedState.expiresAt && bindingMatches(expectedState.policy) && expectedState.client===runtime.hlClient) {
+          runtime.userStates.set(ctx.chat.id,expectedState);expectedState.draftId=id;
+          return serviceFailure(ctx,t,error,retryKeyboard(expectedState,t));
+        }
         try { await failure(ctx, t); }
         finally {
           if(runtime.userStates.get(ctx.chat.id)===reviewState) await runtime.invalidateUserState(ctx.chat.id);
@@ -299,8 +333,18 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
       if (runtime.userStates.get(ctx.chat.id) !== state || !s || s.status !== 'draft' || !bindingMatches(s.policy) || runtime.runtimeTransitioning) return screen(ctx, t('session_expired'), back(t));
       await api.approveLiquiditySession(state.sessionId, { ownerId: ctx.from.id });
       await session(ctx, state.sessionId);
-    } catch (error) { await serviceFailure(ctx, t, error); }
-    finally { await runtime.invalidateUserState(ctx.chat.id); }
+    } catch (error) {
+      const inputs=state.retryInputs;
+      if(inputs && runtime.userStates.get(ctx.chat.id)===state && bindingMatches(inputs.policy) && inputs.client===runtime.hlClient && now()<inputs.expiresAt) {
+        let draft;try{draft=await (await service()).getLiquiditySession(state.sessionId);}catch{/* Unknown session state must not permit replacement. */}
+        if(draft?.status==='draft' && runtime.userStates.get(ctx.chat.id)===state && bindingMatches(inputs.policy) && inputs.client===runtime.hlClient && now()<inputs.expiresAt){
+          inputs.draftId=state.sessionId;runtime.userStates.set(ctx.chat.id,inputs);
+          return serviceFailure(ctx,t,error,retryKeyboard(inputs,t));
+        }
+      }
+      await serviceFailure(ctx, t, error);
+    }
+    finally { if(runtime.userStates.get(ctx.chat.id)===state)await runtime.invalidateUserState(ctx.chat.id); }
   }
   async function stop(ctx, id) {
     if (!await guard(ctx)) return;
@@ -311,7 +355,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
       await session(ctx, id);
     } catch { await failure(ctx, t); }
   }
-  return { menu, campaigns, start, choose, input, stepBack, cancel, session, showReview, confirm, stop };
+  return { menu, campaigns, start, choose, input, retry, stepBack, cancel, session, showReview, confirm, stop };
 }
 
 export async function showLiquiditySessionReview(ctx, id, expectedState) {

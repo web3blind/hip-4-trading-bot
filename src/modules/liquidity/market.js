@@ -6,12 +6,12 @@ const digest = v => createHash('sha256').update(JSON.stringify(v)).digest('hex')
 export function market(meta, coin, at, live) {
   const {outcomeId,side}=coinToOutcome(coin);
   const spec=meta?.outcomes?.find(x=>x.outcome===outcomeId);
-  if (!spec || spec.quoteToken !== 'USDC') throw new Error('Unavailable USDC outcome');
+  if (!spec || spec.quoteToken !== 'USDC') throw Object.assign(new Error('Unavailable USDC outcome'),{code:'market_unsuitable'});
   const feeScale=num(spec.deployerFeeScale);
   if(live && (feeScale===null || feeScale<0 || feeScale>10)) throw new Error('Outcome fee scale unavailable');
   const question=meta?.questions?.find(q=>q.question===spec.question || q.namedOutcomes?.includes(outcomeId) || q.fallbackOutcome===outcomeId);
   const desc=`${spec.description||''}|${question?.description||''}`;
-  if (live && /(?:priceBinary|binaryPrice|priceTouch|priceBucket|priceAbove|priceBelow|priceRange|targetPrice:|priceThresholds:)/i.test(`${spec.name||''}|${question?.name||''}|${desc}`)) throw new Error('Short-expiry price market not supported live');
+  if (live && /(?:priceBinary|binaryPrice|priceTouch|priceBucket|priceAbove|priceBelow|priceRange|targetPrice:|priceThresholds:)/i.test(`${spec.name||''}|${question?.name||''}|${desc}`)) throw Object.assign(new Error('Short-expiry price market not supported live'),{code:'market_unsuitable'});
   const parse = value => {
     if(typeof value==='number' && Number.isSafeInteger(value) && value>1e12) return value;
     if(typeof value!=='string') return null;
@@ -31,16 +31,19 @@ export function market(meta, coin, at, live) {
   const explicit=spec.expiry ?? spec.expiryTime ?? question?.expiry ?? question?.expiryTime ?? field('expiry');
   const final=explicit ?? resolution;
   const times=[final,resolution,decision].filter(v=>v!=null).map(parse);
-  if(!times.length || times.some(t=>!Number.isSafeInteger(t) || t<=at+3600000)) throw new Error('Market timing unavailable or inside safety buffer');
+  if(!times.length || times.some(t=>!Number.isSafeInteger(t))) throw new Error('Market timing unavailable');
+  if(times.some(t=>t<=at+3600000)) throw Object.assign(new Error('Market inside safety buffer'),{code:'market_unsuitable'});
   // Scheduled start/decision are not authoritative resolution or admission cutoffs.
   const expiry=Math.min(...times);
-  if (spec.settled || spec.isSettled || question?.settledNamedOutcomes?.includes(outcomeId)) throw new Error('Settled outcome');
+  if (spec.settled || spec.isSettled || question?.settledNamedOutcomes?.includes(outcomeId)) throw Object.assign(new Error('Settled outcome'),{code:'market_unsuitable'});
   return {expiry,feeScale,timing:{quoteDeadline:expiry,decisionDeadline:decision==null?null:parse(decision),resolutionDeadline:resolution==null?null:parse(resolution),explicitExpiry:explicit==null?null:parse(explicit)},fingerprint:digest({spec,question,template:meta?.templates?.find(t=>t.id===question?.name),side})};
 }
 export function bookQuote(book,at,p) {
   const time=num(book?.time);
   const bid=num(book?.levels?.[0]?.[0]?.px), ask=num(book?.levels?.[1]?.[0]?.px);
-  if (!Number.isSafeInteger(time) || time>at+1000 || at-time>5000 || bid===null || ask===null || bid<=0 || ask>=1 || bid>=ask || ask-bid<p.minSpread || bid<p.minPrice || ask>p.maxPrice) throw new Error('Stale, crossed or out-of-corridor book');
+  if(Number.isSafeInteger(time) && time<=at+1000 && at-time<=5000 && Array.isArray(book?.levels) && book.levels.length===2 && book.levels.every(Array.isArray) && book.levels.some(l=>l.length===0)) throw Object.assign(new Error('No two-sided book'),{code:'no_two_sided_book'});
+  if (!Number.isSafeInteger(time) || time>at+1000 || at-time>5000 || bid===null || ask===null) throw Object.assign(new Error('Stale or malformed book'),{code:'book_data_unavailable'});
+  if (bid<=0 || ask>=1 || bid>=ask || ask-bid<p.minSpread || bid<p.minPrice || ask>p.maxPrice) throw Object.assign(new Error('Crossed or out-of-corridor book'),{code:'book_unsuitable'});
   return {bid,ask,time};
 }
 export function feeEvidence(fees,scale) {
@@ -50,6 +53,6 @@ export function feeEvidence(fees,scale) {
   if(fees?.userSpotAddRate!=null&&makerAccount===null || fees?.feeSchedule?.spotAdd!=null&&makerBase===null || typeof scale!=='number'||!Number.isFinite(scale)||scale<0||scale>10) throw Error('Maker fee evidence unknown');
   // Outcomes never pay maker rebates: negative rates are clamped to zero cost.
   const rate=2*Math.max(0,accountRate,baseRate,makerAccount??0,makerBase??0)*(scale+Math.max(scale,1));
-  if(rate>FEE_RESERVE) throw new Error('Outcome fee exceeds reserve');
+  if(rate>FEE_RESERVE) throw Object.assign(new Error('Outcome fee exceeds reserve'),{code:'fee_exceeds_reserve'});
   return rate;
 }

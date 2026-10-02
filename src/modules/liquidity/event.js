@@ -20,11 +20,13 @@ export function resolveLiquidityEvent(meta,event) {
   if (event.type==='question' && q.length!==1) throw Error('Event missing or duplicated');
   const question=q[0];
   const ids=question ? [...(question.namedOutcomes || []),question.fallbackOutcome] : [event.id];
-  if (!ids.length || ids.some(id=>!Number.isSafeInteger(id)||id<0) || new Set(ids).size!==ids.length || question && (!Array.isArray(question.namedOutcomes) || !question.namedOutcomes.length || !Array.isArray(question.settledNamedOutcomes) || ids.some(id=>question.settledNamedOutcomes.includes(id)))) throw Error('Invalid, duplicate or settled event membership');
+  if (!ids.length || ids.some(id=>!Number.isSafeInteger(id)||id<0) || new Set(ids).size!==ids.length || question && (!Array.isArray(question.namedOutcomes) || !question.namedOutcomes.length || !Array.isArray(question.settledNamedOutcomes))) throw Error('Invalid, duplicate or settled event membership');
+  if(question && ids.some(id=>question.settledNamedOutcomes.includes(id)))throw Object.assign(Error('Settled event member'),{code:'market_unsuitable'});
   if (!question && meta.questions.some(q=>q.namedOutcomes?.includes(event.id)||q.settledNamedOutcomes?.includes(event.id)||q.fallbackOutcome===event.id)) throw Error('Grouped member is not a standalone event');
   const specs=ids.map(id=>{
     const matches=meta.outcomes.filter(o=>o.outcome===id);
-    if(matches.length!==1 || matches[0].settled || matches[0].isSettled) throw Error('Missing, duplicate or settled event outcome');
+    if(matches.length!==1) throw Error('Missing or duplicate event outcome');
+    if(matches[0].settled || matches[0].isSettled)throw Object.assign(Error('Settled event outcome'),{code:'market_unsuitable'});
     return matches[0];
   });
   const legs=specs.flatMap(o=>[0,1].map(side=>({coin:'#'+(o.outcome*10+side),outcomeId:o.outcome,side,
@@ -35,12 +37,21 @@ export function resolveLiquidityEvent(meta,event) {
     members:ids,fingerprint:hash({question,specs})};
 }
 
+// Bounded public reads/preparation; never use this helper for exchange writes.
+async function mapReads(items, fn) {
+  const results=new Array(items.length);let index=0;
+  await Promise.all(Array.from({length:Math.min(6,items.length)},async()=>{
+    while(index<items.length){const i=index++;results[i]=await fn(items[i],i);}
+  }));
+  return results;
+}
+const dataCodes=new Set(['membership_unavailable','fees_unavailable','capital_unavailable','inventory_unavailable','leg_unavailable','book_data_unavailable','stale_event_snapshot']);
 export async function assessLiquidityEvent(client,policy,now=Date.now) {
   const meta=await client.getOutcomeMeta();let resolved;
   try {resolved=resolveLiquidityEvent(meta,policy.event);} catch(error) {
     const q=meta?.questions?.find(q=>q.question===policy.event?.id),ids=policy.event?.type==='question'?[...(Array.isArray(q?.namedOutcomes)?q.namedOutcomes:[]),q?.fallbackOutcome]:[policy.event?.id];
     const legs=ids.flatMap(id=>[0,1].map(side=>({coin:Number.isSafeInteger(id)?'#'+(10*id+side):null,outcomeId:id,side,name:id==null?'Fallback missing':meta?.outcomes?.find(o=>o.outcome===id)?.name || `Outcome ${id}`,sideName:side===0?'YES':'NO',fallback:id===q?.fallbackOutcome,unavailable:true})));
-    return {event:policy.event,label:label(q?.name)||`${policy.event?.type} ${policy.event?.id}`,legs,members:ids,fingerprint:hash({q,ids,legs}),observedAt:now(),suitability:'unsuitable',minimumBudgetUsdc:null,requiredBudgetUsdc:null,reasons:[{code:'membership_unavailable',detail:error.message}]};
+    return {event:policy.event,label:label(q?.name)||`${policy.event?.type} ${policy.event?.id}`,legs,members:ids,fingerprint:hash({q,ids,legs}),observedAt:now(),suitability:error.code==='market_unsuitable'?'unsuitable':'unavailable',minimumBudgetUsdc:null,requiredBudgetUsdc:null,reasons:[{code:error.code || 'membership_unavailable',detail:error.message}]};
   }
   const reasons=[],legs=[];let fees,available,balances;
   try {fees=await client.getUserFees();} catch {reasons.push({code:'fees_unavailable'});}
@@ -53,10 +64,10 @@ export async function assessLiquidityEvent(client,policy,now=Date.now) {
     }
     try {const orders=await client.getOpenOrders(policy.account);if(!Array.isArray(orders)) throw Error();for(const leg of resolved.legs) if(orders.some(o=>o.coin===leg.coin || o.coin==='+'+leg.coin.slice(1))) reasons.push({coin:leg.coin,code:'existing_orders'});} catch {reasons.push({code:'inventory_unavailable'});}
   }
-  for(const leg of resolved.legs) {
+  const candidates=await mapReads(resolved.legs,async leg=>{
     try {
       const m=market(meta,leg.coin,now(),policy.mode==='live');
-      const q=bookQuote(await client.getOrderbook(leg.coin),now(),policy);
+      const q=bookQuote(await client.getOrderbook(leg.coin),now(),{...policy,minSpread:0,minPrice:0,maxPrice:1});
       const rate=feeEvidence(fees,m.feeScale);
       const spec=meta.outcomes.find(o=>o.outcome===leg.outcomeId);
       const precision=spec.sideSpecs?.[leg.side]?.szDecimals ?? spec.szDecimals;
@@ -68,9 +79,26 @@ export async function assessLiquidityEvent(client,policy,now=Date.now) {
       const prepared=await client.prepareMakerOrder({coin:leg.coin,isBuy:true,price:q.bid,size});
       const sell=await client.prepareMakerOrder({coin:leg.coin,isBuy:false,price:q.ask,size});
       const minimum=await client.prepareMakerOrder({coin:leg.coin,isBuy:true,price:q.bid,size:minimumShares});
-      if(prepared.orderType!=='PostOnly'||sell.orderType!=='PostOnly'||prepared.coin!==leg.coin||sell.coin!==leg.coin||prepared.size!==sell.size||prepared.size<size-1e-7||prepared.price*prepared.size<10-1e-7||sell.price*sell.size<10-1e-7||prepared.price<policy.minPrice||sell.price>policy.maxPrice||sell.price<=prepared.price) throw Error('Rounded maker legs fail minimum or corridor');
+      if(prepared.orderType!=='PostOnly'||sell.orderType!=='PostOnly'||prepared.coin!==leg.coin||sell.coin!==leg.coin||prepared.size!==sell.size||prepared.size<size-1e-7||prepared.price*prepared.size<10-1e-7||sell.price*sell.size<10-1e-7||prepared.price<policy.minPrice||sell.price>policy.maxPrice||sell.price<=prepared.price) throw Object.assign(Error('Rounded maker legs fail minimum or corridor'),{code:'rounded_legs_unsuitable'});
       if(!Number.isFinite(prepared.maxSpend)||prepared.maxSpend<prepared.price*prepared.size*(1+rate)-1e-7||!Number.isFinite(minimum.maxSpend)) throw Error('Maker reserve unavailable');
-      const book=await client.getOrderbook(leg.coin),fresh=bookQuote(book,now(),policy);
+      return {leg,m,rate,minimumShares,prepared,sell,minimum};
+    } catch(error) {return {leg,error};}
+  });
+  // Refresh AFTER all preparation: slow metadata/rounding must not age earlier legs.
+  const refreshed=await mapReads(candidates,async candidate=>{
+    if(candidate.error)return candidate;
+    try {return {...candidate,book:await client.getOrderbook(candidate.leg.coin)};}
+    catch(error){return {...candidate,error};}
+  });
+  const snapshotAt=now();
+  for(const candidate of refreshed) {
+    const {leg,m,rate,minimumShares,prepared,sell,minimum,book}=candidate;
+    try {
+      if(candidate.error)throw candidate.error;
+      market(meta,leg.coin,snapshotAt,policy.mode==='live');
+      const fresh=bookQuote(book,snapshotAt,{...policy,minSpread:0,minPrice:0,maxPrice:1});
+      if(fresh.ask-fresh.bid<policy.minSpread)reasons.push({coin:leg.coin,code:'spread_below_policy'});
+      if(fresh.bid<policy.minPrice||fresh.ask>policy.maxPrice)reasons.push({coin:leg.coin,code:'price_outside_policy'});
       if(prepared.price!==fresh.bid||sell.price!==fresh.ask)throw Error('Book changed during assessment');
       const bidDepth=Number(book.levels[0][0].sz),askDepth=Number(book.levels[1][0].sz);
       if(!Number.isFinite(bidDepth)||!Number.isFinite(askDepth)||bidDepth<=0||askDepth<=0) throw Error('Depth unavailable');
@@ -81,7 +109,7 @@ export async function assessLiquidityEvent(client,policy,now=Date.now) {
       legs.push({...leg,...fresh,expiry:m.expiry,timing:m.timing,feeRate:rate,minimumShares,size:prepared.size,
         minReserve:minimum.maxSpend,
         reserve:prepared.maxSpend,bidDepth,askDepth,netRoundTripSpread});
-    } catch(error) {reasons.push({code:'leg_unavailable',coin:leg.coin,detail:error.message});legs.push({...leg,unavailable:true});}
+    } catch(error) {const code=['book_data_unavailable','book_unsuitable','no_two_sided_book','market_unsuitable','fee_exceeds_reserve','rounded_legs_unsuitable'].includes(error.code)?error.code:'leg_unavailable';reasons.push({code,coin:leg.coin,detail:error.message});legs.push({...leg,unavailable:true});}
   }
   const valid=legs.every(l=>!l.unavailable);
   const minimumBudgetUsdc=valid?legs.reduce((n,l)=>n+l.minReserve,0):null;
@@ -101,5 +129,5 @@ export async function assessLiquidityEvent(client,policy,now=Date.now) {
   const blocked=reasons.length>0;
   reasons.push({code:'imbalance_and_adverse_selection'});
   return {...resolved,legs,pairs,observedAt:now(),minimumBudgetUsdc,requiredBudgetUsdc,availableUsdc:available,
-    suitability:blocked?'unsuitable':'conditional',reasons};
+    suitability:reasons.some(r=>dataCodes.has(r.code))?'unavailable':blocked?'unsuitable':'conditional',reasons};
 }

@@ -180,13 +180,25 @@ export function createLiquidityService({store,ownerId,now=Date.now,authorize=asy
         if(!Array.isArray(open) || open.some(o=>coins(s).some(coin=>o.coin===coin || o.coin==='+'+coin.slice(1)))) throw new Error('Foreign orders or unavailable open orders');
         const fees=await client.getUserFees();for(const member of m.members || [m]) feeEvidence(fees,member.feeScale);
       }
-      if(s.policy.event) {const assessment=await assessLiquidityEvent(client,s.policy,now);if(digest(assessment.legs.map(l=>[l.coin,l.bid,l.ask,l.size,l.feeRate,l.reserve]))!==digest(s.assessment.legs.map(l=>[l.coin,l.bid,l.ask,l.size,l.feeRate,l.reserve]))) throw Error('Assessment changed; review again');if(assessment.fingerprint!==s.membershipFingerprint || assessment.suitability==='unsuitable') throw Error('Event unsuitable: '+assessment.reasons.map(r=>r.code).join(', '));s.assessment=assessment;}
+      if(s.policy.event) {
+        const assessment=await assessLiquidityEvent(client,s.policy,now);
+        if(assessment.fingerprint!==s.membershipFingerprint)throw Error('Event metadata changed');
+        if(assessment.suitability!=='conditional')throw Object.assign(Error('Event assessment blocked: '+assessment.reasons.map(r=>r.code).join(', ')),{assessment});
+        if(digest(assessment.legs.map(l=>[l.coin,l.bid,l.ask,l.size,l.feeRate,l.reserve]))!==digest(s.assessment.legs.map(l=>[l.coin,l.bid,l.ask,l.size,l.feeRate,l.reserve])))throw Error('Assessment changed; review again');
+        s.assessment=assessment;
+      }
       if(await authorize(snapshot(s))!==true) throw Error('Authorization changed');
+      // No awaits after this point: credential validation may have aged the
+      // assessment or any mandatory book while the owner grant was pending.
+      const activationAt=now();
+      if(s.policy.event && (!Number.isFinite(s.assessment.observedAt) || activationAt-s.assessment.observedAt>5000 || s.assessment.observedAt>activationAt+1000 ||
+        coins(s).some(coin=>{const leg=s.assessment.legs.find(l=>l.coin===coin);return !leg || leg.unavailable || !Number.isFinite(leg.time) || activationAt-leg.time>5000 || leg.time>activationAt+1000;})))
+        throw Error('Assessment expired; review again');
       if(store.get(id)?.stopRequested) throw new Error('Session stopped during approval');
       binding(s,client);
-      if(now()>=m.expiry-3600000) throw new Error('Market expiry near');
-      s.market=m;s.startedAt=now();s.expiresAt=Math.min(s.startedAt+s.policy.durationMinutes*60000,m.expiry-3600000);s.status=s.policy.mode==='live'?'active':'observing';
-      if(s.expiresAt<=now()) throw new Error('Session expired during approval');return save(s);
+      if(activationAt>=m.expiry-3600000) throw new Error('Market expiry near');
+      s.market=m;s.startedAt=activationAt;s.expiresAt=Math.min(s.startedAt+s.policy.durationMinutes*60000,m.expiry-3600000);s.status=s.policy.mode==='live'?'active':'observing';
+      if(s.expiresAt<=activationAt) throw new Error('Session expired during approval');return save(s);
     });},
     async tick(client) {return exclusive(async()=>{
       const retry=store.list().find(x=>x.policy.mode==='live' && (unresolved(x) && x.status!=='active' ||
