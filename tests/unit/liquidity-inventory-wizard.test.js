@@ -72,12 +72,13 @@ test('automatic minimum sizes honor actual per-side precision and fee-aware spre
 });
 for(const defect of ['fallback','fees','stale','near deadline','narrow'])test(`automatic assessment fails closed: ${defect}`,async()=>{
  const f=eventHarness();try{
+  const state=await start(f); // Catalogue passes first; final assessment must still reject a subsequent change.
   if(defect==='fallback')f.books['#321'].levels=[[],[]];
   if(defect==='fees')delete f.fees.userSpotCrossRate;
   if(defect==='stale')f.books['#321'].time-=10000;
   if(defect==='near deadline')f.meta.outcomes[2].expiry=Date.now()+10000;
   if(defect==='narrow')for(const book of Object.values(f.books))book.levels=[[{px:'0.499',sz:'1000'}],[{px:'0.501',sz:'1000'}]];
-  await enter(f,await start(f));const [s]=await f.c.list();
+  await enter(f,state);const [s]=await f.c.list();
   if(defect==='narrow'){assert(s);assert.equal(s.assessment.suitability,'unsuitable');assert.equal(s.legs.length,6);}
   else {assert.equal(s,undefined);assert.match(f.messages.at(-1).text,defect==='fees'||defect==='stale'?/Assessment unavailable/:/Unsuitable/);assert.equal(runtime.userStates.get(f.owner).state,'LIQUIDITY_RETRY');assert(buttons(f).some(b=>b.callback_data.startsWith('liq:retry:')));}
   assert(!buttons(f).some(b=>b.callback_data.startsWith('confirm_liquidity')));assert.equal(f.actions.length,0);

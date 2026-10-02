@@ -287,7 +287,7 @@ export class HLClient {
     return this.isMainnet ? HL_API.MAINNET_EXCHANGE : HL_API.TESTNET_EXCHANGE;
   }
 
-  async _request(url, body, write = false) {
+  async _request(url, body, write = false, signal) {
     const controller = new AbortController();
     let timer;
     try {
@@ -295,7 +295,7 @@ export class HLClient {
         controller.abort(); reject(write ? new UnknownExecutionError() : new Error('Info request timed out'));
       }, this.requestTimeoutMs); });
       const request = (async () => {
-        const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: controller.signal });
+        const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: !write && signal ? AbortSignal.any([controller.signal,signal]) : controller.signal });
         if (!response.ok) throw write ? new UnknownExecutionError() : new Error(`HL API HTTP ${response.status}`);
         return await response.json();
       })();
@@ -306,7 +306,7 @@ export class HLClient {
     } finally { clearTimeout(timer); }
   }
 
-  async _infoRequest(body) { return this._request(this._infoUrl(), body); }
+  async _infoRequest(body, { signal } = {}) { return this._request(this._infoUrl(), body, false, signal); }
 
   async _exchangeRequest(payload) {
     return assertExchange(await this._request(this._exchangeUrl(), payload, true));
@@ -470,8 +470,8 @@ export class HLClient {
 
   // ─── Info endpoints ─────────────────────────────────────────────
 
-  async getOutcomeMeta() {
-    return this._infoRequest({ type: 'outcomeMeta' });
+  async getOutcomeMeta(options) {
+    return this._infoRequest({ type: 'outcomeMeta' }, options);
   }
 
   async getOutcomeTemplates() {
@@ -482,8 +482,8 @@ export class HLClient {
     return this._infoRequest({ type: 'userFees', user: this.address });
   }
 
-  async getOrderbook(coin) {
-    return this._infoRequest({ type: 'l2Book', coin });
+  async getOrderbook(coin, options) {
+    return this._infoRequest({ type: 'l2Book', coin }, options);
   }
 
   async getAllMids() {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {HLClient} from '../src/modules/hyperliquid.js';
-import {assessLiquidityEvent} from '../src/modules/liquidity/event.js';
+import {assessLiquidityEvent,resolveLiquidityEvent} from '../src/modules/liquidity/event.js';
+import {liquidityCatalogue,catalogueEventQuality} from '../src/modules/liquidity/catalog.js';
 // Read-only public timings. No wallet, credentials, SQLite, config changes or exchange.
 // Zero address fee/balance evidence is NOT evidence for any user's account.
 const account='0x'+'0'.repeat(40);
@@ -8,7 +9,21 @@ const client=new HLClient(null,'mainnet',{accountAddress:account});
 client._exchangeRequest=async()=>{throw Error('Public smoke forbids exchange writes');};
 const calls=[];let pending=0,peak=0;
 const info=client._infoRequest.bind(client);
-client._infoRequest=async body=>{const start=performance.now();pending++;peak=Math.max(peak,pending);try{return await info(body);}finally{pending--;calls.push({type:body.type,coin:body.coin,ms:Math.round(performance.now()-start)});}};
+const catalogueMode=process.argv.includes('--catalogue');
+client._infoRequest=async (body,options)=>{if(catalogueMode)assert(['outcomeMeta','l2Book'].includes(body.type),'Catalogue smoke forbids private evidence reads');const start=performance.now();pending++;peak=Math.max(peak,pending);try{return await info(body,options);}finally{pending--;calls.push({type:body.type,coin:body.coin,ms:Math.round(performance.now()-start)});}};
+if(catalogueMode){
+ const start=performance.now(),selected=await liquidityCatalogue(client,{selected:{type:'question',id:289}}),selectedMs=Math.round(performance.now()-start);
+ const meta=await client.getOutcomeMeta(),resolved=resolveLiquidityEvent(meta,{type:'question',id:289}),books=new Map();
+ for(let i=0;i<resolved.legs.length;i+=6)await Promise.all(resolved.legs.slice(i,i+6).map(async l=>books.set(l.coin,await client.getOrderbook(l.coin))));
+ const quality=await catalogueEventQuality(meta,resolved,books,Date.now());
+ assert.equal(selected.length,0);assert.equal(quality.eligible,false);
+ assert(quality.legs.some(l=>l.reasons.some(r=>['insufficient_depth','book_imbalance','no_two_sided_book'].includes(r))),'Q289 must be excluded on actual weak/empty public books');
+ const fullStart=performance.now(),before=calls.length,events=await liquidityCatalogue(client);
+ assert(!events.some(e=>e.questionId===289));assert(peak<=6);assert.equal(client.wallet,null);
+ const count=xs=>xs.reduce((m,c)=>(m[c.type]=(m[c.type]||0)+1,m),{});
+ console.log(JSON.stringify({at:new Date().toISOString(),network:'mainnet',readOnly:true,wallet:false,peakConcurrentInfoReads:peak,
+   selected:{question:289,elapsedMs:selectedMs,quality},full:{elapsedMs:Math.round(performance.now()-fullStart),eventCount:events.length,callCounts:count(calls.slice(before)),question289Excluded:true},callCounts:count(calls)},null,2));
+}else {
 const results=[];
 for(const id of [250,198,289]) {
  const start=performance.now(),before=calls.length;
@@ -23,3 +38,4 @@ for(const id of [250,198,289]) {
  results.push(summary);
 }
 console.log(JSON.stringify({at:new Date().toISOString(),network:'mainnet',readOnly:true,wallet:false,accountEvidence:'Public zero address only; not a user viability/fee assertion',peakConcurrentInfoReads:peak,results,calls},null,2));
+}
