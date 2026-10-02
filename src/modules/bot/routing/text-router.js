@@ -71,6 +71,9 @@ export async function handleTextMessage(ctx) {
 
   try {
     switch (state.state) {
+      case 'LIQUIDITY_CATALOG':
+        await ctx.reply(t('liq_select_buttons'));
+        break;
       case 'LIQUIDITY_INPUT':
         await liquidity.input(ctx, state, text);
         break;
