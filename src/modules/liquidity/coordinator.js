@@ -6,17 +6,17 @@ import { getCompleteSetAttempts, getBundleAttempts, getBundleSnapshot } from '..
 import { coinToOutcome, isOutcomeCoin } from '../hl-encoding.js';
 
 function bundleConflict(policy) {
-  const id=coinToOutcome(policy.coin).outcomeId;
+  const ids=policy.event ? (policy.memberCoins || []).filter(isOutcomeCoin).map(c=>coinToOutcome(c).outcomeId) : [coinToOutcome(policy.coin).outcomeId];
   const rows=[...getCompleteSetAttempts(['prepared','submitting','submitted_unknown','partial']),
     ...getBundleAttempts(policy.account,policy.network)];
   return rows.some(row=>row.account===policy.account.toLowerCase() && row.network===policy.network &&
     row.state!=='closed' && getBundleSnapshot(row.id)?.status!=='closed' &&
-    (row.coins||row.legs?.map(l=>l.coin)||[]).some(c=>isOutcomeCoin(c)&&coinToOutcome(c).outcomeId===id));
+    (row.coins||row.legs?.map(l=>l.coin)||[]).some(c=>isOutcomeCoin(c)&&ids.includes(coinToOutcome(c).outcomeId)));
 }
 
 /** Module-only coordinator. Existing trade/MCP confirmations are not altered. */
 export function createLiquidityCoordinator({getClient=()=>runtime.hlClient,getOwner=()=>runtime.allowedUserId,
-  transitioning=()=>runtime.runtimeTransitioning,locks=runtime.busyLocks,dataDir=DATA_DIR,
+  transitioning=()=>runtime.runtimeTransitioning,locks=runtime.busyLocks,dataDir=DATA_DIR,now=Date.now,
   credentialCurrent=isMcpCredentialCurrent,conflicts=bundleConflict,loadModules=async()=>({
     ...await import('./store.js'),...await import('./engine.js')})}={}) {
   let current=null, opening=null;
@@ -34,10 +34,10 @@ export function createLiquidityCoordinator({getClient=()=>runtime.hlClient,getOw
       const scope={dataDir,account:client.address.toLowerCase(),network:client.network};
       if(existingOnly && !existsSync(m.liquidityStorePath(scope))) return null;
       const store=m.createLiquidityStore(scope);
-      const engine=m.createLiquidityService({store,ownerId:String(getOwner()),authorize:async session=>{
-        if(transitioning() || binding(getClient())!==binding(client)) return false;
+      const engine=m.createLiquidityService({store,now,ownerId:String(getOwner()),authorize:async session=>{
+        if(transitioning() || getClient()!==client || binding(getClient())!==binding(client)) return false;
         if(session.credentialId && !await credentialCurrent({id:session.credentialId,generation:session.credentialGeneration,scope:'trade'})) return false;
-        return !conflicts(session.policy);
+        return !conflicts({...session.policy,memberCoins:session.legs?.map(l=>l.coin)});
       }});
       current={binding:binding(client),service:engine,store,client,recovered:false};
       return engine;
@@ -63,18 +63,20 @@ export function createLiquidityCoordinator({getClient=()=>runtime.hlClient,getOw
         const client=getClient();
         if(policy.account!==client?.address?.toLowerCase() || policy.network!==client.network) throw new Error('Session account mismatch');
         if(options.credentialId && !await credentialCurrent({id:options.credentialId,generation:options.credentialGeneration,scope:'trade'})) throw new Error('MCP credential revoked');
-        return (await service()).propose(policy,options);
+        if(!policy.event || policy.coin) throw Error('Event selection required');
+        return (await service()).proposeEvent(policy,options,client);
       });
     },
+    async assess(id) {return locked(async()=> (await service()).review(id,getClient()));},
     async approve(id,{ownerId}) {
       ownerCheck(ownerId);
       return locked(async()=>{
         const client=getClient(),s=await service();await recoverOnce(s,client);
         const session=await s.get(id);if(!session) throw new Error('Session not found');
+        if(!session.policy.event) throw Error('Legacy single-coin sessions support status and cleanup only');
         if(session.credentialId && !await credentialCurrent({id:session.credentialId,generation:session.credentialGeneration,scope:'trade'})) throw new Error('MCP credential revoked');
-        if(session.policy.mode==='live' && conflicts(session.policy)) throw new Error('Outcome belongs to another bundle');
-        // Trading consent is independent of reward-program eligibility.
-        // Market, account, risk and ownership checks still run in the engine.
+        if(session.policy.mode==='live' && conflicts({...session.policy,memberCoins:session.legs?.map(l=>l.coin)})) throw new Error('Outcome belongs to another bundle');
+        // Owner activation still requires every market, account, risk and ownership check.
         return s.approve(id,{ownerId:String(ownerId),client});
       });
     },
@@ -115,6 +117,7 @@ const coordinator=createLiquidityCoordinator();
 export const listLiquiditySessions=()=>coordinator.list();
 export const getLiquiditySession=id=>coordinator.get(id);
 export const proposeLiquiditySession=(policy,options)=>coordinator.propose(policy,options);
+export const assessLiquiditySession=id=>coordinator.assess(id);
 export const approveLiquiditySession=(id,options)=>coordinator.approve(id,options);
 export const stopLiquiditySession=(id,options)=>coordinator.stop(id,options);
 export const tickLiquidity=()=>coordinator.tick();

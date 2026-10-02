@@ -120,7 +120,7 @@ test('trade calls only request broker approval and schemas reject unsafe or unbo
 test('liquidity tools forward bounded session proposals and expose no self-approval tool',async t=>{
   const f=await fixture(t);const {client,transport}=clientFor(f.url);await client.connect(transport);t.after(()=>client.close());
   const tools=await client.listTools();assert(!tools.tools.some(x=>/liquidity.*approve/.test(x.name)));
-  const args={request_id:'session-test-123',mode:'observe',coin:'#100',durationMinutes:60,budgetUsdc:100,
+  const args={request_id:'session-test-123',mode:'observe',event:{type:'standalone',id:10},durationMinutes:60,budgetUsdc:100,
     maxInventoryShares:50,orderSizeShares:20,minPrice:.3,maxPrice:.7,minSpread:.02,maxLossUsdc:10,maxActions:10};
   const result=await client.callTool({name:'liquidity_request_session',arguments:args});assert.equal(result.isError,undefined);
   assert.deepEqual(f.events.find(x=>x.type==='rpc').body,{operation:'liquidity_request_session',args});
@@ -128,6 +128,21 @@ test('liquidity tools forward bounded session proposals and expose no self-appro
     const rejected=await client.callTool({name:'liquidity_request_session',arguments:{...args,...change}});assert.equal(rejected.isError,true);
   }
   assert.equal(f.events.filter(x=>x.type==='rpc').length,1);
+});
+
+test('actual MCP SDK HTTP transport → event SQLite → Telegram approval → real ALO signing → scoped stop',async t=>{
+  const {eventHarness}=await import('./liquidity-event-harness.js');
+  const event=eventHarness();t.after(()=>event.close());
+  const f=await fixture(t,{rpcHandler:body=>event.mcp(body.operation,body.args,event.credential)});
+  const {client,transport}=clientFor(f.url);await client.connect(transport);t.after(()=>client.close());
+  const result=await client.callTool({name:'liquidity_request_session',arguments:event.args()});
+  assert.equal(result.isError,undefined);const requested=JSON.parse(result.content[0].text);
+  assert.equal(requested.session.status,'draft');assert.equal(requested.requires_owner_confirmation,true);assert.equal(event.actions.length,0);
+  const id=requested.session.id;await event.confirm();
+  for(let i=0;i<6;i++)await event.c.tick();
+  assert.equal((await event.c.get(id)).orders.length,6);assert(event.actions.filter(a=>a.type==='order').every(a=>a.orders.every(o=>o.t.limit.tif==='Alo')));
+  const stopped=await client.callTool({name:'liquidity_stop_session',arguments:{session_id:id}});assert.equal(stopped.isError,undefined);
+  assert.equal((await event.c.get(id)).status,'stopped');assert.equal(event.actions.filter(a=>a.type==='cancel').length,6);
 });
 
 test('strict transport rejects bad host, origin, bearer, oversized bodies, and emits no CORS headers', async t => {

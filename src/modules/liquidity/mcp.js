@@ -4,10 +4,10 @@ import { isMcpCredentialCurrent } from '../mcp/key-store.js';
 
 export const LIQUIDITY_MCP_READ=new Set(['liquidity_campaigns','liquidity_sessions','liquidity_session_status']);
 export const LIQUIDITY_MCP_TRADE=new Set(['liquidity_request_session','liquidity_stop_session']);
-const fields=['mode','coin','durationMinutes','budgetUsdc','maxInventoryShares','orderSizeShares','minPrice','maxPrice','minSpread','maxLossUsdc','maxActions'];
+const fields=['mode','event','durationMinutes','budgetUsdc','maxInventoryShares','orderSizeShares','minPrice','maxPrice','minSpread','maxLossUsdc','maxActions'];
 function visible(s) {
   if(!s) return {status:'not_found'};
-  const out={id:s.id,status:s.status,policy:s.policy,reason:s.reason??null,expiresAt:s.expiresAt??null};
+  const out={eventLabel:s.eventLabel,assessment:s.assessment,legs:s.legs,id:s.id,status:s.status,policy:s.policy,reason:s.reason??null,expiresAt:s.expiresAt??null};
   for(const k of ['statistics','inventoryShares','buySpentUsdc','realizedPnlUsdc','indicativePnlUsdc']) if(s[k]!==undefined) out[k]=s[k];
   if(s.exposure) out.exposure={shares:s.exposure.shares,spendUsdc:s.exposure.spend,revenueUsdc:s.exposure.revenue,
     netCashFlowUsdc:s.exposure.realizedNet,observedAt:s.exposure.observedAt??null,
@@ -17,13 +17,13 @@ function visible(s) {
 }
 
 export function createLiquidityMcp({api=coordinator,getClient=()=>runtime.hlClient,getOwner=()=>runtime.allowedUserId,
-  currentCredential=isMcpCredentialCurrent,deliver=async id=>{
+  currentCredential=isMcpCredentialCurrent,deliver=async (id,expectedState)=>{
     if(!runtime.bot?.api || !runtime.allowedUserId) throw new Error('Telegram unavailable');
     const {showLiquiditySessionReview}=await import('../bot/features/liquidity.js');
     const owner=Number(runtime.allowedUserId);
-    await showLiquiditySessionReview({chat:{id:owner,type:'private'},from:{id:owner},
+    return showLiquiditySessionReview({chat:{id:owner,type:'private'},from:{id:owner},
       editMessageText:async()=>{throw new Error('New review');},
-      reply:(text,opts)=>runtime.bot.api.sendMessage(owner,text,opts)},id);
+      reply:(text,opts)=>runtime.bot.api.sendMessage(owner,text,opts)},id,expectedState);
   }}={}) {
   const inflight=new Map(),delivered=new Map();
   return async function operation(name,args,credential) {
@@ -57,11 +57,24 @@ export function createLiquidityMcp({api=coordinator,getClient=()=>runtime.hlClie
     const promise=(async()=>{
       const owner=Number(getOwner());
       if(!owner || runtime.runtimeTransitioning || runtime.busyLocks.get(owner)||runtime.userStates.has(owner)) throw new Error('Finish the current Telegram operation first');
-      const s=await api.proposeLiquiditySession(policy,{requestId:key,credentialId:credential.id,credentialGeneration:credential.generation});
-      if(!await currentCredential(credential) || getClient()!==client) throw new Error('Account or key changed');
-      await deliver(s.id);
-      delivered.set(key,{id:s.id,fingerprint});
-      return {session:visible(s),requires_owner_confirmation:true};
+      // Reserve a unique state before any assessment await. Cancel/menu clears
+      // even this pending state, so absence after navigation is not permission
+      // to install an unsolicited review over the newer Telegram operation.
+      const expectedState={state:'LIQUIDITY_MCP_PROPOSING'};
+      const binding=runtime.runtimeBinding();runtime.userStates.set(owner,expectedState);
+      let s;
+      try {
+        s=await api.proposeLiquiditySession(policy,{requestId:key,credentialId:credential.id,credentialGeneration:credential.generation});
+        if(!await currentCredential(credential) || getClient()!==client || runtime.runtimeBinding()!==binding || runtime.runtimeTransitioning || runtime.busyLocks.get(owner) || runtime.userStates.get(owner)!==expectedState) throw new Error('Telegram proposal abandoned or account/key changed');
+        if(await deliver(s.id,expectedState)!==true) throw new Error('Telegram review delivery failed or abandoned');
+        delivered.set(key,{id:s.id,fingerprint});
+        return {session:visible(s),requires_owner_confirmation:true};
+      } catch(error) {
+        if(s?.status==='draft') await api.stopLiquiditySession(s.id,{ownerId:String(owner),reason:'owner_stop'});
+        throw error;
+      } finally {
+        if(runtime.userStates.get(owner)===expectedState) await runtime.invalidateUserState(owner);
+      }
     })();
     inflight.set(key,{promise,fingerprint});
     try{return await promise;}finally{inflight.delete(key);}

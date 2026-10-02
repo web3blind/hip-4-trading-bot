@@ -6,7 +6,7 @@ import * as runtime from '../../src/modules/bot/runtime.js';
 
 const address='0x'+'1'.repeat(40);
 const credential={id:'trade-key',generation:'generation-1',scope:'trade'};
-const args={request_id:'proposal-12345',mode:'live',coin:'#100',durationMinutes:60,budgetUsdc:100,
+const args={request_id:'proposal-12345',mode:'live',event:{type:'standalone',id:10},durationMinutes:60,budgetUsdc:100,
  maxInventoryShares:50,orderSizeShares:20,minPrice:.3,maxPrice:.7,minSpread:.02,maxLossUsdc:10,maxActions:10};
 function fixture(){
  const rows=new Map(),calls=[];let valid=true;
@@ -14,7 +14,7 @@ function fixture(){
  proposeLiquiditySession:async(policy,o)=>{calls.push('propose');const s={id:'session-1',status:'draft',policy,...o};rows.set(s.id,s);return s;},
  stopLiquiditySession:async(id,o)=>{calls.push(['stop',id,o]);return {...rows.get(id),status:'stopping'};}};
  const client={address,network:'mainnet'};
- const call=createLiquidityMcp({api,getClient:()=>client,getOwner:()=>77,currentCredential:async()=>valid,deliver:async id=>calls.push(['review',id])});
+ const call=createLiquidityMcp({api,getClient:()=>client,getOwner:()=>77,currentCredential:async()=>valid,deliver:async id=>{calls.push(['review',id]);return true;}});
  return {call,rows,calls,set valid(v){valid=v}};
 }
 test('MCP proposes immutable scoped session, idempotent retries only deliver one owner review',async()=>{
@@ -41,7 +41,7 @@ test('no session proposal overwrites pending ordinary Telegram confirmation or a
  finally{runtime.userStates.delete(77);}
  await assert.rejects(h.call('liquidity_request_session',{...args,account:'0x'+'2'.repeat(40)},credential),/Invalid session/);
 });
-test('unknown rewards do not override owner-approved trading; observation still activates',async()=>{
+test('owner grant remains private and applies to event observation and live modes',async()=>{
  const policy={...args,account:address,network:'mainnet'};delete policy.request_id;
  const s={id:'s',policy,status:'draft'};let approved=0;
  const c=createLiquidityCoordinator({getClient:()=>({address,network:'mainnet'}),getOwner:()=>77,locks:new Map(),conflicts:()=>false,

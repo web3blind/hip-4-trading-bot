@@ -15,7 +15,10 @@ test('MCP proposal reaches real SQLite and private owner review; observation tic
  const expiry=Date.now()+86400000;
  const client={address:account,network:'testnet',
   getOutcomeMeta:async()=>({outcomes:[{outcome:30,quoteToken:'USDC',name:'Event',expiry,deployerFeeScale:1}],questions:[]}),
-  getOrderbook:async()=>({time:Date.now(),levels:[[{px:'0.4'}],[{px:'0.6'}]]}),
+  getOrderbook:async()=>({time:Date.now(),levels:[[{px:'0.4',sz:'1000'}],[{px:'0.6',sz:'1000'}]]}),
+  getUserFees:async()=>({userSpotCrossRate:'0.001',feeSchedule:{spotCross:'0.001'}}),
+  getUserBalances:async()=>({balances:[{coin:'USDC',total:'100',hold:'0'}]}),
+  prepareMakerOrder:async r=>({...r,orderType:'PostOnly',maxSpend:Math.ceil(r.price*r.size*1.01*1e6)/1e6}),
   placeMakerOrders:async()=>assert.fail('No exchange write'),cancelOrder:async()=>assert.fail('No cancel')};
  const key={id:'1234567890abcdef',generation:'1234567890abcdef12345678',scope:'trade'};
  const c=createLiquidityCoordinator({getClient:()=>client,getOwner:()=>owner,dataDir:dir,locks:new Map(),conflicts:()=>false,credentialCurrent:async()=>true});
@@ -25,7 +28,7 @@ test('MCP proposal reaches real SQLite and private owner review; observation tic
  const ctx={chat:{id:owner,type:'private'},from:{id:owner},editMessageText:async(t,o)=>messages.push({t,o}),reply:async(t,o)=>messages.push({t,o})};
  runtime.setAllowedUserId(owner);runtime.setHLClient(client);setSessionConfig({language:'en',hlNetwork:'testnet'});
  const mcp=createLiquidityMcp({api,getClient:()=>client,getOwner:()=>owner,currentCredential:async()=>true,deliver:id=>ui.showReview(ctx,id)});
- const args={request_id:'request_123456',mode:'observe',coin:'#300',durationMinutes:30,budgetUsdc:100,maxInventoryShares:100,orderSizeShares:20,minPrice:.2,maxPrice:.8,minSpread:.1,maxLossUsdc:30,maxActions:2};
+ const args={request_id:'request_123456',mode:'observe',event:{type:'standalone',id:30},durationMinutes:30,budgetUsdc:100,maxInventoryShares:100,orderSizeShares:20,minPrice:.2,maxPrice:.8,minSpread:.1,maxLossUsdc:30,maxActions:2};
  try{
   const response=await mcp('liquidity_request_session',args,key),id=response.session.id;
   assert.equal((await c.get(id)).status,'draft');assert.equal((await c.list()).length,1);
@@ -33,6 +36,7 @@ test('MCP proposal reaches real SQLite and private owner review; observation tic
   assert.equal(runtime.consumeConfirmation(owner,callback),'confirm_liquidity_session');
   await ui.confirm(ctx);assert.equal((await c.get(id)).status,'observing');
   await c.tick();assert.equal((await c.get(id)).proposals.length,1);
+  assert.equal((await c.get(id)).proposals[0].legs.length,2);assert.deepEqual((await c.get(id)).proposals[0].legs.map(l=>l.coin),['#300','#301']);
   const status=await mcp('liquidity_session_status',{session_id:id},key);assert.equal(status.proposals.length,1);
   await ui.stop(ctx,id);assert.equal((await c.get(id)).status,'stopped');
   await ui.confirm(ctx);assert.equal((await c.get(id)).status,'stopped');

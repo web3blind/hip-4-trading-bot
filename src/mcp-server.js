@@ -66,7 +66,7 @@ function registerTools(server, callBroker) {
     ['liquidity_sessions', 'Read up to 20 liquidity sessions; does not grant trading authority.', {}],
     ['liquidity_session_status', 'Read one bounded liquidity session.', {session_id:z.string().min(1).max(80)}],
     ['liquidity_request_session', 'Propose a bounded observation or maker session for one private-owner Telegram approval. NEVER starts quoting by itself; ordinary trading tools retain per-action approval.', {
-      request_id:requestId,mode:z.enum(['observe','live']),coin,
+      request_id:requestId,mode:z.enum(['observe','live']),event:z.object({type:z.enum(['question','standalone']),id:z.number().int().nonnegative()}).strict(),
       durationMinutes:z.number().int().positive().max(1440),
       budgetUsdc:amount,maxInventoryShares:amount,orderSizeShares:amount,
       minPrice:z.number().positive().lt(1),maxPrice:z.number().positive().lt(1),
@@ -77,7 +77,7 @@ function registerTools(server, callBroker) {
   ];
 
   for (const [name, description, inputSchema] of tools) {
-    server.registerTool(name, { description, inputSchema }, async args => {
+    server.registerTool(name, { description, inputSchema:name==='liquidity_request_session'?z.object(inputSchema).strict():inputSchema }, async args => {
       try {
         return toolResult(await callBroker(name, args), callBroker.bearer);
       } catch {

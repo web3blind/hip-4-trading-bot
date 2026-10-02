@@ -16,14 +16,15 @@ const fields = [
   ['maxLossUsdc', 'liq_loss'], ['maxActions', 'liq_actions'],
 ];
 const idOK = id => /^[a-zA-Z0-9_-]{8,48}$/.test(String(id));
-const coinOK = value => /^#(?:0|1|[1-9]\d*[01])$/.test(value) && Number.isSafeInteger(Number(value.slice(1)));
 const numberOK = (field, n) => Number.isFinite(n) && n > 0 &&
   (field === 'maxActions' || field === 'durationMinutes' ? Number.isSafeInteger(n) : true) &&
   (field === 'minPrice' || field === 'maxPrice' ? n < 1 : true);
 const clean = value => String(value ?? '').replace(/[<>\x00-\x1f]/g, '').slice(0, 80);
+const clientTokens=new WeakMap();
+function clientToken(client) {if(!client || typeof client!=='object')return null;if(!clientTokens.has(client))clientTokens.set(client,randomBytes(16).toString('hex'));return clientTokens.get(client);}
 const reasons = new Set(['owner_stop', 'duration_or_market_expiry', 'action_limit', 'loss_stop',
   'budget_or_inventory', 'authorization_or_expiry', 'credential_revoked', 'restart_review_required',
-  'outside_order_cancellation']);
+  'outside_order_cancellation','partial_leg','unresolved_leg']);
 const statuses = new Set(['draft', 'active', 'observing', 'stopping', 'paused', 'recovery_required', 'error', 'stopped', 'expired']);
 const statusLabel = (t, value) => statuses.has(value) ? t(`liq_state_${value}`) : t('liq_unknown');
 const bindingMatches = policy => !!runtime.hlClient && policy?.network === runtime.hlClient.network &&
@@ -44,29 +45,15 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     state.choices = [];
     const kb = new InlineKeyboard();
     const add = (label, action) => { const index = state.choices.push(action) - 1; kb.text(label.slice(0, 60), `liq:pick:${state.token}:${index}`).row(); };
-    const event = events.find(e => eventKey(e) === view.event);
-    let list, title;
-    if (view.level === 'sides') {
-      const o = event?.type === 'standalone' ? event.outcome : event?.outcomes.find(o => o.outcomeId === view.outcome);
-      if (!o || o.status !== 'active') return failure(ctx, t);
-      title = `${t('liq_select_side')}\n${clean(event.name)}\n${outcomeName(o)}`;
-      for (const side of [0, 1]) add(sideName(o, side, t), { kind: 'side', event: view.event, outcome: o.outcomeId, side });
-    } else {
-      list = view.level === 'outcomes' ? event?.outcomes || [] : events;
-      const pages = Math.max(1, Math.ceil(list.length / OUTCOMES_PAGE_SIZE));
-      view.page = Math.min(pages, Math.max(1, view.page));
-      title = `${t(view.level === 'outcomes' ? 'liq_select_outcome' : 'liq_select_event')}\n${view.level === 'outcomes' ? clean(event?.name) + '\n' : ''}${view.page}/${pages}`;
-      if (!list.length) title += `\n${t('no_active_markets')}`;
-      for (const item of list.slice((view.page - 1) * OUTCOMES_PAGE_SIZE, view.page * OUTCOMES_PAGE_SIZE)) {
-        add(view.level === 'outcomes' ? outcomeName(item) : clean(item.name), view.level === 'outcomes'
-          ? { kind: 'view', view: { level: 'sides', event: view.event, outcome: item.outcomeId } }
-          : { kind: 'view', view: { level: item.type === 'question' ? 'outcomes' : 'sides', event: eventKey(item), outcome: item.outcomeId, page: 1 } });
-      }
-      if (view.page > 1) add(t('liq_previous'), { kind: 'view', view: { ...view, page: view.page - 1 } });
-      if (view.page < pages) add(t('liq_next'), { kind: 'view', view: { ...view, page: view.page + 1 } });
-    }
-    add(t('back'), view.level === 'events' ? { kind: 'menu' } : { kind: 'view', view: view.level === 'sides' && event?.type === 'question'
-      ? { level: 'outcomes', event: view.event, page: state.outcomePage || 1 } : { level: 'events', page: state.eventPage || 1 } });
+    const list=events,pages=Math.max(1,Math.ceil(list.length/OUTCOMES_PAGE_SIZE));
+    view.page=Math.min(pages,Math.max(1,view.page));
+    let title=`${t('liq_select_event')}\n${view.page}/${pages}`;
+    if(!list.length) title+=`\n${t('no_active_markets')}`;
+    for(const item of list.slice((view.page-1)*OUTCOMES_PAGE_SIZE,view.page*OUTCOMES_PAGE_SIZE))
+      add(clean(item.name),{kind:'event',event:eventKey(item)});
+    if(view.page>1) add(t('liq_previous'),{kind:'view',view:{level:'events',page:view.page-1}});
+    if(view.page<pages) add(t('liq_next'),{kind:'view',view:{level:'events',page:view.page+1}});
+    add(t('back'),{kind:'menu'});
     add(t('cancel'), { kind: 'cancel' });
     await screen(ctx, `${title}\n${t('liq_catalog_note')}`, kb);
   }
@@ -89,13 +76,11 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
         if (state.view.level === 'outcomes') state.outcomePage = state.view.page;
         return catalogScreen(ctx, state, events, action.view);
       }
-      const event = events.find(e => eventKey(e) === action.event);
-      const o = event?.type === 'standalone' ? event.outcome : event?.outcomes.find(o => o.outcomeId === action.outcome);
-      const coin = o?.[`coin${action.side}`];
-      if (!o || o.status !== 'active' || !coinOK(coin)) return failure(ctx, t);
-      state.selection = { coin, event: clean(event.name), outcome: outcomeName(o), side: action.side,
-        side0Name: o.side0Name, side1Name: o.side1Name };
-      state.policy.coin = coin; state.state = 'LIQUIDITY_INPUT'; state.index = 0;
+      const event=events.find(e=>eventKey(e)===action.event);
+      if(!event) return failure(ctx,t);
+      state.selection={event:clean(event.name)};
+      state.policy.event={type:event.type,id:event.type==='question'?event.questionId:event.outcomeId};
+      state.state='LIQUIDITY_INPUT';state.index=0;
       return prompt(ctx, state);
     } catch { if (current(ctx, state)) { await runtime.invalidateUserState(ctx.chat.id); await failure(ctx, t); } }
   }
@@ -125,16 +110,15 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     if (!await guard(ctx)) return;
     const t = await tr(), kb = new InlineKeyboard()
       .text(t('liq_observe'), 'liq:new:observe').row()
-      .text(t('liq_live'), 'liq:new:live').row()
-      .text(t('liq_campaigns'), 'liq:campaigns').row();
+      .text(t('liq_live'), 'liq:new:live').row();
     try {
       const sessions = await (await service()).listLiquiditySessions();
       for (const s of (Array.isArray(sessions) ? sessions : []).slice(0, 12)) {
-        if (idOK(s.id)) kb.text(`${clean(s.policy?.coin)} · ${statusLabel(t, s.status)}`.slice(0, 55), `liq:session:${s.id}`).row();
+        if (idOK(s.id)) kb.text(`${clean(s.eventLabel || s.policy?.coin)} · ${statusLabel(t, s.status)}`.slice(0, 55), `liq:session:${s.id}`).row();
       }
     } catch { /* menu remains usable when storage is unavailable */ }
     kb.text(t('back'), 'back_menu');
-    await screen(ctx, `${t('liq_title')}\n${t('liq_intro')}\n${t('liq_reward_notice')}`, kb);
+    await screen(ctx, `${t('liq_title')}\n${t('liq_intro')}`, kb);
   }
   async function campaigns(ctx) {
     if (!await guard(ctx)) return;
@@ -190,14 +174,14 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     // Core validates again. This check prevents an obviously inconsistent review.
     const p = state.policy;
     if (p.minPrice >= p.maxPrice || p.orderSizeShares > p.maxInventoryShares || p.maxLossUsdc > p.budgetUsdc) {
-      state.index = 0; state.policy = { mode: p.mode, account: p.account, network: p.network, coin: p.coin };
+      state.index = 0; state.policy = { mode: p.mode, account: p.account, network: p.network, event: p.event };
       await ctx.reply(t('liq_inconsistent'));
       return prompt(ctx, state);
     }
     state.state = 'LIQUIDITY_PROPOSING';
     try {
       const s = await (await service()).proposeLiquiditySession(p, { requestId: randomBytes(16).toString('hex') });
-      if (!current(ctx, state)) return;
+      if (!current(ctx, state)) {await (await service()).stopLiquiditySession(s.id,{ownerId:ctx.from.id,reason:'owner_stop'});return;}
       return showReview(ctx, s.id, state);
     } catch (error) { if (current(ctx, state)) { await runtime.invalidateUserState(ctx.chat.id); return serviceFailure(ctx, t, error); } }
   }
@@ -206,7 +190,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     const state = runtime.userStates.get(ctx.chat.id), t = await tr();
     if (state?.state !== 'LIQUIDITY_INPUT' || token !== state.token || !current(ctx, state)) return screen(ctx, t('session_expired'), back(t));
     if (state.index === 0) {
-      delete state.policy.coin;
+      delete state.policy.event;
       state.state = 'LIQUIDITY_CATALOG'; state.token = randomBytes(8).toString('hex');
       try { return await catalogScreen(ctx, state, await fetchAndCacheOutcomes(state.client), { level: 'events', page: state.eventPage || 1 }); }
       catch { if (current(ctx, state)) await failure(ctx, t); return; }
@@ -229,7 +213,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
       const s = await (await service()).getLiquiditySession(id);
       if (!s) return screen(ctx, t('session_expired'), back(t));
       const kb = new InlineKeyboard();
-      if (s.status === 'draft') kb.text(t('liq_review_button'), `liq:review:${id}`).row();
+      if (s.status === 'draft' && s.policy?.event) kb.text(t('liq_review_button'), `liq:review:${id}`).row();
       if (['active', 'observing', 'stopping', 'paused', 'recovery_required', 'error'].includes(s.status) || s.orders?.some(o=>!['closed','rejected','aborted'].includes(o.state))) kb.text(t('liq_stop'), `liq:stop:${id}`).row();
       kb.text(t('back'), 'liq:menu');
       const p = s.policy || {};
@@ -237,50 +221,71 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
       const e=s.exposure, stamp=e?.observedAt;
       const evidence=Number.isSafeInteger(stamp) ? `${t('liq_inventory_label')}: ${clean(e.shares)}\n${t('liq_spend_evidence')}: ${clean(e.spend)} USDC\n${t('liq_evidence_time')}: ${new Date(stamp).toISOString()}` : t('liq_inventory_unknown');
       const exposureText=`\n${evidence}`;
-      await screen(ctx, `${t('liq_title')} · ${clean(p.coin)}\n${t('liq_status')}: ${statusLabel(t, s.status)}\n${t('liq_reason')}: ${reasons.has(s.reason) ? t(`liq_reason_${s.reason}`) : t('liq_unknown')}\n${t('liq_expiry')}: ${expiry && !Number.isNaN(expiry.getTime()) ? expiry.toISOString() : t('liq_unknown')}${exposureText}\n${t('liq_cleanup_note')}`, kb);
+      await screen(ctx, `${t('liq_title')} · ${clean(s.eventLabel || p.coin)}\n${t('liq_status')}: ${statusLabel(t, s.status)}\n${t('liq_reason')}: ${reasons.has(s.reason) ? t(`liq_reason_${s.reason}`) : t('liq_unknown')}\n${t('liq_expiry')}: ${expiry && !Number.isNaN(expiry.getTime()) ? expiry.toISOString() : t('liq_unknown')}${exposureText}\n${t('liq_cleanup_note')}`, kb);
     } catch { await failure(ctx, t); }
   }
   async function showReview(ctx, id, expectedState) {
     const binding = runtime.runtimeBinding(), client = runtime.hlClient;
-    if (!await guard(ctx)) return;
-    if (expectedState && runtime.userStates.get(ctx.chat.id) !== expectedState) return;
-    const initialState = { state: 'LIQUIDITY_REVIEW_LOADING', selection: expectedState?.selection };
-    runtime.userStates.set(ctx.chat.id, initialState);
+    if (!await guard(ctx)) return false;
+    if (expectedState && runtime.userStates.get(ctx.chat.id) !== expectedState) return false;
+    let reviewState = { state: 'LIQUIDITY_REVIEW_LOADING', selection: expectedState?.selection };
+    runtime.userStates.set(ctx.chat.id, reviewState);
     const t = await tr();
-    const stillHere = () => runtime.userStates.get(ctx.chat.id) === initialState &&
+    const stillHere = () => runtime.userStates.get(ctx.chat.id) === reviewState &&
       runtime.runtimeBinding() === binding && runtime.hlClient === client && !runtime.runtimeTransitioning;
-    if (!idOK(id)) return screen(ctx, t('session_expired'), back(t));
+    if (!stillHere()) return false;
+    if (!idOK(id)) { await screen(ctx, t('session_expired'), back(t)); return false; }
     try {
-      const s = await (await service()).getLiquiditySession(id), p = s?.policy;
-      if (!stillHere()) return;
-      if (!p || s.status !== 'draft' || !bindingMatches(p) || !['observe', 'live'].includes(p.mode)) return screen(ctx, t('session_expired'), back(t));
-      const values = ['coin', 'network', 'durationMinutes', 'budgetUsdc', 'maxInventoryShares', 'orderSizeShares', 'minPrice', 'maxPrice', 'minSpread', 'maxLossUsdc', 'maxActions'];
-      if (values.some(k => p[k] === undefined || p[k] === null)) return screen(ctx, t('liq_unavailable'), back(t));
-      const selected = initialState?.selection;
-      let marketLabel = selected?.coin === p.coin
-        ? `${selected.event} · ${selected.outcome} · ${sideName(selected, selected.side, t)} (${clean(p.coin)})`
-        : clean(p.coin);
-      try {
-        const events = await fetchAndCacheOutcomes(client);
-        for (const event of events) {
-          for (const o of event.type === 'standalone' ? [event.outcome] : event.outcomes) {
-            const side = o.coin0 === p.coin ? 0 : o.coin1 === p.coin ? 1 : null;
-            if (side !== null) marketLabel = `${clean(event.name)} · ${outcomeName(o)} · ${sideName(o, side, t)} (${clean(p.coin)})`;
-          }
+      const api=await service();
+      let s=await api.getLiquiditySession(id);
+      if(s?.policy?.event && api.assessLiquiditySession) s=await api.assessLiquiditySession(id);
+      const p=s?.policy;
+      if(!stillHere()) return false;
+      if(!p || s.status!=='draft' || !bindingMatches(p) || !p.event) { await screen(ctx,t('session_expired'),back(t)); return false; }
+      const a=s.assessment;
+      const values=['network','durationMinutes','budgetUsdc','maxInventoryShares','orderSizeShares','minPrice','maxPrice','minSpread','maxLossUsdc','maxActions'];
+      if(!a || values.some(k=>p[k]==null)) { await screen(ctx,t('liq_unavailable'),back(t)); return false; }
+      const lines=[t('liq_review'),clean(s.eventLabel),`${t('liq_mode')}: ${t(`liq_${p.mode}`)}`,
+        t('liq_all_sides'),...a.legs.map(l=>`${clean(l.name)} · ${clean(l.sideName)} (${clean(l.coin)})${l.fallback?' · '+t('liq_fallback'):''}`),
+        `${t('liq_suitability')}: ${t('liq_suitability_'+a.suitability)}`,
+        `${t('liq_minimum_budget')}: ${a.minimumBudgetUsdc==null?t('liq_unknown'):a.minimumBudgetUsdc.toFixed(2)} USDC`,
+        `${t('liq_required_budget')}: ${a.requiredBudgetUsdc==null?t('liq_unknown'):a.requiredBudgetUsdc.toFixed(2)} USDC`,
+        `${t('liq_spendable_spot')}: ${a.availableUsdc==null?t('liq_unknown'):a.availableUsdc.toFixed(2)} USDC`,
+        `${t('liq_quote_deadline')}: ${a.legs.every(l=>Number.isSafeInteger(l.expiry))?new Date(Math.min(...a.legs.map(l=>l.expiry))-3600000).toISOString():t('liq_unknown')}`,
+        ...a.reasons.map(r=>{const leg=a.legs.find(l=>l.coin===r.coin);return `${r.coin?(leg?`${clean(leg.name)} · ${clean(leg.sideName)} (${clean(r.coin)})`:clean(r.coin))+' · ':''}${t('liq_assessment_'+r.code)}${r.detail?' · '+clean(r.detail):''}`;}),
+        ...a.legs.filter(l=>!l.unavailable).map(l=>`${clean(l.name)} · ${clean(l.sideName)} (${clean(l.coin)}) · ${t('liq_minimum_shares')}: ${l.minimumShares}; ${t('liq_order_label')}: ${l.size}`),
+        ...(a.pairs||[]).filter(p=>!p.unavailable).map(p=>`${clean(a.legs.find(l=>l.outcomeId===p.outcomeId)?.name)} · ${t('liq_pair_net_edge')}: ${p.netMatchedEdgePerShare.toFixed(5)}`),
+        ...values.map((key,i)=>`${t(['liq_network','liq_duration_label','liq_budget_label','liq_inventory_label','liq_order_label','liq_min_label','liq_max_label','liq_spread_label','liq_loss_label','liq_actions_label'][i])}: ${clean(p[key])}`),
+        t('liq_budget_rule'),t('liq_risk'),t('liq_merged_book'),p.mode==='observe'?t('liq_observe_rule'):t('liq_live_rule')];
+      if(!stillHere()) return false;
+      const chunks=[];let part='';for(const line of lines){if(part.length+line.length+1>3500){chunks.push(part);part='';}part+=(part?'\n':'')+line;}if(part)chunks.push(part);
+      for(const chunk of chunks.slice(0,-1)){if(!stillHere())return false;await ctx.reply(chunk);}
+      if(!stillHere())return false;
+      const kb=new InlineKeyboard();
+      if(a.suitability==='conditional') {
+        const callback=runtime.confirmationCallback(ctx.chat.id,'confirm_liquidity_session',{state:'CONFIRMING_LIQUIDITY_SESSION',sessionId:id,binding:runtime.runtimeBinding(),clientToken:clientToken(runtime.hlClient)});
+        // Confirmation installs its own unique snapshot; retain ownership so a
+        // failed send can clear only this review, never a newer wizard.
+        reviewState=runtime.userStates.get(ctx.chat.id);
+        kb.text(t('liq_approve'),callback).row();
+      }
+      kb.text(t('cancel'),'liq:cancel');
+      await screen(ctx,chunks.at(-1),kb);
+      return stillHere();
+    } catch {
+      if(stillHere()) {
+        try { await failure(ctx, t); }
+        finally {
+          if(runtime.userStates.get(ctx.chat.id)===reviewState) await runtime.invalidateUserState(ctx.chat.id);
         }
-      } catch { /* MCP drafts can still be reviewed when catalog labels are unavailable. */ }
-      if (!stillHere()) return;
-      const callback = runtime.confirmationCallback(ctx.chat.id, 'confirm_liquidity_session', {
-        state: 'CONFIRMING_LIQUIDITY_SESSION', sessionId: id, binding: runtime.runtimeBinding(),
-      });
-      const lines = [t('liq_review'), `${t('liq_mode')}: ${t(`liq_${p.mode}`)}`, ...values.map((key, i) => `${t(['liq_coin_label', 'liq_network', 'liq_duration_label', 'liq_budget_label', 'liq_inventory_label', 'liq_order_label', 'liq_min_label', 'liq_max_label', 'liq_spread_label', 'liq_loss_label', 'liq_actions_label'][i])}: ${key === 'coin' ? marketLabel : clean(p[key])}`), t('liq_budget_rule'), t('liq_risk'), p.mode === 'observe' ? t('liq_observe_rule') : `${t('liq_live_rule')}\n${t('liq_reward_notice')}`];
-      await screen(ctx, lines.join('\n'), new InlineKeyboard().text(t('liq_approve'), callback).row().text(t('cancel'), 'liq:cancel'));
-    } catch { await failure(ctx, t); }
+      }
+      return false;
+    }
   }
   async function confirm(ctx) {
     if (!await guard(ctx)) return;
     const t = await tr(), state = runtime.userStates.get(ctx.chat.id);
-    if (state?.state !== 'CONFIRMING_LIQUIDITY_SESSION' || state.binding !== runtime.runtimeBinding() || !idOK(state.sessionId)) return screen(ctx, t('session_expired'), back(t));
+    if (state?.state !== 'CONFIRMING_LIQUIDITY_SESSION' || state.binding !== runtime.runtimeBinding() || state.clientToken !== clientToken(runtime.hlClient) || !idOK(state.sessionId)) return screen(ctx, t('session_expired'), back(t));
     try {
       const api = await service(), s = await api.getLiquiditySession(state.sessionId);
       if (runtime.userStates.get(ctx.chat.id) !== state || !s || s.status !== 'draft' || !bindingMatches(s.policy) || runtime.runtimeTransitioning) return screen(ctx, t('session_expired'), back(t));
@@ -301,6 +306,6 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
   return { menu, campaigns, start, choose, input, stepBack, cancel, session, showReview, confirm, stop };
 }
 
-export async function showLiquiditySessionReview(ctx, id) {
-  return createLiquidityFeature().showReview(ctx, id);
+export async function showLiquiditySessionReview(ctx, id, expectedState) {
+  return createLiquidityFeature().showReview(ctx, id, expectedState);
 }

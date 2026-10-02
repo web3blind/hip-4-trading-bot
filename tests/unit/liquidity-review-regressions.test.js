@@ -124,11 +124,12 @@ test('signing yield crossing expiry cannot transmit signed maker order',async()=
  assert.equal(f.engine.get(id).status,'stopped');
 }finally{f.close()}});
 test('actual Telegram callback early busy gate and MCP stop persist while worker awaits',async()=>{
- const f=setup(),owner=77,credential={id:'credential_123456',generation:1,scope:'trade'};
+ const f=setup(true),owner=77,credential={id:'credential_123456',generation:1,scope:'trade'};
  const expiry=Date.now()+86400000;
  f.client.getOutcomeMeta=async()=>({outcomes:[{outcome:30,quoteToken:'USDC',name:'Event',expiry,deployerFeeScale:1}],questions:[]});
- f.client.getOrderbook=async()=>({time:Date.now(),levels:[[{px:'0.4'}],[{px:'0.6'}]]});
- initDatabase({accountAddress:account,network:'testnet'});
+ f.client.getOrderbook=async()=>({time:Date.now(),levels:[[{px:'0.4',sz:'1000'}],[{px:'0.6',sz:'1000'}]]});
+ f.client.getUserBalances=async()=>({balances:[{coin:'USDC',total:'100',hold:'0'}]});
+ initDatabase({accountAddress:f.client.address,network:'testnet'});
  runtime.setAllowedUserId(owner);runtime.setHLClient(f.client);setSessionConfig({language:'en',hlNetwork:'testnet'});
  const c=createLiquidityCoordinator({getClient:()=>f.client,getOwner:()=>owner,locks:new Map(),dataDir:f.dir,
   credentialCurrent:async()=>true,conflicts:()=>false});
@@ -137,11 +138,13 @@ test('actual Telegram callback early busy gate and MCP stop persist while worker
  try{
   await tickLiquidity();await c.tick(); // initial recovery before grant
   for(const path of ['telegram','mcp']) {
+   f.client.getUserFees=async()=>f.fees;
    const row=path==='telegram'
-     ?await proposeLiquiditySession(policy(),{requestId:`review_${path}_123`})
-     :await c.propose(policy(),{requestId:`review_${path}_123`,credentialId:credential.id,credentialGeneration:credential.generation});
+     ?await proposeLiquiditySession((()=>{const p=policy();delete p.coin;return {...p,account:f.client.address.toLowerCase(),event:{type:'standalone',id:30}};})(),{requestId:`review_${path}_123`})
+     :await c.propose((()=>{const p=policy();delete p.coin;return {...p,account:f.client.address.toLowerCase(),event:{type:'standalone',id:30}};})(),{requestId:`review_${path}_123`,credentialId:credential.id,credentialGeneration:credential.generation});
    if(path==='telegram') await approveLiquiditySession(row.id,{ownerId:owner});
    else await c.approve(row.id,{ownerId:owner});
+   f.client.getUserFees=async()=>f.fees;
    let release,entered;const reached=new Promise(r=>entered=r),hold=new Promise(r=>release=r);
    f.client.getUserFees=async()=>{entered();await hold;return f.fees};
    const ticking=path==='telegram'?tickLiquidity():c.tick();await reached;

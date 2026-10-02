@@ -70,6 +70,14 @@ Markets and limit orders require a review/confirmation. Market orders are aggres
 
 Complete-set discovery supports up to nine legs, including eight tournament participants plus the fallback. Nine-leg tournament coverage requires the reviewed official parent/participant rules and distinct participants; unknown or changed rules exclude the candidate. Policy-rate questions use `decisionDeadline`, not the scheduled announcement time, for expiry. A three-outcome policy-rate set omits the fallback only when the parent and all child rules match the reviewed official templates; changed rules restore fallback coverage. Quotes still require verified fees, sufficient depth, equal shares and the minimum notional on every leg. Missing `deployerFeeScale` is not guessed: such markets may be discovered but cannot produce a verified purchase quote. Recurring price buckets appear under **Prices** alongside price binaries.
 
+## Event-wide liquidity
+
+**Liquidity** selects an event, never an individual side. Every active outcome includes both YES and NO; grouped events always include the fallback, even if its book is empty or its rules are unfavorable. The owner reviews all legs, rounded minimum order sizes, aggregate required capital and a deterministic maker-economics assessment before one private, one-use Telegram approval. MCP trade keys can propose the same event grant, not approve it. Historical single-coin sessions remain readable/stoppable only.
+
+The launch assessment uses fresh books/depth, authoritative quote deadlines, per-outcome fees, fee-adjusted spreads and spendable Spot USDC (`total - hold`). Unknown evidence or a deficient leg makes the entire event unsuitable. It does not fetch, gate on, or reason about campaigns or rewards. YES/NO are complementary views of one native book: depth and spread are not doubled. Any matched-pair edge is conditional on actual fills and fees; unmatched shares can lose their entire principal. Unsupported price-market models stay blocked.
+
+Live quoting is serial round-robin ALO-only, under one shared cumulative buy budget including pending/unknown reservations, inventory, new-order action, duration and bid-mark loss thresholds. Sales do not recycle the spend cap. Only proven session purchases may be sold. Stop/expiry/revocation affects all legs and cancels only recorded owned orders, never liquidates holdings; uncertain cleanup remains unresolved and blocks new quoting. Restart reconciles/cleans up, never resumes quoting automatically. Ordinary manual orders and bundles retain their own approvals and behavior.
+
 ## Configuration and operation
 
 `.env.example` lists supported environment settings:

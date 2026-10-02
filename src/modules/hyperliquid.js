@@ -598,11 +598,11 @@ export class HLClient {
   }
 
   /** ALO only, with no IOC/GTC fallback on rejection or unknown submission. */
-  async placeMakerOrders(requests, { beforeSubmit } = {}) {
+  async placeMakerOrders(requests, { beforeSubmit, beforeTransmit } = {}) {
     if (!Array.isArray(requests) || !requests.length || requests.some(r =>
       r?.orderType !== 'PostOnly' || !/^0x[0-9a-fA-F]{32}$/.test(r?.cloid || '') ||
       typeof r.price !== 'number' || typeof r.size !== 'number')) throw new Error('Invalid maker requests');
-    return this.placeOrders(requests, { throwOnError: false, beforeSubmit });
+    return this.placeOrders(requests, { throwOnError: false, beforeSubmit, beforeTransmit });
   }
 
   async _checkFeeReserve() {
@@ -620,7 +620,7 @@ export class HLClient {
    * @param {boolean} options.throwOnError - throw if any status has error; defaults true
    * @returns {Promise<object>} Exchange response
    */
-  async placeOrders(orderRequests, { grouping = 'na', throwOnError = true, beforeSubmit } = {}) {
+  async placeOrders(orderRequests, { grouping = 'na', throwOnError = true, beforeSubmit, beforeTransmit } = {}) {
     if (!this.wallet) throw new Error('No wallet configured for signing');
     if (!Array.isArray(orderRequests) || orderRequests.length === 0) {
       throw new Error('No orders provided');
@@ -640,8 +640,9 @@ export class HLClient {
       ...(this.builder ? { builder: this.builder } : {}),
     };
 
-    // Synchronous maker grant check after all awaited preparation.
-    if (beforeSubmit) beforeSubmit();
+    // Await scoped maker validation, then check its durable grant synchronously.
+    if (beforeSubmit) await beforeSubmit();
+    if (beforeTransmit) beforeTransmit();
     const nonce = this._nonce();
     const signature = await signL1Action(
       this.wallet,
@@ -659,7 +660,8 @@ export class HLClient {
     };
 
     // Signing can yield too; revoked grants must never reach the exchange.
-    if (beforeSubmit) beforeSubmit();
+    if (beforeSubmit) await beforeSubmit();
+    if (beforeTransmit) beforeTransmit();
     const result = await this._exchangeRequest(payload);
     const orderErrors = orderStatuses(result, orderWires.length)
       .map((status, index) => ({ index, error: status?.error }))
@@ -796,11 +798,11 @@ export class HLClient {
    * @param {string} coin - e.g. "#21460"
    * @param {number} orderId - Order OID
    */
-  async cancelOrder(coin, orderId) {
-    return this.cancelOrders([{ coin, oid: orderId }]);
+  async cancelOrder(coin, orderId, options = {}) {
+    return this.cancelOrders([{ coin, oid: orderId }], options);
   }
 
-  async cancelOrders(orders) {
+  async cancelOrders(orders, {beforeTransmit} = {}) {
     if (!this.wallet) throw new Error('No wallet configured for signing');
     if (!Array.isArray(orders) || !orders.length) throw new Error('No reviewed orders');
     const cancels = [];
@@ -812,6 +814,7 @@ export class HLClient {
     const action = { type: 'cancel', cancels };
     const nonce = this._nonce();
     const signature = await signL1Action(this.wallet, action, null, nonce, this.isMainnet);
+    if(beforeTransmit) beforeTransmit();
     const result = assertExchange(await this._exchangeRequest({ action, nonce, signature, vaultAddress: null }));
     const statuses = result?.response?.data?.statuses;
     if (result?.response?.type !== 'cancel' || !Array.isArray(statuses) || statuses.length !== cancels.length) throw new UnknownExecutionError('Cancellation status incomplete; inspect the exact OIDs before retrying.');

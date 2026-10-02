@@ -9,7 +9,7 @@ const account='0x'+'1'.repeat(40),t=Date.parse('2026-01-01T00:00:00Z');
 const policy=(mode='live')=>({mode,coin:'#300',account,network:'testnet',durationMinutes:30,budgetUsdc:100,maxInventoryShares:100,orderSizeShares:20,minPrice:0.2,maxPrice:0.8,minSpread:0.1,maxLossUsdc:30,maxActions:2});
 function fixture(mode='live',authorize=async()=>true) {
   const dir=mkdtempSync(join(tmpdir(),'liq-engine-'));let time=t,oid=11,placed=[],cancelled=[],balance=0,foreign=[],status='open',fills=[];
-  const meta={outcomes:[{outcome:30,quoteToken:'USDC',name:'Sample',description:'time:20260102-0000',szDecimals:0,deployerFeeScale:1}]};
+  const meta={outcomes:[{outcome:30,quoteToken:'USDC',name:'Sample',description:'expiry:20260102-0000',szDecimals:0,deployerFeeScale:1}]};
   const client={network:'testnet',address:account,
     getOutcomeMeta:async()=>meta,getUserBalances:async()=>({balances:balance?[{coin:'#300',total:String(balance)}]:[]}),getOpenOrders:async()=>foreign,
     getUserFees:async()=>({userSpotCrossRate:'0.001',feeSchedule:{spotCross:'0.001'}}),getAvailableUsdc:async()=>100,
@@ -53,14 +53,14 @@ test('unknown CLOID never blindly resubmits or cancels foreign OID',async()=>{co
   await f.service.stop(id,{ownerId:7,client:f.client});assert.equal(f.service.hasUnresolved(),true);assert.deepEqual(f.cancelled,[]);
 }finally{f.close()}});
 test('late authorization and expiry suppress new orders',async()=>{
-  const f=fixture('live',async()=>false);try{const id=await approved(f);await f.service.tick(f.client);assert.equal(f.placed.length,0);assert.equal(f.service.get(id).reason,'authorization_or_expiry');}finally{f.close()}
+  let permitted=true;const f=fixture('live',async()=>permitted);try{const id=await approved(f);permitted=false;await f.service.tick(f.client);assert.equal(f.placed.length,0);assert.equal(f.service.get(id).reason,'authorization_or_expiry');}finally{f.close()}
   const g=fixture();try{const id=await approved(g);g.setTime(t+31*60000);await g.service.tick(g.client);assert.equal(g.placed.length,0);assert.equal(g.service.get(id).status,'stopped');}finally{g.close()}
 });
 test('partial fill evidence, exposure continuity and external inventory pause',async()=>{const f=fixture();try{
   const id=await approved(f);await f.service.tick(f.client);f.setStatus('open');f.setBalance(10);
   f.setFills([{oid:11,tid:1,sz:'10',px:'0.4',fee:'0.01',feeToken:'USDC'}]);
   await f.service.tick(f.client);assert.equal(f.service.get(id).exposure.shares,10);assert.equal(f.placed.length,1);
-  f.setBalance(11);await f.service.tick(f.client);assert.equal(f.service.get(id).reason,'Inventory or spend mismatch');assert.deepEqual(f.cancelled,[11]);
+  f.setBalance(11);await f.service.tick(f.client);assert.equal(f.service.get(id).reason,'Inventory attribution mismatch; protocol or outside activity requires review');assert.deepEqual(f.cancelled,[11]);
 }finally{f.close()}});
 test('proven shares may be offered ALO; cumulative buy spend never recycles',async()=>{const f=fixture();try{
   const id=await approved(f);await f.service.tick(f.client);
