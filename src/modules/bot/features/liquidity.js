@@ -11,14 +11,11 @@ import { OUTCOMES_PAGE_SIZE } from '../constants.js';
 const coordinator = () => import('../../liquidity/coordinator.js');
 const fields = [
   ['durationMinutes', 'liq_duration'], ['budgetUsdc', 'liq_budget'],
-  ['orderSizeShares', 'liq_order_size'],
-  ['minPrice', 'liq_min_price'], ['maxPrice', 'liq_max_price'], ['minSpread', 'liq_spread'],
-  ['maxLossUsdc', 'liq_loss'], ['maxActions', 'liq_actions'],
+  ['maxLossUsdc', 'liq_loss'],
 ];
 const idOK = id => /^[a-zA-Z0-9_-]{8,48}$/.test(String(id));
 const numberOK = (field, n) => Number.isFinite(n) && n > 0 &&
-  (field === 'maxActions' || field === 'durationMinutes' ? Number.isSafeInteger(n) : true) &&
-  (field === 'minPrice' || field === 'maxPrice' ? n < 1 : true);
+  (field !== 'durationMinutes' || Number.isSafeInteger(n));
 const clean = value => String(value ?? '').replace(/[<>\x00-\x1f]/g, '').slice(0, 80);
 const clientTokens=new WeakMap();
 function clientToken(client) {if(!client || typeof client!=='object')return null;if(!clientTokens.has(client))clientTokens.set(client,randomBytes(16).toString('hex'));return clientTokens.get(client);}
@@ -96,6 +93,11 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
   }
   async function failure(ctx, t) { await screen(ctx, t('liq_unavailable'), back(t)); }
   async function serviceFailure(ctx, t, error) {
+    if(error?.assessment) {
+      const a=error.assessment;
+      const rows=a.reasons.map(r=>{const l=a.legs.find(l=>l.coin===r.coin);return `${l?`${clean(l.name)} · ${clean(l.sideName)} (${clean(l.coin)}) · `:''}${t('liq_assessment_'+r.code)}`;});
+      return screen(ctx,[t('liq_automatic_blocked'),...rows].join('\n'),back(t));
+    }
     const message = error?.message;
     const category = ['Short-expiry price market not supported live', 'Unavailable USDC outcome',
       'Settled outcome', 'Market expiry unavailable or inside safety buffer',
@@ -174,18 +176,17 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     if (state.index < fields.length) return prompt(ctx, state);
     // Core validates again. This check prevents an obviously inconsistent review.
     const p = state.policy;
-    // Budget / minimum price bounds all budget-feasible buys. Round up so a
-    // fractional holding is not cut short; retain the policy's 1..1e6 safety cap.
-    // Core still rejects unsupported monetary inputs and enforces spend + fees.
-    p.maxInventoryShares = Math.min(1_000_000, Math.max(1, Math.ceil(p.budgetUsdc / p.minPrice)));
-    if (p.minPrice >= p.maxPrice || p.orderSizeShares > p.maxInventoryShares || p.maxLossUsdc > p.budgetUsdc) {
+    if (p.maxLossUsdc > p.budgetUsdc) {
       state.index = 0; state.policy = { mode: p.mode, account: p.account, network: p.network, event: p.event };
       await ctx.reply(t('liq_inconsistent'));
       return prompt(ctx, state);
     }
     state.state = 'LIQUIDITY_PROPOSING';
     try {
-      const s = await (await service()).proposeLiquiditySession(p, { requestId: randomBytes(16).toString('hex') });
+      const {automaticLiquidityPolicy}=await import('../../liquidity/automatic-policy.js');
+      const derived=await automaticLiquidityPolicy(state.client,p,now);
+      if(!current(ctx,state))return;
+      const s = await (await service()).proposeLiquiditySession(derived, { requestId: randomBytes(16).toString('hex') });
       if (!current(ctx, state)) {await (await service()).stopLiquiditySession(s.id,{ownerId:ctx.from.id,reason:'owner_stop'});return;}
       return showReview(ctx, s.id, state);
     } catch (error) { if (current(ctx, state)) { await runtime.invalidateUserState(ctx.chat.id); return serviceFailure(ctx, t, error); } }
@@ -259,10 +260,10 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
         `${t('liq_spendable_spot')}: ${a.availableUsdc==null?t('liq_unknown'):a.availableUsdc.toFixed(2)} USDC`,
         `${t('liq_quote_deadline')}: ${a.legs.every(l=>Number.isSafeInteger(l.expiry))?new Date(Math.min(...a.legs.map(l=>l.expiry))-3600000).toISOString():t('liq_unknown')}`,
         ...a.reasons.map(r=>{const leg=a.legs.find(l=>l.coin===r.coin);return `${r.coin?(leg?`${clean(leg.name)} · ${clean(leg.sideName)} (${clean(r.coin)})`:clean(r.coin))+' · ':''}${t('liq_assessment_'+r.code)}${r.detail?' · '+clean(r.detail):''}`;}),
-        ...a.legs.filter(l=>!l.unavailable).map(l=>`${clean(l.name)} · ${clean(l.sideName)} (${clean(l.coin)}) · ${t('liq_minimum_shares')}: ${l.minimumShares}; ${t('liq_order_label')}: ${l.size}`),
+        ...a.legs.filter(l=>!l.unavailable).map(l=>`${clean(l.name)} · ${clean(l.sideName)} (${clean(l.coin)}) · ${t('liq_minimum_shares')}: ${l.minimumShares}; ${t('liq_order_label')}: ${l.size}; ${t('liq_quote_prices')}: ${l.bid} / ${l.ask}; ${t('liq_available_spread')}: ${(l.ask-l.bid).toFixed(5)}; ${t('liq_fee_bound')}: ${l.feeRate}`),
         ...(a.pairs||[]).filter(p=>!p.unavailable).map(p=>`${clean(a.legs.find(l=>l.outcomeId===p.outcomeId)?.name)} · ${t('liq_pair_net_edge')}: ${p.netMatchedEdgePerShare.toFixed(5)}`),
-        ...values.map((key,i)=>`${t(['liq_network','liq_duration_label','liq_budget_label','liq_inventory_label','liq_order_label','liq_min_label','liq_max_label','liq_spread_label','liq_loss_label','liq_actions_label'][i])}: ${clean(p[key])}`),
-        ...(expectedState?.state==='LIQUIDITY_PROPOSING'?[t('liq_inventory_auto_note')]:[]),
+        ...values.filter(key=>key!=='orderSizeShares').map(key=>`${t({network:'liq_network',durationMinutes:'liq_duration_label',budgetUsdc:'liq_budget_label',maxInventoryShares:'liq_inventory_label',minPrice:'liq_min_label',maxPrice:'liq_max_label',minSpread:'liq_spread_label',maxLossUsdc:'liq_loss_label',maxActions:'liq_actions_label'}[key])}: ${clean(p[key])}${key==='minSpread'?` (${(p[key]*100).toFixed(3)} ${t('liq_percentage_points')})`:''}`),
+        ...(expectedState?.state==='LIQUIDITY_PROPOSING'?[t('liq_inventory_auto_note'),t('liq_automatic_note')]:[]),
         t('liq_budget_rule'),t('liq_risk'),t('liq_merged_book'),p.mode==='observe'?t('liq_observe_rule'):t('liq_live_rule')];
       if(!stillHere()) return false;
       const chunks=[];let part='';for(const line of lines){if(part.length+line.length+1>3500){chunks.push(part);part='';}part+=(part?'\n':'')+line;}if(part)chunks.push(part);

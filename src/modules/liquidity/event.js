@@ -59,7 +59,9 @@ export async function assessLiquidityEvent(client,policy,now=Date.now) {
       const q=bookQuote(await client.getOrderbook(leg.coin),now(),policy);
       const rate=feeEvidence(fees,m.feeScale);
       const spec=meta.outcomes.find(o=>o.outcome===leg.outcomeId);
-      const decimals=Number.isInteger(spec.szDecimals) && spec.szDecimals>=0 && spec.szDecimals<=8 ? spec.szDecimals : 0;
+      const precision=spec.sideSpecs?.[leg.side]?.szDecimals ?? spec.szDecimals;
+      if(precision!=null && (!Number.isInteger(precision)||precision<0||precision>8))throw Error('Invalid outcome precision');
+      const decimals=precision ?? 0;
       const unit=10**decimals,minimumShares=Math.ceil((10/q.bid-1e-10)*unit)/unit;
       const size=Math.max(policy.orderSizeShares,minimumShares);
       if(typeof client.prepareMakerOrder!=='function') throw Error('Maker preparation unavailable');

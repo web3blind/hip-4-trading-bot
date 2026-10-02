@@ -4,11 +4,13 @@ import {tmpdir} from 'node:os';
 import assert from 'node:assert/strict';
 import {HLClient} from '../../src/modules/hyperliquid.js';
 import {createLiquidityCoordinator} from '../../src/modules/liquidity/coordinator.js';
+import * as routedCoordinator from '../../src/modules/liquidity/coordinator.js';
 import {createLiquidityFeature} from '../../src/modules/bot/features/liquidity.js';
 import {createLiquidityMcp} from '../../src/modules/liquidity/mcp.js';
 import * as runtime from '../../src/modules/bot/runtime.js';
 import {setSessionConfig} from '../../src/modules/config.js';
-export function eventHarness({language='en',standalone=false}={}) {
+import {initDatabase} from '../../src/modules/database.js';
+export function eventHarness({language='en',standalone=false,routed=false}={}) {
  const dir=mkdtempSync(join(tmpdir(),'liq-event-connected-')),owner=77;
  const client=new HLClient('0x'+'1'.repeat(64),'testnet'),actions=[],orders=new Map(),fills=[],balances=new Map(),books={};
  let time=Date.now(),valid=true,spot=100,exchangeMode='normal';
@@ -35,8 +37,14 @@ export function eventHarness({language='en',standalone=false}={}) {
   assert.equal(a.type,'cancel');for(const w of a.cancels){assert(orders.has(w.o));orders.get(w.o).status='canceled';}
   return {status:'ok',response:{type:'cancel',data:{statuses:a.cancels.map(()=>'success')}}};
  };
+ if(routed)initDatabase({network:client.network,accountAddress:client.address});
  const credential={id:'1234567890abcdef',generation:'1234567890abcdef12345678',scope:'trade'};
- const c=createLiquidityCoordinator({getClient:()=>client,getOwner:()=>owner,dataDir:dir,now:()=>time,locks:new Map(),conflicts:()=>false,credentialCurrent:async()=>valid});
+ const c=routed?{
+  list:routedCoordinator.listLiquiditySessions,get:routedCoordinator.getLiquiditySession,
+  assess:routedCoordinator.assessLiquiditySession,propose:routedCoordinator.proposeLiquiditySession,
+  approve:routedCoordinator.approveLiquiditySession,stop:routedCoordinator.stopLiquiditySession,
+  tick:routedCoordinator.tickLiquidity,shutdown:routedCoordinator.shutdownLiquidity,
+ }:createLiquidityCoordinator({getClient:()=>client,getOwner:()=>owner,dataDir:dir,now:()=>time,locks:new Map(),conflicts:()=>false,credentialCurrent:async()=>valid});
  const api={listLiquiditySessions:()=>c.list(),getLiquiditySession:id=>c.get(id),assessLiquiditySession:id=>c.assess(id),proposeLiquiditySession:(p,o)=>c.propose(p,o),approveLiquiditySession:(id,o)=>c.approve(id,o),stopLiquiditySession:(id,o)=>c.stop(id,o)};
  const ui=createLiquidityFeature({service:async()=>api}),messages=[];
  const ctx={chat:{id:owner,type:'private'},from:{id:owner},messages,editMessageText:async(text,extra)=>messages.push({text,extra}),reply:async(text,extra)=>messages.push({text,extra}),answerCallbackQuery:async()=>{}};

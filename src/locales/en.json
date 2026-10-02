@@ -584,5 +584,11 @@
   "liq_spendable_spot": "Spendable Spot USDC (total − hold)",
   "liq_assessment_stale_event_snapshot": "The complete event book snapshot expired during assessment; refresh all legs",
   "liq_quote_deadline": "Last quoting time UTC, including safety buffer (not a settlement promise)",
-  "liq_pair_net_edge": "Conditional matched-pair net edge per matched share, ONE book; not expected profit"
+  "liq_pair_net_edge": "Conditional matched-pair net edge per matched share, ONE book; not expected profit",
+  "liq_automatic_note": "Order sizes are prepared from each side’s minimum order value. Quotes follow fresh bid/ask within the exchange probability bounds. The fee-aware minimum spread is an admission threshold, not a yield; the internal action limit is a safety guard.",
+  "liq_automatic_blocked": "Automatic assessment blocked: fresh evidence is required for every event side. Reopen the wizard to refresh.",
+  "liq_quote_prices": "Prepared buy / sell prices",
+  "liq_available_spread": "Book spread (probability)",
+  "liq_fee_bound": "Conservative fee rate",
+  "liq_percentage_points": "percentage points"
 }

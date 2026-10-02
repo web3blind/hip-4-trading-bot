@@ -90,7 +90,7 @@ for(const language of ['en','ru']){
  });
 }
 async function pick(f,text) {const b=buttons(f).find(b=>b.text===text);assert(b,`Missing ${text}`);await f.ui.choose(f.ctx,b.callback_data);}
-async function values(f) {for(const k of ['durationMinutes','budgetUsdc','orderSizeShares','minPrice','maxPrice','minSpread','maxLossUsdc','maxActions'])await f.ui.input(f.ctx,runtime.userStates.get(f.owner),String(f.policy[k]));}
+async function values(f) {for(const k of ['durationMinutes','budgetUsdc','maxLossUsdc'])await f.ui.input(f.ctx,runtime.userStates.get(f.owner),String(f.policy[k]));}
 for(const language of ['en','ru']) test(`connected Telegram event-only wizard and reviewed economics, private one-use owner grant (${language})`,async()=>{
  const f=eventHarness({language});resetOutcomeCache();try {
   await f.ui.menu(f.ctx);assert(!buttons(f).some(b=>/campaign/.test(b.callback_data)));
@@ -99,7 +99,7 @@ for(const language of ['en','ru']) test(`connected Telegram event-only wizard an
   assert.deepEqual(runtime.userStates.get(f.owner).policy.event,{type:'question',id:3});assert.equal(runtime.userStates.get(f.owner).policy.coin,undefined);
   assert(!buttons(f).some(b=>/side|outcome/.test(b.callback_data)));
   await values(f);const rows=await f.c.list();assert.equal(rows.length,1);assert.equal(rows[0].status,'draft');assert.equal(rows[0].legs.length,6);
-  const text=f.messages.at(-1).text;for(const coin of ['#300','#301','#310','#311','#320','#321'])assert(text.includes(coin));
+  const text=f.messages.map(m=>m.text).join('\n');for(const coin of ['#300','#301','#310','#311','#320','#321'])assert(text.includes(coin));
   assert(!/reward|campaign|payout|награды|выплаты/i.test(text));assert(!/liq_assessment_/.test(text));assert.equal(f.actions.length,0);
   await f.confirm();await f.ui.confirm(f.ctx);assert.equal((await f.c.get(rows[0].id)).status,'active');assert.equal(f.actions.length,0);
   await f.c.tick();assert.equal(f.actions.filter(a=>a.type==='order').length,1);await f.ui.stop(f.ctx,rows[0].id);assert.equal((await f.c.get(rows[0].id)).status,'stopped');
@@ -160,11 +160,11 @@ for(const replacement of ['cancel','new start','client'])test(`async catalog ref
 test('cancel while proposal is awaiting prevents late confirmation and revokes the unused draft',async()=>{
  const f=eventHarness();resetOutcomeCache();try {
   await f.ui.start(f.ctx,'live');await pick(f,'Championship');
-  const fields=['durationMinutes','budgetUsdc','orderSizeShares','minPrice','maxPrice','minSpread','maxLossUsdc'];
+  const fields=['durationMinutes','budgetUsdc'];
   for(const k of fields)await f.ui.input(f.ctx,runtime.userStates.get(f.owner),String(f.policy[k]));
   let entered,release;const reached=new Promise(r=>entered=r),hold=new Promise(r=>release=r),original=f.api.proposeLiquiditySession;
   f.api.proposeLiquiditySession=async(...args)=>{entered();await hold;return original(...args);};
-  const pending=f.ui.input(f.ctx,runtime.userStates.get(f.owner),String(f.policy.maxActions));await reached;await f.ui.cancel(f.ctx);release();await pending;
+  const pending=f.ui.input(f.ctx,runtime.userStates.get(f.owner),String(f.policy.maxLossUsdc));await reached;await f.ui.cancel(f.ctx);release();await pending;
   assert.equal(runtime.userStates.has(f.owner),false);assert(!buttons(f).some(b=>b.callback_data.startsWith('confirm_liquidity_session:')));const rows=await f.c.list();assert.equal(rows[0].status,'stopped');assert.equal(f.actions.length,0);
  }finally{await f.close();}
 });
@@ -172,7 +172,7 @@ test('invalid numeric input and inconsistent total bounds retain the event, neve
  const f=eventHarness();resetOutcomeCache();try {
   await f.ui.start(f.ctx,'live');await pick(f,'Championship');const s=runtime.userStates.get(f.owner);
   for(const raw of ['#300','-1','0','NaN','1abc']){await f.ui.input(f.ctx,s,raw);assert.equal(s.index,0);}
-  const broken={...f.policy,minPrice:.8,maxPrice:.2};for(const k of ['durationMinutes','budgetUsdc','orderSizeShares','minPrice','maxPrice','minSpread','maxLossUsdc','maxActions'])await f.ui.input(f.ctx,s,String(broken[k]));
+  const broken={...f.policy,maxLossUsdc:101};for(const k of ['durationMinutes','budgetUsdc','maxLossUsdc'])await f.ui.input(f.ctx,s,String(broken[k]));
   assert.equal(s.index,0);assert.deepEqual(s.policy.event,{type:'question',id:3});assert.equal((await f.c.list()).length,0);
  }finally{await f.close();}
 });
