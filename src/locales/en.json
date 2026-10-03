@@ -31,6 +31,8 @@
   "liq_previous": "Previous page",
   "liq_next": "Next page",
   "liq_catalog_note": "Book quality only; fees, budget and all maker limits are checked before approval. Not a profit forecast.",
+  "liq_catalog_unavailable": "Could not load the event catalogue: public market data is unavailable or not fresh enough. Retry, or return to the menu.",
+  "liq_catalog_partial": "Partial, non-atomic scan: only complete events with fresh sufficient books are shown. Other events could not be verified; this is not a complete list.",
   "liq_no_sufficient_books": "No events with sufficient order-book depth",
   "liq_select_buttons": "Choose a market using the buttons above.",
   "liq_duration": "Duration in minutes (for example 30):",

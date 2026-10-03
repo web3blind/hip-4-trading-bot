@@ -41,11 +41,12 @@ export async function catalogueEventQuality(meta,resolved,books,at=Date.now()) {
   return {eligible:legs.every(l=>!l.reasons.length),legs};
 }
 
-/** Fresh public scan, six reads maximum, no authoritative partial API result. */
+/** Non-atomic public scan; only complete fresh qualified events are published. */
+const catalogueError=(code,stage)=>Object.assign(Error(code==='catalogue_unknown'?'Catalogue freshness unavailable':code==='catalogue_deadline'?'Catalogue deadline exceeded':code==='catalogue_superseded'?'Catalogue refresh superseded':'Catalogue public data unavailable'),{code,stage});
 export async function liquidityCatalogue(client,{selected,isCurrent=()=>true,now=Date.now,timeoutMs=30000}={}) {
   const controller=new AbortController(),options={signal:controller.signal};
-  let stopped=false,timer,poll;
-  const check=()=>{if(stopped||!isCurrent())throw Error('Catalogue refresh superseded');};
+  let stopped=false,timer,poll,stage='metadata';
+  const check=()=>{if(stopped||!isCurrent())throw catalogueError('catalogue_superseded',stage);};
   const work=(async()=>{
     check();const meta=await client.getOutcomeMeta(options);check();
     if(!Array.isArray(meta?.questions)||!Array.isArray(meta?.outcomes))throw Error('Metadata unavailable');
@@ -54,42 +55,65 @@ export async function liquidityCatalogue(client,{selected,isCurrent=()=>true,now
       ...meta.questions.map(q=>({type:'question',id:q.question})),
       ...meta.outcomes.filter(o=>!grouped.has(o.outcome)).map(o=>({type:'standalone',id:o.outcome})),
     ];
-    const events=[];
+    const events=[];let membershipUnknown=0;
     for(const ref of refs) {
       let resolved;
-      try {resolved=resolveLiquidityEvent(meta,ref);}catch(error){if(error.code==='market_unsuitable')continue;throw error;}
+      try {resolved=resolveLiquidityEvent(meta,ref);}catch(error){if(error.code==='market_unsuitable')continue;membershipUnknown++;continue;}
       // Public expiry/settlement only; never require account fees or live policy.
       try {for(const l of resolved.legs)market(meta,l.coin,now(),false);}catch(error){if(error.code==='market_unsuitable')continue;/* Unknown timing is checked in the unchanged final assessment, not book quality. */}
       events.push({resolved,books:new Map()});
     }
     const fresh=(book,at)=>{const time=numeric(book?.time);return Number.isSafeInteger(time)&&time<=at+1000&&at-time<=5000;};
+    const allFresh=(e,at)=>e.resolved.legs.every(l=>fresh(e.books.get(l.coin),at));
+    async function classify(e) {
+      const at=now();
+      e.quality=allFresh(e,at)?await catalogueEventQuality(meta,e.resolved,e.books,at):null;
+      check();
+      // Awaited rounding must not turn old evidence into a verified weak result.
+      if(!allFresh(e,now()))e.quality=null;
+    }
     async function read(jobs) {
-      let index=0;
+      let index=0;const remaining=new Map();
+      for(const {e} of jobs)remaining.set(e,(remaining.get(e)||0)+1);
       await Promise.all(Array.from({length:Math.min(6,jobs.length)},async()=>{
         while(index<jobs.length) {
           check();const {e,l}=jobs[index++];const book=await client.getOrderbook(l.coin,options);check();
-          e.books.set(l.coin,book);
+          e.books.set(l.coin,book);remaining.set(e,remaining.get(e)-1);
+          if(!remaining.get(e))await classify(e);
         }
       }));
     }
+    stage='books';
     await read(events.flatMap(e=>e.resolved.legs.map(l=>({e,l}))));
-    // One bounded refresh sweep, only for expired/unknown timestamps. Do not
-    // repeatedly chase freshness across a slow catalogue or claim UNKNOWN weak.
+    // Keep quality observed at each event's completion. Stale unrelated books
+    // are UNKNOWN, not weak. Prioritize EARLY qualified candidates, with a hard
+    // 24-book refresh budget (whole events, at most two reads/coin). Never chase
+    // freshness across the entire universe a second time.
+    stage='candidate_refresh';let budget=24;const refresh=[];
     const at=now();
-    await read(events.flatMap(e=>e.resolved.legs.filter(l=>!fresh(e.books.get(l.coin),at)).map(l=>({e,l}))));
-    check();
-    const qualityAt=now();
-    await Promise.all(events.map(async e=>{e.quality=await catalogueEventQuality(meta,e.resolved,e.books,qualityAt);}));
-    check();
-    const finalAt=now(); // no awaits between this all-book gate and returning
-    if(events.some(e=>e.resolved.legs.some(l=>!fresh(e.books.get(l.coin),finalAt))))throw Error('Catalogue freshness unavailable');
-    return events.filter(e=>e.quality?.eligible).map(({resolved:r})=>({type:r.event.type,
+    for(const e of [...events.filter(e=>e.quality?.eligible),...events.filter(e=>!e.quality)]) {
+      if(allFresh(e,at)||e.resolved.legs.length>budget)continue;
+      budget-=e.resolved.legs.length;
+      refresh.push(...e.resolved.legs.map(l=>({e,l})));
+    }
+    await read(refresh);check();stage='publication';
+    const finalAt=now(); // no awaits between publication freshness and return
+    const published=events.filter(e=>e.quality?.eligible&&allFresh(e,finalAt));
+    const weak=events.filter(e=>e.quality&&!e.quality.eligible).length;
+    const unknown=membershipUnknown+events.length-published.length-weak;
+    if(!published.length&&unknown)throw catalogueError('catalogue_unknown',stage);
+    const result=published.map(({resolved:r})=>({type:r.event.type,
       ...(r.event.type==='question'?{questionId:r.event.id}:{outcomeId:r.event.id}),name:r.label}));
+    // Keep the existing array/pagination API; summary is public counts only.
+    result.summary={total:membershipUnknown+events.length,qualified:published.length,weak,unknown,partial:unknown>0};
+    result.validUntil=published.length?Math.min(...published.flatMap(e=>e.resolved.legs.map(l=>numeric(e.books.get(l.coin).time)+5000))):Infinity;
+    return result;
   })();
   const interrupted=new Promise((_,reject)=>{
-    timer=setTimeout(()=>{stopped=true;reject(Error('Catalogue deadline exceeded'));},timeoutMs);
-    poll=setInterval(()=>{if(!isCurrent()){stopped=true;reject(Error('Catalogue refresh superseded'));}},50);
+    timer=setTimeout(()=>{stopped=true;reject(catalogueError('catalogue_deadline',stage));},timeoutMs);
+    poll=setInterval(()=>{if(!isCurrent()){stopped=true;reject(catalogueError('catalogue_superseded',stage));}},50);
   });
   try{return await Promise.race([work,interrupted]);}
+  catch(error){throw /^catalogue_(unknown|deadline|superseded)$/.test(error?.code||'')?error:catalogueError('catalogue_api',stage);}
   finally{stopped=true;controller.abort();clearTimeout(timer);clearInterval(poll);}
 }
