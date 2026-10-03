@@ -563,6 +563,7 @@
   "liq_suitability_unavailable": "Assessment unavailable — required data could not be verified; no activation",
   "liq_retry": "Retry with saved inputs",
   "liq_assessment_no_two_sided_book": "Verified book has no two-sided quotes; unsuitable for quoting",
+  "liq_assessment_live_price_unsupported": "Price-market templates are not supported for live liquidity. Observation remains available when timing, books and fees can be verified.",
   "liq_assessment_market_unsuitable": "Verified market rules or deadline do not permit this session",
   "liq_assessment_fee_exceeds_reserve": "Conservative fee ceiling exceeds the fixed reserve; no activation",
   "liq_assessment_rounded_legs_unsuitable": "Prepared maker orders cannot satisfy minimum value or price corridor",

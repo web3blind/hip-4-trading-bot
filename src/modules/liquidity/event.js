@@ -110,7 +110,7 @@ export async function assessLiquidityEvent(client,policy,now=Date.now) {
       legs.push({...leg,...fresh,expiry:m.expiry,timing:m.timing,feeRate:rate,minimumShares,size:prepared.size,
         minReserve:minimum.maxSpend,
         reserve:prepared.maxSpend,bidDepth,askDepth,netRoundTripSpread});
-    } catch(error) {const code=['book_data_unavailable','book_unsuitable','no_two_sided_book','market_unsuitable','fee_exceeds_reserve','rounded_legs_unsuitable'].includes(error.code)?error.code:'leg_unavailable';reasons.push({code,coin:leg.coin,detail:error.message});legs.push({...leg,unavailable:true});}
+    } catch(error) {const code=['book_data_unavailable','book_unsuitable','no_two_sided_book','market_unsuitable','fee_exceeds_reserve','rounded_legs_unsuitable'].includes(error.code)?error.code:'leg_unavailable';reasons.push({code,coin:leg.coin,detail:error.message,...(error.subreason==='live_price_unsupported'?{subreason:error.subreason}:{})});legs.push({...leg,unavailable:true});}
   }
   const valid=legs.every(l=>!l.unavailable);
   const minimumBudgetUsdc=valid?legs.reduce((n,l)=>n+l.minReserve,0):null;

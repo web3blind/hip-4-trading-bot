@@ -72,7 +72,7 @@ export async function catalogueEventAdmission(meta,resolved,books,fees,at=Date.n
 
 /** Non-atomic account-specific scan; complete fresh fee-admitted events only. */
 const catalogueError=(code,stage)=>Object.assign(Error(code==='catalogue_unknown'?'Catalogue freshness unavailable':code==='catalogue_deadline'?'Catalogue deadline exceeded':code==='catalogue_superseded'?'Catalogue refresh superseded':'Catalogue data unavailable'),{code,stage});
-export async function liquidityCatalogue(client,{selected,isCurrent=()=>true,now=Date.now,timeoutMs=30000}={}) {
+export async function liquidityCatalogue(client,{selected,mode='live',isCurrent=()=>true,now=Date.now,timeoutMs=30000}={}) {
   const controller=new AbortController(),options={signal:controller.signal};
   let stopped=false,timer,poll,stage='metadata';
   const check=()=>{if(stopped||!isCurrent())throw catalogueError('catalogue_superseded',stage);};
@@ -96,8 +96,8 @@ export async function liquidityCatalogue(client,{selected,isCurrent=()=>true,now
     for(const ref of refs) {
       let resolved;
       try {resolved=resolveLiquidityEvent(meta,ref);}catch(error){if(error.code==='market_unsuitable')continue;membershipUnknown++;continue;}
-      // Expiry/settlement here; unchanged final assessment still checks all live policy.
-      try {for(const l of resolved.legs)market(meta,l.coin,now(),false);}catch(error){if(error.code==='market_unsuitable')continue;/* Unknown timing is checked in the unchanged final assessment, not book quality. */}
+      // Reuse final market guards for the selected mode; only explicit observation bypasses live restrictions.
+      try {for(const l of resolved.legs)market(meta,l.coin,now(),mode!=='observe');}catch(error){if(error.code==='market_unsuitable')continue;/* Unknown timing is checked in the unchanged final assessment, not book quality. */}
       events.push({resolved,books:new Map()});
     }
     const fresh=(book,at)=>{const time=numeric(book?.time);return Number.isSafeInteger(time)&&time<=at+1000&&at-time<=5000;};

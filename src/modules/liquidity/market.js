@@ -8,10 +8,11 @@ export function market(meta, coin, at, live) {
   const spec=meta?.outcomes?.find(x=>x.outcome===outcomeId);
   if (!spec || spec.quoteToken !== 'USDC') throw Object.assign(new Error('Unavailable USDC outcome'),{code:'market_unsuitable'});
   const feeScale=num(spec.deployerFeeScale);
-  if(live && (feeScale===null || feeScale<0 || feeScale>10)) throw new Error('Outcome fee scale unavailable');
   const question=meta?.questions?.find(q=>q.question===spec.question || q.namedOutcomes?.includes(outcomeId) || q.fallbackOutcome===outcomeId);
   const desc=`${spec.description||''}|${question?.description||''}`;
-  if (live && /(?:priceBinary|binaryPrice|priceTouch|priceBucket|priceAbove|priceBelow|priceRange|targetPrice:|priceThresholds:)/i.test(`${spec.name||''}|${question?.name||''}|${desc}`)) throw Object.assign(new Error('Short-expiry price market not supported live'),{code:'market_unsuitable'});
+  if (live && /(?:priceBinary|binaryPrice|priceTouch|priceBucket|priceAbove|priceBelow|priceRange|targetPrice:|priceThresholds:)/i.test(`${spec.name||''}|${question?.name||''}|${desc}`)) throw Object.assign(new Error('Price-market template not supported live'),{code:'market_unsuitable',subreason:'live_price_unsupported'});
+  // Template exclusion is authoritative even when fee evidence is unavailable.
+  if(live && (feeScale===null || feeScale<0 || feeScale>10)) throw new Error('Outcome fee scale unavailable');
   const parse = value => {
     if(typeof value==='number' && Number.isSafeInteger(value) && value>1e12) return value;
     if(typeof value!=='string') return null;

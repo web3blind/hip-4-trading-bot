@@ -73,7 +73,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     if (action.kind === 'menu') { await runtime.invalidateUserState(ctx.chat.id); return menu(ctx); }
     try {
       const selected=action.kind==='event'?{type:action.event.split(':')[0],id:Number(action.event.split(':')[1])}:undefined;
-      const events = await liquidityCatalogue(state.client,{selected,now,isCurrent:()=>current(ctx,state)&&state.token===token});
+      const events = await liquidityCatalogue(state.client,{selected,mode:state.policy.mode,now,isCurrent:()=>current(ctx,state)&&state.token===token});
       if (!current(ctx, state) || state.token !== token) return;
       if (action.kind === 'view') {
         if (state.view.level === 'events') state.eventPage = state.view.page;
@@ -116,7 +116,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
   async function serviceFailure(ctx, t, error, keyboard=back(t)) {
     if(error?.assessment) {
       const a=error.assessment;
-      const rows=a.reasons.map(r=>{const l=a.legs.find(l=>l.coin===r.coin);return `${l?`${clean(l.name)} · ${clean(liquidityDisplaySide(l.sideName,t))} (${clean(l.coin)}) · `:''}${t('liq_assessment_'+r.code)}`;});
+      const rows=a.reasons.map(r=>{const l=a.legs.find(l=>l.coin===r.coin);return `${l?`${clean(l.name)} · ${clean(liquidityDisplaySide(l.sideName,t))} (${clean(l.coin)}) · `:''}${t('liq_assessment_'+(r.subreason==='live_price_unsupported'?r.subreason:r.code))}`;});
       const state=runtime.userStates.get(ctx.chat.id),binding=runtime.runtimeBinding(),client=runtime.hlClient;
       const chunks=[];let part='';
       for(const row of [t('liq_suitability_'+a.suitability),...rows]){if(part.length+row.length+1>3500){chunks.push(part);part='';}part+=(part?'\n':'')+row;}if(part)chunks.push(part);
@@ -126,6 +126,8 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
       return;
     }
     const message = error?.message;
+    if(error?.subreason==='live_price_unsupported' || message==='Price-market template not supported live')
+      return screen(ctx,t('liq_assessment_live_price_unsupported'),keyboard);
     const category = ['Short-expiry price market not supported live', 'Unavailable USDC outcome',
       'Settled outcome', 'Market expiry unavailable or inside safety buffer',
       'Decision cutoff unavailable or near', 'Market expiry near'].includes(message) ? 'liq_market_blocked'
@@ -185,7 +187,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     if (!current(ctx, state)) return;
     const token=state.token;
     try {
-      const events = await liquidityCatalogue(state.client,{now,isCurrent:()=>current(ctx,state)&&state.token===token});
+      const events = await liquidityCatalogue(state.client,{mode:state.policy.mode,now,isCurrent:()=>current(ctx,state)&&state.token===token});
       if (current(ctx, state) && state.token===token) await catalogScreen(ctx, state, events);
     } catch(error) { if (current(ctx, state) && state.token===token) await catalogueFailure(ctx,state,t,error); }
   }
@@ -252,7 +254,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
       state.state = 'LIQUIDITY_CATALOG'; state.token = randomBytes(8).toString('hex');
       const refreshToken=state.token;
       try {
-        const events=await liquidityCatalogue(state.client,{now,isCurrent:()=>current(ctx,state)&&state.token===refreshToken});
+        const events=await liquidityCatalogue(state.client,{mode:state.policy.mode,now,isCurrent:()=>current(ctx,state)&&state.token===refreshToken});
         if(current(ctx,state)&&state.token===refreshToken)return await catalogScreen(ctx,state,events,{level:'events',page:state.eventPage||1});
       } catch(error) { if (current(ctx,state)&&state.token===refreshToken) await catalogueFailure(ctx,state,t,error); }
       return;
@@ -315,7 +317,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
         `${t('liq_required_budget')}: ${a.requiredBudgetUsdc==null?t('liq_unknown'):a.requiredBudgetUsdc.toFixed(2)} USDC`,
         `${t('liq_spendable_spot')}: ${a.availableUsdc==null?t('liq_unknown'):a.availableUsdc.toFixed(2)} USDC`,
         `${t('liq_quote_deadline')}: ${a.legs.every(l=>Number.isSafeInteger(l.expiry))?new Date(Math.min(...a.legs.map(l=>l.expiry))-3600000).toISOString():t('liq_unknown')}`,
-        ...a.reasons.map(r=>{const leg=a.legs.find(l=>l.coin===r.coin);return `${r.coin?(leg?`${clean(leg.name)} · ${clean(liquidityDisplaySide(leg.sideName,t))} (${clean(r.coin)})`:clean(r.coin))+' · ':''}${t('liq_assessment_'+r.code)}${r.detail?' · '+clean(r.detail):''}`;}),
+        ...a.reasons.map(r=>{const leg=a.legs.find(l=>l.coin===r.coin);return `${r.coin?(leg?`${clean(leg.name)} · ${clean(liquidityDisplaySide(leg.sideName,t))} (${clean(r.coin)})`:clean(r.coin))+' · ':''}${t('liq_assessment_'+(r.subreason==='live_price_unsupported'?r.subreason:r.code))}${r.detail?' · '+clean(r.detail):''}`;}),
         ...a.legs.filter(l=>!l.unavailable).map(l=>`${clean(l.name)} · ${clean(liquidityDisplaySide(l.sideName,t))} (${clean(l.coin)}) · ${t('liq_minimum_shares')}: ${l.minimumShares}; ${t('liq_order_label')}: ${l.size}; ${t('liq_quote_prices')}: ${l.bid} / ${l.ask}; ${t('liq_available_spread')}: ${(l.ask-l.bid).toFixed(5)}; ${t('liq_fee_bound')}: ${(Math.ceil(l.feeRate*1e7)/1e5).toFixed(5)}%`),
         ...(a.pairs||[]).filter(p=>!p.unavailable).map(p=>`${clean(a.legs.find(l=>l.outcomeId===p.outcomeId)?.name)} · ${t('liq_pair_net_edge')}: ${p.netMatchedEdgePerShare.toFixed(5)}`),
         ...values.filter(key=>key!=='orderSizeShares').map(key=>`${t({network:'liq_network',durationMinutes:'liq_duration_label',budgetUsdc:'liq_budget_label',maxInventoryShares:'liq_inventory_label',minPrice:'liq_min_label',maxPrice:'liq_max_label',minSpread:'liq_spread_label',maxLossUsdc:'liq_loss_label',maxActions:'liq_actions_label'}[key])}: ${clean(p[key])}${key==='minSpread'?` (${(p[key]*100).toFixed(3)} ${t('liq_percentage_points')})`:''}`),
