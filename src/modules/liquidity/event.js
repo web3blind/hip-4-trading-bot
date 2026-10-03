@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {market, bookQuote, feeEvidence} from './market.js';
-import {formatTemplateTitle} from '../bot/ui/formatters.js';
+import {liquidityName,liquiditySideName} from './labels.js';
 export function spendableSpotUsdc(data) {
   if(!Array.isArray(data?.balances)) throw Error('Spot USDC unavailable');
   const rows=data.balances.filter(b=>b.coin==='USDC');
@@ -30,10 +30,10 @@ export function resolveLiquidityEvent(meta,event) {
     return matches[0];
   });
   const legs=specs.flatMap(o=>[0,1].map(side=>({coin:'#'+(o.outcome*10+side),outcomeId:o.outcome,side,
-    name:label(formatTemplateTitle(o.name,o.description || question?.description) || o.name || `Outcome ${o.outcome}`),sideName:label(o.sideSpecs?.[side]?.name || (side===0?'YES':'NO')),
+    name:label(liquidityName(o,question,question?.fallbackOutcome===o.outcome)),sideName:label(liquiditySideName(o,side,question)),
     fallback:question?.fallbackOutcome===o.outcome})));
   if(legs.some(l=>!Number.isSafeInteger(Number(l.coin.slice(1))))) throw Error('Invalid outcome encoding');
-  return {event:{...event},label:label(formatTemplateTitle(question?.name||specs[0].name,question?.description||specs[0].description) || question?.name || specs[0].name || `${event.type} ${event.id}`),legs,
+  return {event:{...event},label:label(liquidityName(question || specs[0])),legs,
     members:ids,fingerprint:hash({question,specs})};
 }
 
@@ -50,8 +50,9 @@ export async function assessLiquidityEvent(client,policy,now=Date.now) {
   const meta=await client.getOutcomeMeta();let resolved;
   try {resolved=resolveLiquidityEvent(meta,policy.event);} catch(error) {
     const q=meta?.questions?.find(q=>q.question===policy.event?.id),ids=policy.event?.type==='question'?[...(Array.isArray(q?.namedOutcomes)?q.namedOutcomes:[]),q?.fallbackOutcome]:[policy.event?.id];
-    const legs=ids.flatMap(id=>[0,1].map(side=>({coin:Number.isSafeInteger(id)?'#'+(10*id+side):null,outcomeId:id,side,name:id==null?'Fallback missing':meta?.outcomes?.find(o=>o.outcome===id)?.name || `Outcome ${id}`,sideName:side===0?'YES':'NO',fallback:id===q?.fallbackOutcome,unavailable:true})));
-    return {event:policy.event,label:label(q?.name)||`${policy.event?.type} ${policy.event?.id}`,legs,members:ids,fingerprint:hash({q,ids,legs}),observedAt:now(),suitability:error.code==='market_unsuitable'?'unsuitable':'unavailable',minimumBudgetUsdc:null,requiredBudgetUsdc:null,reasons:[{code:error.code || 'membership_unavailable',detail:error.message}]};
+    const sourceLegs=ids.flatMap(id=>[0,1].map(side=>({coin:Number.isSafeInteger(id)?'#'+(10*id+side):null,outcomeId:id,side,name:id==null?'Fallback missing':meta?.outcomes?.find(o=>o.outcome===id)?.name || `Outcome ${id}`,sideName:side===0?'YES':'NO',fallback:id===q?.fallbackOutcome,unavailable:true})));
+    const legs=sourceLegs.map(l=>{const o=meta?.outcomes?.find(o=>o.outcome===l.outcomeId);return {...l,name:l.outcomeId==null?'Fallback missing':liquidityName(o || {outcome:l.outcomeId},q,l.fallback),sideName:liquiditySideName(o,l.side,q)};});
+    return {event:policy.event,label:label(liquidityName(q || meta?.outcomes?.find(o=>o.outcome===policy.event?.id) || {outcome:policy.event?.id})),legs,members:ids,fingerprint:hash({q,ids,legs:sourceLegs}),observedAt:now(),suitability:error.code==='market_unsuitable'?'unsuitable':'unavailable',minimumBudgetUsdc:null,requiredBudgetUsdc:null,reasons:[{code:error.code || 'membership_unavailable',detail:error.message}]};
   }
   const reasons=[],legs=[];let fees,available,balances;
   try {fees=await client.getUserFees();} catch {reasons.push({code:'fees_unavailable'});}

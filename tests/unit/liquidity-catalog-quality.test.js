@@ -207,7 +207,7 @@ function mixedGroups(f,count=OUTCOMES_PAGE_SIZE+4){
  for(let i=0;i<count;i++){
   const ids=[100+i*3,101+i*3,102+i*3];
   f.meta.questions.push({question:100+i,name:`Group ${i}`,namedOutcomes:ids.slice(0,2),fallbackOutcome:ids[2],settledNamedOutcomes:[]});
-  for(const id of ids){f.meta.outcomes.push({outcome:id,name:`Member ${id}`,quoteToken:'USDC',expiry:Date.now()+86400000,szDecimals:0});for(const side of [0,1])f.books['#'+(id*10+side)]={time:Date.now(),levels:[[{px:'0.4',sz:'1000'}],[{px:'0.6',sz:'1000'}]]};}
+  for(const id of ids){f.meta.outcomes.push({outcome:id,name:`Member ${id}`,quoteToken:'USDC',expiry:Date.now()+86400000,szDecimals:0,deployerFeeScale:1});for(const side of [0,1])f.books['#'+(id*10+side)]={time:Date.now(),levels:[[{px:'0.4',sz:'1000'}],[{px:'0.6',sz:'1000'}]]};}
   if(i===1||i===3)f.books['#'+(ids[2]*10+1)].levels[1][0].sz='1';else strong.push(`Group ${i}`);
  }
  return strong;
@@ -216,12 +216,13 @@ for(const language of ['en','ru'])test(`real routers paginate mixed strong/weak 
  const f=eventHarness({language,routed:true});try{
   const strong=mixedGroups(f),t=await getTranslator(language),reads=[];let pending=0,peak=0;
   const read=f.client.getOrderbook;f.client.getOrderbook=async coin=>{reads.push(coin);pending++;peak=Math.max(peak,pending);await new Promise(r=>setTimeout(r,2));try{return await read(coin);}finally{pending--;}};
-  f.client.getUserFees=f.client.getUserBalances=f.client.getOpenOrders=async()=>assert.fail('Catalogue must not read private/account evidence');
+  let feeReads=0;f.client.getUserFees=async()=>{feeReads++;return f.fees;};
+  f.client.getUserBalances=f.client.getOpenOrders=async()=>assert.fail('Catalogue must not read capital/orders');
   let metaReads=0;const meta=f.client.getOutcomeMeta;f.client.getOutcomeMeta=async()=>{metaReads++;return meta();};
   await start(f);
   const groupNames=()=>buttons(f).filter(b=>/^Group /.test(b.text)).map(b=>b.text);
   assert.deepEqual(groupNames(),strong.slice(0,OUTCOMES_PAGE_SIZE));assert(f.messages.at(-1).text.includes('1/2'));
-  assert.equal(metaReads,1);assert.equal(reads.length,f.meta.outcomes.length*2);assert.equal(new Set(reads).size,reads.length);assert(peak<=6&&peak>1);
+  assert.equal(metaReads,1);assert.equal(feeReads,1);assert.equal(reads.length,f.meta.outcomes.length*2);assert.equal(new Set(reads).size,reads.length);assert(peak<=6&&peak>1);
   const next=buttons(f).find(b=>b.text===t('liq_next')).callback_data;
   await route(f,next);assert.deepEqual(groupNames(),strong.slice(OUTCOMES_PAGE_SIZE));
   const pick=buttons(f).find(b=>/^Group /.test(b.text)).callback_data;
@@ -266,20 +267,21 @@ test('API error after strong event never presents incomplete scan as complete ca
   assert.equal(f.actions.length,0);
  }finally{await f.close();}
 });
-for(const stop of ['cancel','deadline','metadata'])test(`real HLClient aborts in-flight public transport on ${stop}`,async()=>{
+for(const stop of ['cancel','deadline','metadata','fees'])test(`real HLClient aborts in-flight unsigned info transport on ${stop}`,async()=>{
  const f=eventHarness(),client=new HLClient(null,'testnet'),originalFetch=globalThis.fetch;let active=true,entered,aborted=0,calls=0;
  const reached=new Promise(r=>entered=r);
  try{
   globalThis.fetch=async(url,{body,signal})=>{
    assert(url.endsWith('/info'));const request=JSON.parse(body);
-   assert(['outcomeMeta','l2Book'].includes(request.type),'No fee, account or exchange requests');
+   assert(['outcomeMeta','userFees','l2Book'].includes(request.type),'No balance, inventory or exchange requests');
+   if(request.type==='userFees'&&stop!=='fees')return {ok:true,json:async()=>structuredClone(f.fees)};
    if(request.type==='outcomeMeta'&&stop!=='metadata')return {ok:true,json:async()=>structuredClone(f.meta)};
-   calls++;if(stop==='metadata'||calls===6)entered();
+   calls++;if(stop==='metadata'||stop==='fees'||calls===6)entered();
    return new Promise((_,reject)=>{const fail=()=>{aborted++;reject(Error('Controlled transport aborted'));};if(signal.aborted)fail();else signal.addEventListener('abort',fail,{once:true});});
   };
   const pending=liquidityCatalogue(client,{selected:{type:'question',id:3},isCurrent:()=>active,timeoutMs:stop==='deadline'?80:1000});
   await enteredScan(pending,reached);if(stop!=='deadline')active=false;
   await assert.rejects(pending,/deadline|superseded/);await new Promise(r=>setTimeout(r,5));
-  assert.equal(aborted,calls);assert.equal(calls,stop==='metadata'?1:6);assert.equal(client.wallet,null);
+  assert.equal(aborted,calls);assert.equal(calls,['metadata','fees'].includes(stop)?1:6);assert.equal(client.wallet,null);
  }finally{globalThis.fetch=originalFetch;await f.close();}
 });

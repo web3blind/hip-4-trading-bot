@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {HLClient} from '../src/modules/hyperliquid.js';
 import {assessLiquidityEvent,resolveLiquidityEvent} from '../src/modules/liquidity/event.js';
 import {liquidityCatalogue,catalogueEventQuality} from '../src/modules/liquidity/catalog.js';
@@ -12,6 +13,9 @@ const info=client._infoRequest.bind(client);
 const catalogueMode=process.argv.includes('--catalogue');
 client._infoRequest=async (body,options)=>{if(catalogueMode)assert(['outcomeMeta','l2Book'].includes(body.type),'Catalogue smoke forbids private evidence reads');const start=performance.now();pending++;peak=Math.max(peak,pending);try{return await info(body,options);}finally{pending--;calls.push({type:body.type,coin:body.coin,ms:Math.round(performance.now()-start)});}};
 if(catalogueMode){
+ const feePath=process.argv[process.argv.indexOf('--fees-fixture')+1];
+ assert(process.argv.includes('--fees-fixture')&&feePath,'Catalogue smoke requires --fees-fixture <representative-fees.json>; no implicit account fee lookup');
+ const representativeFees=JSON.parse(readFileSync(feePath));client.getUserFees=async()=>structuredClone(representativeFees);
  const start=performance.now(),selected=await liquidityCatalogue(client,{selected:{type:'question',id:289}}),selectedMs=Math.round(performance.now()-start);
  const meta=await client.getOutcomeMeta(),resolved=resolveLiquidityEvent(meta,{type:'question',id:289}),books=new Map();
  for(let i=0;i<resolved.legs.length;i+=6)await Promise.all(resolved.legs.slice(i,i+6).map(async l=>books.set(l.coin,await client.getOrderbook(l.coin))));
@@ -22,7 +26,7 @@ if(catalogueMode){
  assert(!events.some(e=>e.questionId===289));assert(peak<=6);assert.equal(client.wallet,null);
  const count=xs=>xs.reduce((m,c)=>(m[c.type]=(m[c.type]||0)+1,m),{});
  console.log(JSON.stringify({at:new Date().toISOString(),network:'mainnet',readOnly:true,wallet:false,peakConcurrentInfoReads:peak,
-   selected:{question:289,elapsedMs:selectedMs,quality},full:{elapsedMs:Math.round(performance.now()-fullStart),eventCount:events.length,callCounts:count(calls.slice(before)),question289Excluded:true},callCounts:count(calls)},null,2));
+   accountEvidence:'Explicit representative fee fixture, NOT actual user fees',selected:{question:289,elapsedMs:selectedMs,quality},full:{elapsedMs:Math.round(performance.now()-fullStart),eventCount:events.length,callCounts:count(calls.slice(before)),question289Excluded:true},callCounts:count(calls)},null,2));
 }else {
 const results=[];
 for(const id of [250,198,289]) {

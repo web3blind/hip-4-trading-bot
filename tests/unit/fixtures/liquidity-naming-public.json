@@ -1,0 +1,329 @@
+{
+  "source": "https://api.hyperliquid.xyz/info",
+  "requests": [
+    "outcomeMeta",
+    "outcomeTemplates"
+  ],
+  "outcomes": [
+    {
+      "outcome": 3599,
+      "name": "template fallback",
+      "description": "other",
+      "sideSpecs": [
+        {
+          "name": "Yes"
+        },
+        {
+          "name": "No"
+        }
+      ],
+      "quoteToken": "USDC",
+      "venue": "out",
+      "deployerFeeScale": "1.0"
+    },
+    {
+      "outcome": 3600,
+      "name": "template:policyRateNoChange",
+      "description": "",
+      "sideSpecs": [
+        {
+          "name": "Yes"
+        },
+        {
+          "name": "No"
+        }
+      ],
+      "quoteToken": "USDC",
+      "venue": "out",
+      "deployerFeeScale": "1.0"
+    },
+    {
+      "outcome": 3601,
+      "name": "template:policyRateDecrease",
+      "description": "",
+      "sideSpecs": [
+        {
+          "name": "Yes"
+        },
+        {
+          "name": "No"
+        }
+      ],
+      "quoteToken": "USDC",
+      "venue": "out",
+      "deployerFeeScale": "1.0"
+    },
+    {
+      "outcome": 3602,
+      "name": "template:policyRateIncrease",
+      "description": "",
+      "sideSpecs": [
+        {
+          "name": "Yes"
+        },
+        {
+          "name": "No"
+        }
+      ],
+      "quoteToken": "USDC",
+      "venue": "out",
+      "deployerFeeScale": "1.0"
+    },
+    {
+      "outcome": 6214,
+      "name": "template:sportsContestWinner",
+      "description": "competition:NFL|contestType:Match|countedPlay:the full game including overtime|officialSource:National Football League (NFL)|participantA:Houston Texans|participantB:Dallas Cowboys|resolutionDeadline:20261005-1700|scheduledStart:20261004-1700|season:2026|shortNameA:HOU|shortNameB:DAL|sport:Football|stage:Regular Season",
+      "sideSpecs": [
+        {
+          "name": "template:{shortNameA}"
+        },
+        {
+          "name": "template:{shortNameB}"
+        }
+      ],
+      "quoteToken": "USDC",
+      "venue": "out",
+      "deployerFeeScale": "1.0"
+    },
+    {
+      "outcome": 6215,
+      "name": "template:sportsContestWinner",
+      "description": "competition:NFL|contestType:Match|countedPlay:the full game including overtime|officialSource:National Football League (NFL)|participantA:Chicago Bears|participantB:New York Jets|resolutionDeadline:20261005-1700|scheduledStart:20261004-1700|season:2026|shortNameA:CHI|shortNameB:NYJ|sport:Football|stage:Regular Season",
+      "sideSpecs": [
+        {
+          "name": "template:{shortNameA}"
+        },
+        {
+          "name": "template:{shortNameB}"
+        }
+      ],
+      "quoteToken": "USDC",
+      "venue": "out",
+      "deployerFeeScale": "1.0"
+    },
+    {
+      "outcome": 6527,
+      "name": "template fallback",
+      "description": "other",
+      "sideSpecs": [
+        {
+          "name": "Yes"
+        },
+        {
+          "name": "No"
+        }
+      ],
+      "quoteToken": "USDC",
+      "venue": "out",
+      "deployerFeeScale": "1.0"
+    },
+    {
+      "outcome": 6528,
+      "name": "template:sportsContestParticipant2",
+      "description": "participant:Croatia",
+      "sideSpecs": [
+        {
+          "name": "Yes"
+        },
+        {
+          "name": "No"
+        }
+      ],
+      "quoteToken": "USDC",
+      "venue": "out",
+      "deployerFeeScale": "1.0"
+    },
+    {
+      "outcome": 6529,
+      "name": "template:sportsContestDraw2",
+      "description": "",
+      "sideSpecs": [
+        {
+          "name": "Yes"
+        },
+        {
+          "name": "No"
+        }
+      ],
+      "quoteToken": "USDC",
+      "venue": "out",
+      "deployerFeeScale": "1.0"
+    },
+    {
+      "outcome": 6530,
+      "name": "template:sportsContestParticipant2",
+      "description": "participant:England",
+      "sideSpecs": [
+        {
+          "name": "Yes"
+        },
+        {
+          "name": "No"
+        }
+      ],
+      "quoteToken": "USDC",
+      "venue": "out",
+      "deployerFeeScale": "1.0"
+    }
+  ],
+  "questions": [
+    {
+      "question": 289,
+      "name": "template:policyRateDecision",
+      "description": "decisionDeadline:20261209-2300|decisionLabel:October 2026|institution:Federal Reserve's Open Market Committee|officialSource:Federal Reserve's Open Market Committee|policyMeasure:The upper bound target range of the federal funds rate|scheduledDecision:20261028-1800",
+      "fallbackOutcome": 3599,
+      "namedOutcomes": [
+        3600,
+        3601,
+        3602
+      ],
+      "settledNamedOutcomes": []
+    },
+    {
+      "question": 359,
+      "name": "template:sportsContestResult",
+      "description": "competition:UEFA Nations League|contestType:Match|countedPlay:regulation time, 90 minutes plus stoppage time|officialSource:Union of European Football Associations|participantA:Croatia|participantB:England|resolutionDeadline:20261004-1600|scheduledStart:20261003-1600|season:2026/27|sport:Soccer|stage:League A, Matchday 3",
+      "fallbackOutcome": 6527,
+      "namedOutcomes": [
+        6528,
+        6529,
+        6530
+      ],
+      "settledNamedOutcomes": []
+    }
+  ],
+  "templates": [
+    {
+      "id": "policyRateDecision",
+      "role": "question",
+      "name": "{institution} {decisionLabel} rate decision",
+      "description": "This market has three possible results: No change, Decrease, or Increase. Exactly one corresponding named outcome resolves to Yes; the other two and the protocol-created fallback resolve to No. It covers the {decisionLabel} {institution} decision concerning {policyMeasure}, scheduled for {scheduledDecision} UTC (the \"Decision\"). The Decision Value is the numeric value of {policyMeasure} announced by {officialSource}. The Prior Value is the value of that same measure in effect immediately before the Decision. No change resolves to Yes if the Decision Value equals the Prior Value. Decrease resolves to Yes if the Decision Value is lower. Increase resolves to Yes if the Decision Value is higher. If the Decision is rescheduled, the rescheduled decision applies if {officialSource} publishes it by {decisionDeadline} UTC. If the Decision is canceled or postponed without a replacement decision, or no official Decision Value is published by {decisionDeadline} UTC, No change resolves to Yes. Policy changes outside the scheduled Decision are ignored except when establishing the Prior Value. If {institution} replaces {policyMeasure}, the closest official successor measure identified by {officialSource} is used. Resolution uses the initially published decision; later revisions do not change the resolution. {officialSource} is the primary resolution source; independent reputable reporting may be used if it has not published the relevant decision. No change resolves to Yes under the deadline rule above only if neither {officialSource} nor independent reputable reporting establishes a Decision Value by {decisionDeadline} UTC. metadata=category:economics|subCategory:N/A|semanticRestriction:This market must refer to a scheduled policy rate decision by an official institution.",
+      "keywords": [
+        [
+          "decisionDeadline",
+          "dateTime"
+        ],
+        [
+          "decisionLabel",
+          "string"
+        ],
+        [
+          "institution",
+          "string"
+        ],
+        [
+          "officialSource",
+          "string"
+        ],
+        [
+          "policyMeasure",
+          "string"
+        ],
+        [
+          "scheduledDecision",
+          "dateTime"
+        ]
+      ]
+    },
+    {
+      "id": "policyRateDecrease",
+      "role": {
+        "questionOutcome": {
+          "parent": "policyRateDecision"
+        }
+      },
+      "name": "Decrease",
+      "description": "This outcome resolves to Yes if the Decision Value is lower than the Prior Value under the parent question's rules.",
+      "keywords": []
+    },
+    {
+      "id": "policyRateIncrease",
+      "role": {
+        "questionOutcome": {
+          "parent": "policyRateDecision"
+        }
+      },
+      "name": "Increase",
+      "description": "This outcome resolves to Yes if the Decision Value is higher than the Prior Value under the parent question's rules.",
+      "keywords": []
+    },
+    {
+      "id": "policyRateNoChange",
+      "role": {
+        "questionOutcome": {
+          "parent": "policyRateDecision"
+        }
+      },
+      "name": "No change",
+      "description": "This outcome resolves to Yes if the Decision Value equals the Prior Value, or if the parent question's cancellation, postponement, or decision-deadline rule applies.",
+      "keywords": []
+    },
+    {
+      "id": "sportsContestWinner",
+      "role": {
+        "standaloneOutcome": {
+          "sideNames": [
+            "{shortNameA}",
+            "{shortNameB}"
+          ]
+        }
+      },
+      "name": "{competition} {stage}: {participantA} v {participantB}",
+      "description": "This {sport} market has two sides, {shortNameA} for {participantA} and {shortNameB} for {participantB}. It covers the {contestType} between {participantA} and {participantB} in the {season} {competition} {stage}, scheduled for {scheduledStart} UTC (the \"Contest\"). The Counted Play is {countedPlay}. The Contest Result is the official record of the Counted Play. Play outside the Counted Play, including any extra time, overtime, shoot-out, or tiebreak, is disregarded, and a winner decided by such play is not the winner of the Counted Play, even if any source treats it as part of the Contest. A participant is the sole winner if the Contest Result names it the sole winner of the Counted Play or, where it names none, if it has the better score or placing under the Contest rules when the Counted Play ends. The Contest Result is a draw if it records a draw, tie, or co-winners, or names no winner of the Counted Play with the scores level when it ends. The market resolves to {shortNameA} if {participantA} is the sole winner, and resolves to {shortNameB} if {participantB} is the sole winner. The market resolves to 0.5 if the Contest Result is a draw, records a no contest or no winner, names an unlisted winner, or is not established by {resolutionDeadline} UTC. A result that {officialSource} records for the Contest by administrative or rules-based decision, including but not limited to a decision following abandonment, walkover, forfeit, disqualification, or retirement, is the Contest Result if the Counted Play was not completed; a completed Counted Play is resolved on its record alone. A postponed, suspended, or rescheduled Contest, or one replayed because the Counted Play was not completed, between the same participants in the same {competition} {stage} remains the Contest, subject to the same rules and deadline. A result or status is established when {officialSource} publishes it or, failing that by {resolutionDeadline} UTC, when a clear consensus of independent reputable reporting available by that deadline supports it; otherwise it is not established. The Contest Result is fixed as {officialSource}'s record stands one hour after {officialSource} first publishes on any official channel that the Counted Play is complete, including by recording play beyond it, or that a result has been recorded by decision, or at {resolutionDeadline} UTC if earlier or if it rests on reporting; later appeals, corrections, reversals, or reassignments do not change it. This market is not sponsored by, endorsed by, or affiliated with {officialSource} or any competition, league, governing body, organizer, team, club, participant, or other person or entity referenced in this market. All names and trademarks are the property of the respective rights holders and are descriptive only. metadata=category:sports|subCategory:{sport}|semanticRestriction:This market must refer to a single scheduled sports contest.",
+      "keywords": [
+        [
+          "competition",
+          "string"
+        ],
+        [
+          "contestType",
+          "string"
+        ],
+        [
+          "countedPlay",
+          "string"
+        ],
+        [
+          "officialSource",
+          "string"
+        ],
+        [
+          "participantA",
+          "string"
+        ],
+        [
+          "participantB",
+          "string"
+        ],
+        [
+          "resolutionDeadline",
+          "dateTime"
+        ],
+        [
+          "scheduledStart",
+          "dateTime"
+        ],
+        [
+          "season",
+          "string"
+        ],
+        [
+          "shortNameA",
+          "shortString"
+        ],
+        [
+          "shortNameB",
+          "shortString"
+        ],
+        [
+          "sport",
+          "string"
+        ],
+        [
+          "stage",
+          "string"
+        ]
+      ]
+    }
+  ]
+}

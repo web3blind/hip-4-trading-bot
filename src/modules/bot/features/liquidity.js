@@ -5,6 +5,7 @@ import { getTranslator } from '../../i18n.js';
 import * as runtime from '../runtime.js';
 import { liquidityCatalogue } from '../../liquidity/catalog.js';
 import { OUTCOMES_PAGE_SIZE } from '../constants.js';
+import { liquidityDisplaySide } from '../../liquidity/labels.js';
 import {safeLogError} from '../../logger.js';
 
 // The coordinator is deliberately loaded only on entry: an unconfigured bot has
@@ -84,8 +85,8 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
       state.eventPage=state.view.page;
       state.selection={event:clean(event.name)};
       state.policy.event={type:event.type,id:event.type==='question'?event.questionId:event.outcomeId};
-      state.state='LIQUIDITY_INPUT';state.index=0;
-      return prompt(ctx, state);
+      state.index=0;
+      return await prompt(ctx, state, {events,token});
     } catch(error) { if (current(ctx, state) && state.token===token) await catalogueFailure(ctx,state,t,error,action); }
   }
   async function tr() { return getTranslator((await loadConfig()).language || 'en'); }
@@ -102,7 +103,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
   async function catalogueFailure(ctx,state,t,error,action={kind:'view',view:{level:'events',page:state.eventPage||1}}) {
     if(!current(ctx,state))return;
     const code=['catalogue_api','catalogue_unknown','catalogue_deadline'].includes(error?.code)?error.code:'catalogue_api';
-    const stage=['metadata','books','candidate_refresh','publication'].includes(error?.stage)?error.stage:'publication';
+    const stage=['metadata','fees','books','candidate_refresh','publication'].includes(error?.stage)?error.stage:'publication';
     // Never log upstream messages, payloads, account, callback or policy fields.
     safeLogError('liquidity:catalogue',new Error('Catalogue loading failed'),{stage,code});
     state.state='LIQUIDITY_CATALOG';state.view=action.view||state.view||{level:'events',page:1};
@@ -115,7 +116,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
   async function serviceFailure(ctx, t, error, keyboard=back(t)) {
     if(error?.assessment) {
       const a=error.assessment;
-      const rows=a.reasons.map(r=>{const l=a.legs.find(l=>l.coin===r.coin);return `${l?`${clean(l.name)} · ${clean(l.sideName)} (${clean(l.coin)}) · `:''}${t('liq_assessment_'+r.code)}`;});
+      const rows=a.reasons.map(r=>{const l=a.legs.find(l=>l.coin===r.coin);return `${l?`${clean(l.name)} · ${clean(liquidityDisplaySide(l.sideName,t))} (${clean(l.coin)}) · `:''}${t('liq_assessment_'+r.code)}`;});
       const state=runtime.userStates.get(ctx.chat.id),binding=runtime.runtimeBinding(),client=runtime.hlClient;
       const chunks=[];let part='';
       for(const row of [t('liq_suitability_'+a.suitability),...rows]){if(part.length+row.length+1>3500){chunks.push(part);part='';}part+=(part?'\n':'')+row;}if(part)chunks.push(part);
@@ -161,9 +162,14 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
       await screen(ctx, lines.join('\n\n'), back(t));
     } catch { await screen(ctx, t('liq_campaign_unavailable'), back(t)); }
   }
-  async function prompt(ctx, state) {
+  async function prompt(ctx, state, catalogue) {
     const t = await tr(), field = fields[state.index];
-    if (!current(ctx, state)) return;
+    if (!current(ctx, state) || catalogue && state.token!==catalogue.token) return;
+    // Last awaited formatting precedes both the evidence guard and transition.
+    if(catalogue) {
+      if(now()>catalogue.events.validUntil)throw Object.assign(Error('Catalogue evidence expired'),{code:'catalogue_unknown',stage:'publication'});
+      state.state='LIQUIDITY_INPUT';
+    }
     state.token = randomBytes(8).toString('hex');
     const kb = new InlineKeyboard().text(t('back'), `liq:back:${state.token}`).text(t('cancel'), 'liq:cancel');
     await screen(ctx, `${t('liq_step')} ${state.index + 1}/${fields.length}\n${t(field[1])}`, kb);
@@ -303,14 +309,14 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
       const values=['network','durationMinutes','budgetUsdc','maxInventoryShares','orderSizeShares','minPrice','maxPrice','minSpread','maxLossUsdc','maxActions'];
       if(!a || values.some(k=>p[k]==null)) { await screen(ctx,t('liq_unavailable'),back(t)); return false; }
       const lines=[t('liq_review'),clean(s.eventLabel),`${t('liq_mode')}: ${t(`liq_${p.mode}`)}`,
-        t('liq_all_sides'),...a.legs.map(l=>`${clean(l.name)} · ${clean(l.sideName)} (${clean(l.coin)})${l.fallback?' · '+t('liq_fallback'):''}`),
+        t('liq_all_sides'),...a.legs.map(l=>`${clean(l.name)} · ${clean(liquidityDisplaySide(l.sideName,t))} (${clean(l.coin)})${l.fallback?' · '+t('liq_fallback'):''}`),
         `${t('liq_suitability')}: ${t('liq_suitability_'+a.suitability)}`,
         `${t('liq_minimum_budget')}: ${a.minimumBudgetUsdc==null?t('liq_unknown'):a.minimumBudgetUsdc.toFixed(2)} USDC`,
         `${t('liq_required_budget')}: ${a.requiredBudgetUsdc==null?t('liq_unknown'):a.requiredBudgetUsdc.toFixed(2)} USDC`,
         `${t('liq_spendable_spot')}: ${a.availableUsdc==null?t('liq_unknown'):a.availableUsdc.toFixed(2)} USDC`,
         `${t('liq_quote_deadline')}: ${a.legs.every(l=>Number.isSafeInteger(l.expiry))?new Date(Math.min(...a.legs.map(l=>l.expiry))-3600000).toISOString():t('liq_unknown')}`,
-        ...a.reasons.map(r=>{const leg=a.legs.find(l=>l.coin===r.coin);return `${r.coin?(leg?`${clean(leg.name)} · ${clean(leg.sideName)} (${clean(r.coin)})`:clean(r.coin))+' · ':''}${t('liq_assessment_'+r.code)}${r.detail?' · '+clean(r.detail):''}`;}),
-        ...a.legs.filter(l=>!l.unavailable).map(l=>`${clean(l.name)} · ${clean(l.sideName)} (${clean(l.coin)}) · ${t('liq_minimum_shares')}: ${l.minimumShares}; ${t('liq_order_label')}: ${l.size}; ${t('liq_quote_prices')}: ${l.bid} / ${l.ask}; ${t('liq_available_spread')}: ${(l.ask-l.bid).toFixed(5)}; ${t('liq_fee_bound')}: ${(Math.ceil(l.feeRate*1e7)/1e5).toFixed(5)}%`),
+        ...a.reasons.map(r=>{const leg=a.legs.find(l=>l.coin===r.coin);return `${r.coin?(leg?`${clean(leg.name)} · ${clean(liquidityDisplaySide(leg.sideName,t))} (${clean(r.coin)})`:clean(r.coin))+' · ':''}${t('liq_assessment_'+r.code)}${r.detail?' · '+clean(r.detail):''}`;}),
+        ...a.legs.filter(l=>!l.unavailable).map(l=>`${clean(l.name)} · ${clean(liquidityDisplaySide(l.sideName,t))} (${clean(l.coin)}) · ${t('liq_minimum_shares')}: ${l.minimumShares}; ${t('liq_order_label')}: ${l.size}; ${t('liq_quote_prices')}: ${l.bid} / ${l.ask}; ${t('liq_available_spread')}: ${(l.ask-l.bid).toFixed(5)}; ${t('liq_fee_bound')}: ${(Math.ceil(l.feeRate*1e7)/1e5).toFixed(5)}%`),
         ...(a.pairs||[]).filter(p=>!p.unavailable).map(p=>`${clean(a.legs.find(l=>l.outcomeId===p.outcomeId)?.name)} · ${t('liq_pair_net_edge')}: ${p.netMatchedEdgePerShare.toFixed(5)}`),
         ...values.filter(key=>key!=='orderSizeShares').map(key=>`${t({network:'liq_network',durationMinutes:'liq_duration_label',budgetUsdc:'liq_budget_label',maxInventoryShares:'liq_inventory_label',minPrice:'liq_min_label',maxPrice:'liq_max_label',minSpread:'liq_spread_label',maxLossUsdc:'liq_loss_label',maxActions:'liq_actions_label'}[key])}: ${clean(p[key])}${key==='minSpread'?` (${(p[key]*100).toFixed(3)} ${t('liq_percentage_points')})`:''}`),
         ...(expectedState?.state==='LIQUIDITY_PROPOSING'?[t('liq_inventory_auto_note'),t('liq_automatic_note')]:[]),

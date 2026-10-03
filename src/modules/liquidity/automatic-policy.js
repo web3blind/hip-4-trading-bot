@@ -1,5 +1,6 @@
 import {validateLiquidityPolicy} from './policy.js';
 import {assessLiquidityEvent} from './event.js';
+import {automaticFeeSpreadThreshold} from './market.js';
 
 /** Telegram-only defaults; explicit MCP policies retain their existing contract. */
 export async function automaticLiquidityPolicy(client, inputs, now=Date.now) {
@@ -19,7 +20,6 @@ export async function automaticLiquidityPolicy(client, inputs, now=Date.now) {
   // Worst verified round-trip cost across ALL mandatory books, rounded upward
   // with one additional wire tick. This is a spread admission threshold, not a
   // return forecast. Engine rechecks fresh net spreads and fees before signing.
-  const feeCost=Math.max(...evidence.legs.map(l=>l.feeRate*(l.bid+l.ask)));
-  const minSpread=Math.max(0.00001,(Math.ceil(feeCost*100000)+1)/100000);
+  const minSpread=automaticFeeSpreadThreshold(evidence.legs);
   return validateLiquidityPolicy({...policy,minSpread});
 }

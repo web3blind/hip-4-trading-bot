@@ -1,0 +1,6 @@
+{
+  "_provenance": "Controlled representative test fee evidence, NOT observed account fees or a production viability assertion.",
+  "userSpotCrossRate": "0.001",
+  "userSpotAddRate": "-0.0001",
+  "feeSchedule": {"spotCross": "0.001", "spotAdd": "-0.0001"}
+}

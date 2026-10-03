@@ -60,10 +60,10 @@ for(const language of ['en','ru']){
    f.books['#321'].levels=[[],[]];const s=await f.propose(),t=await getTranslator(language),lines=f.messages.map(m=>m.text).join('\n').split('\n');
    for(const leg of s.assessment.legs.filter(l=>!l.unavailable)){
     const row=lines.find(l=>l.includes(leg.coin)&&l.includes(t('liq_minimum_shares')));assert(row);
-    assert(row.includes(leg.name)&&row.includes(leg.sideName),row);
+    assert(row.includes(leg.name)&&row.includes(t(leg.side===0?'yes':'no')),row);
    }
    const reason=lines.find(l=>l.includes('#321')&&l.includes(t('liq_assessment_no_two_sided_book')));
-   assert.match(reason,/Fallback.*NO.*#321/);assert.equal(f.actions.length,0);
+   assert(reason.includes('Fallback')&&reason.includes(t('no'))&&reason.includes('#321'));assert.equal(f.actions.length,0);
   }finally{await f.close();}
  });
  test(`imbalanced book connected review has readable localized reason and per-row participant/side (${language})`,async()=>{
@@ -72,10 +72,10 @@ for(const language of ['en','ru']){
    const s=await f.propose();assert(s.assessment.reasons.some(r=>r.code==='book_imbalance'));
    const t=await getTranslator(language),text=f.messages.map(m=>m.text).join('\n');
    assert(!/liq_assessment_/.test(text));assert(text.includes(t('liq_assessment_book_imbalance')));
-   const reason=text.split('\n').find(l=>l.includes(t('liq_assessment_book_imbalance')));assert.match(reason,/Fallback.*YES.*#320/);
+   const reason=text.split('\n').find(l=>l.includes(t('liq_assessment_book_imbalance')));assert(reason.includes('Fallback')&&reason.includes(t('yes'))&&reason.includes('#320'));
    for(const leg of s.assessment.legs.filter(l=>!l.unavailable)){
     const row=text.split('\n').find(l=>l.includes(leg.coin)&&l.includes(t('liq_minimum_shares')));
-    assert(row);assert(row.includes(leg.name));assert(row.includes(leg.sideName));
+    assert(row);assert(row.includes(leg.name));assert(row.includes(t(leg.side===0?'yes':'no')));
    }
    assert(!buttons(f).some(b=>b.callback_data.startsWith('confirm_liquidity')));assert.equal(f.actions.length,0);
   }finally{await f.close();}

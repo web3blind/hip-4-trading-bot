@@ -478,8 +478,8 @@ export class HLClient {
     return this._infoRequest({ type: 'outcomeTemplates' });
   }
 
-  async getUserFees() {
-    return this._infoRequest({ type: 'userFees', user: this.address });
+  async getUserFees(options) {
+    return this._infoRequest({ type: 'userFees', user: this.address }, options);
   }
 
   async getOrderbook(coin, options) {

@@ -46,6 +46,11 @@ export function bookQuote(book,at,p) {
   if (bid<=0 || ask>=1 || bid>=ask || ask-bid<p.minSpread || bid<p.minPrice || ask>p.maxPrice) throw Object.assign(new Error('Crossed or out-of-corridor book'),{code:'book_unsuitable'});
   return {bid,ask,time};
 }
+// Shared, unchanged automatic admission arithmetic across all mandatory views.
+export function automaticFeeSpreadThreshold(legs) {
+  const feeCost=Math.max(...legs.map(l=>l.feeRate*(l.bid+l.ask)));
+  return Math.max(0.00001,(Math.ceil(feeCost*100000)+1)/100000);
+}
 export function feeEvidence(fees,scale) {
   const accountRate=num(fees?.userSpotCrossRate),baseRate=num(fees?.feeSchedule?.spotCross);
   if(accountRate===null || baseRate===null || scale===null || accountRate<0 || baseRate<0 || accountRate>0.02 || baseRate>0.02) throw new Error('Fee rate unknown');
