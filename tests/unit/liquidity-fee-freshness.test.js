@@ -18,7 +18,7 @@ test('selected fee validity survives only through the last awaited prompt transl
   };
   await ui.choose(f.ctx,pick.callback_data);
   assert.notEqual(runtime.userStates.get(f.owner)?.state,'LIQUIDITY_INPUT');
-  const t=await getTranslator('en');assert(buttons(f).some(b=>b.text===t('liq_retry')));assert.equal(f.actions.length,0);
+  const t=await getTranslator('en');assert(f.messages.at(-1).text.includes(t('liq_catalog_terminal_unknown')));assert(!buttons(f).some(b=>b.text===t('liq_retry')));assert.equal(f.actions.length,0);
  }finally{globalThis.structuredClone=clone;await f.close();}
 });
 const buttons=f=>f.messages.at(-1).extra.reply_markup.inline_keyboard.flat();

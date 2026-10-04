@@ -88,7 +88,8 @@ export async function initBot(token, allowedUserId) {
     // Rate limiting
     const now = Date.now();
     const last = rateLimits.get(userId) || 0;
-    if (now - last < RATE_LIMIT_MS) {
+    const catalogueNavigation=userStates.get(ctx.chat.id)?.catalogueTask&&/^(liq:pick:|liq:cancel$|back_menu$)/.test(ctx.callbackQuery?.data||'');
+    if (now - last < RATE_LIMIT_MS && !catalogueNavigation) {
       const config = await loadConfig();
       const t = await getTranslator(config.language || 'en');
       if (ctx.callbackQuery) {
@@ -140,6 +141,7 @@ export async function initBot(token, allowedUserId) {
   // ── Callback queries ────────────────────────────────────────
 
   botInstance.on('callback_query:data', async (ctx) => {
+    ctx.liquidityCatalogueAsync=true;
     await handleCallbackQuery(ctx);
   });
 
@@ -219,6 +221,7 @@ export function startBot({ onFatal } = {}) {
 }
 
 export async function stopBot() {
+  for(const [chatId,state] of userStates)if(state.catalogueTask)await invalidateUserState(chatId);
   const b = runtimeBot;
   if (!b || !pollingStarted) { await pollingTask; return; }
   try {

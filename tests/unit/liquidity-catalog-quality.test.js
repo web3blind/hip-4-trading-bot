@@ -24,7 +24,7 @@ test('scan prerequisite failure completes without an unbounded transport rendezv
   f.client.getOutcomeMeta=async()=>{throw Error('Controlled metadata prerequisite failure');};
   const reached=new Promise(()=>{}),pending=start(f);
   await assert.rejects(enteredScan(pending,reached),/Scan ended before transport entry/);
-  assert(f.messages.at(-1).text.includes((await getTranslator('en'))('liq_catalog_unavailable')));
+  assert(f.messages.at(-1).text.includes((await getTranslator('en'))('liq_catalog_terminal_unknown')));
   assert.equal(runtime.userStates.get(f.owner)?.state,'LIQUIDITY_CATALOG');assert.equal(f.actions.length,0);
  }finally{await f.close();}
 });
@@ -32,7 +32,7 @@ for(const language of ['en','ru'])for(const operation of ['page','event'])for(co
  const f=eventHarness({language,routed:true});const originalFetch=globalThis.fetch;let release,pending;try{
   mixedGroups(f);await start(f);const t=await getTranslator(language);
   const visible=buttons(f),navigate=visible.find(b=>b.text===t(navigation==='cancel'?'cancel':'back')).callback_data;
-  const pick=visible.find(b=>b.text===(operation==='page'?t('liq_continue_search'):'Group 0')).callback_data;
+  const pick=visible.find(b=>b.text===(operation==='page'?t('liq_next'):'Group 0')).callback_data;
   let entered,aborted=0,calls=0;const reached=new Promise(r=>entered=r),hold=new Promise(r=>release=r);
   globalThis.fetch=async(url,{body,signal})=>{
    const request=JSON.parse(body);assert.equal(request.type,'l2Book');calls++;entered();
@@ -53,21 +53,19 @@ for(const language of ['en','ru'])for(const operation of ['page','event'])for(co
   assert.equal(f.actions.length,0);assert.equal((await f.c.list()).length,0);
  }finally{release?.();await pending;globalThis.fetch=originalFetch;await f.close();}
 });
-for(const language of ['en','ru'])test(`catalogue outage has sanitized diagnostics and bound reusable retry (${language})`,async()=>{
+for(const language of ['en','ru'])test(`catalogue outage has sanitized diagnostics and terminal navigation only (${language})`,async()=>{
  const f=eventHarness({language,routed:true}),original=console.error,logs=[];try{
   console.error=value=>logs.push(JSON.parse(value));
   const read=f.client.getOrderbook;
   f.client.getOrderbook=async()=>{throw Object.assign(Error('DO_NOT_LOG_PRIVATE_PAYLOAD'),{code:'DO_NOT_LOG_RAW_CODE'});};
   await start(f);const t=await getTranslator(language),state=runtime.userStates.get(f.owner);
-  assert.equal(f.messages.at(-1).text,t('liq_catalog_unavailable'));
+  assert(f.messages.at(-1).text.includes(t('liq_catalog_terminal_unknown')));
   assert(!f.messages.at(-1).text.includes(t('liq_unavailable')));
   const diagnostic=logs.find(l=>l.context==='liquidity:catalogue');assert(diagnostic);
   assert.deepEqual(diagnostic.extra,{stage:'books',code:'catalogue_api'});
   assert(!JSON.stringify(logs).includes('DO_NOT_LOG'));assert(!JSON.stringify(logs).includes(f.client.address));
-  const retry=buttons(f).find(b=>b.text===t('liq_retry')).callback_data;
-  f.client.getOrderbook=read;await route(f,retry);
-  assert.equal(runtime.userStates.get(f.owner),state);assert(buttons(f).some(b=>b.text==='Championship'));
-  const token=state.token;await route(f,retry);assert.equal(state.token,token);assert.equal(f.messages.at(-1).text,t('session_expired'));
+  assert(!buttons(f).some(b=>b.text===t('liq_retry')));
+  assert.deepEqual(state.choices.map(a=>a.kind),['menu','cancel']);
   assert.equal(f.actions.length,0);assert.equal((await f.c.list()).length,0);
  }finally{console.error=original;await f.close();}
 });
@@ -82,14 +80,12 @@ for(const language of ['en','ru'])test(`partial catalogue shows fresh whole even
   assert.equal(f.actions.length,0);
  }finally{await f.close();}
 });
-for(const navigation of ['cancel','back'])test(`visible ${navigation} during failing retry prevents late error overwrite`,async()=>{
+for(const navigation of ['cancel','back'])test(`visible ${navigation} during automatic retry prevents late error overwrite`,async()=>{
  const f=eventHarness({routed:true});let release,pending;try{
-  f.client.getOutcomeMeta=async()=>{throw Error('Controlled failure');};await start(f);
-  const t=await getTranslator('en'),visible=buttons(f),retry=visible.find(b=>b.text===t('liq_retry')).callback_data;
-  const nav=visible.find(b=>b.text===t(navigation)).callback_data;
-  let entered;const reached=new Promise(r=>entered=r),hold=new Promise(r=>release=r);
-  f.client.getOutcomeMeta=async()=>{entered();await hold;throw Error('Late controlled failure');};
-  pending=route(f,retry);await enteredScan(pending,reached);await route(f,nav);
+  let entered,attempts=0;const reached=new Promise(r=>entered=r),hold=new Promise(r=>release=r);
+  f.client.getOutcomeMeta=async({signal})=>{if(++attempts===1)throw Error('Controlled failure');entered();await new Promise((resolve,reject)=>{hold.then(resolve);signal.addEventListener('abort',()=>reject(Error('Transport aborted')),{once:true});});throw Error('Late controlled failure');};
+  pending=start(f);await enteredScan(pending,reached);
+  const t=await getTranslator('en'),nav=buttons(f).find(b=>b.text===t(navigation)).callback_data;await route(f,nav);
   const count=f.messages.length;release();await pending;
   assert.equal(f.messages.length,count);assert.equal(runtime.userStates.has(f.owner),false);assert.equal(f.actions.length,0);
  }finally{release?.();await pending;await f.close();}
@@ -183,7 +179,7 @@ for(const language of ['en','ru'])for(const change of ['empty','stale','invalid'
   if(change==='membership')f.meta.outcomes.pop();
   if(change==='mirror')f.books['#321'].levels[1][0].px='0.7';
   await start(f);assert(!buttons(f).some(b=>b.text==='Championship'));
-  const t=await getTranslator(language);assert(f.messages.at(-1).text.includes(t(['api','membership','stale'].includes(change)?'liq_catalog_unavailable':'liq_no_sufficient_books')));
+  const t=await getTranslator(language);assert(f.messages.at(-1).text.includes(t(['api','membership','stale'].includes(change)?'liq_catalog_terminal_unknown':'liq_no_sufficient_books')));
  }finally{await f.close();}
 });
 for(const [precision,bid,ask,depth,expected] of [[0,.4,.6,25,true],[0,.4,.6,24.99,false],[2,.31,.41,32.26,true],[2,.31,.41,32.25,false],[2,.310009,.410009,32.26,true],[2,.310009,.410009,32.25,false]])test(`actual rounded $10 minimum precision=${precision} bid=${bid} depth=${depth}`,async()=>{
@@ -212,33 +208,33 @@ function mixedGroups(f,count=OUTCOMES_PAGE_SIZE+4){
  }
  return strong;
 }
-for(const language of ['en','ru'])test(`real routers paginate bounded candidate windows and filter whole groups (${language})`,async()=>{
+for(const language of ['en','ru'])test(`real routers automatically discover complete source and browse fresh qualified groups (${language})`,async()=>{
  const f=eventHarness({language,routed:true});try{
   const strong=mixedGroups(f),t=await getTranslator(language),reads=[];let pending=0,peak=0;
-  const read=f.client.getOrderbook;f.client.getOrderbook=async coin=>{reads.push(coin);pending++;peak=Math.max(peak,pending);await new Promise(r=>setTimeout(r,2));try{return await read(coin);}finally{pending--;}};
+  const read=f.client.getOrderbook;f.client.getOrderbook=async coin=>{reads.push(coin);pending++;peak=Math.max(peak,pending);await new Promise(r=>setTimeout(r,40));try{return await read(coin);}finally{pending--;}};
   let feeReads=0;f.client.getUserFees=async()=>{feeReads++;return f.fees;};
   f.client.getUserBalances=f.client.getOpenOrders=async()=>assert.fail('Catalogue must not read capital/orders');
   let metaReads=0;const meta=f.client.getOutcomeMeta;f.client.getOutcomeMeta=async()=>{metaReads++;return meta();};
   await start(f);
   const groupNames=()=>buttons(f).filter(b=>/^Group /.test(b.text)).map(b=>b.text);
-  assert.deepEqual(groupNames(),['Group 0','Group 2']);assert(f.messages.at(-1).text.includes('1/3'));
-  assert.equal(metaReads,1);assert.equal(feeReads,1);assert.equal(reads.length,24);assert.equal(new Set(reads).size,reads.length);assert(peak<=6&&peak>1);
-  const next=buttons(f).find(b=>b.text===t('liq_continue_search')).callback_data;
-  await route(f,next);assert.deepEqual(groupNames(),['Group 4','Group 5','Group 6','Group 7']);assert.equal(reads.length,48);
+  assert.deepEqual(groupNames(),['Group 0','Group 2','Group 4','Group 5','Group 6']);assert(!f.messages.at(-1).text.includes('1/3'));
+  assert.equal(metaReads,2);assert.equal(feeReads,2);assert.equal(reads.length,84);assert.equal(new Set(reads).size,54);assert(peak<=6&&peak>1);
+  const next=buttons(f).find(b=>b.text===t('liq_next')).callback_data;
+  await route(f,next);assert.deepEqual(groupNames(),['Group 7','Group 8']);assert.equal(reads.length,96);
   const pick=buttons(f).find(b=>/^Group /.test(b.text)).callback_data;
   const priorToken=runtime.userStates.get(f.owner).token,priorReads=reads.length;
   await route(f,next);assert.equal(runtime.userStates.get(f.owner).token,priorToken,'Stale page token must not replay');assert.equal(reads.length,priorReads);assert.equal(f.messages.at(-1).text,t('session_expired'));
   const before=reads.length;await route(f,pick);assert.equal(reads.length-before,6,'Pick checks only selected complete event');
   assert.equal(runtime.userStates.get(f.owner).state,'LIQUIDITY_INPUT');
   const back=buttons(f).find(b=>b.callback_data.startsWith('liq:back:')).callback_data;
-  await route(f,back);assert.deepEqual(groupNames(),['Group 4','Group 5','Group 6','Group 7']);assert(f.messages.at(-1).text.includes('2/3'));assert.equal(reads.length-before,30);
+  await route(f,back);assert.deepEqual(groupNames(),['Group 7','Group 8']);assert(!f.messages.at(-1).text.includes('2/3'));assert.equal(reads.length-before,18);
   assert.equal(f.actions.length,0);assert.equal((await f.c.list()).length,0);
  }finally{await f.close();}
 });
 for(const navigation of ['liq:cancel','back_menu','client','account','network','ttl'])test(`catalogue scan cancellation cannot revive ${navigation}`,async()=>{
  const f=eventHarness({routed:true});let release;const realNow=Date.now;try{
   let entered;const reached=new Promise(r=>entered=r),hold=new Promise(r=>release=r);let calls=0;
-  mixedGroups(f);const read=f.client.getOrderbook;f.client.getOrderbook=async coin=>{calls++;entered();await hold;return read(coin);};
+  mixedGroups(f);const read=f.client.getOrderbook;f.client.getOrderbook=async(coin,{signal})=>{calls++;entered();await new Promise((resolve,reject)=>{hold.then(resolve);signal.addEventListener('abort',()=>reject(Error('Transport aborted')),{once:true});});return read(coin);};
   const scan=start(f);await enteredScan(scan,reached);
   if(navigation==='client')runtime.setHLClient({...f.client});
   else if(navigation==='account')f.client.address='0x'+'b'.repeat(40);
@@ -253,7 +249,7 @@ for(const navigation of ['liq:cancel','back_menu','client','account','network','
 test('deadline cancels unfinished catalogue without authoritative partial strong results',async()=>{
  const f=eventHarness();let release;try{
   mixedGroups(f);const original=f.client.getOrderbook,hold=new Promise(r=>release=r);let calls=0;
-  f.client.getOrderbook=async coin=>{calls++;if(Number(coin.slice(1))>=1030)await hold;return original(coin);};
+  f.client.getOrderbook=async(coin,{signal})=>{calls++;if(Number(coin.slice(1))>=1030)await new Promise((resolve,reject)=>{hold.then(resolve);signal.addEventListener('abort',()=>reject(Error('Transport aborted')),{once:true});});return original(coin);};
   const start=performance.now();await assert.rejects(liquidityCatalogue(f.client,{timeoutMs:60}),/deadline/);
   assert(performance.now()-start<500);const before=calls;release();await new Promise(r=>setTimeout(r,10));assert.equal(calls,before);
   assert.equal(f.actions.length,0);
@@ -263,7 +259,7 @@ test('API error after strong event never presents incomplete scan as complete ca
  const f=eventHarness({routed:true});try{
   mixedGroups(f);const read=f.client.getOrderbook;
   f.client.getOrderbook=async coin=>{if(coin==='#1030')throw Error('API down after strong event');return read(coin);};
-  await start(f);assert(!buttons(f).some(b=>/^Group /.test(b.text)));assert(f.messages.at(-1).text.includes((await getTranslator('en'))('liq_catalog_unavailable')));
+  await start(f);assert(buttons(f).some(b=>b.text==='Group 0'));assert(!buttons(f).some(b=>b.text==='Group 1'));assert(f.messages.at(-1).text.includes((await getTranslator('en'))('liq_catalog_partial')));
   assert.equal(f.actions.length,0);
  }finally{await f.close();}
 });

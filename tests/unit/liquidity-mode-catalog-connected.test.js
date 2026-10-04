@@ -35,9 +35,9 @@ test('real observation catalogue preserves mode across pagination, retry and ste
   await route(f,'liq:new:observe');let state=runtime.userStates.get(f.owner);
   const next=state.choices.findIndex(a=>a.kind==='view');assert(next>=0);
   await route(f,`liq:pick:${state.token}:${next}`);state=runtime.userStates.get(f.owner);assert(state.choices.some(a=>a.kind==='event'));
-  const original=f.client.getOutcomeMeta;f.client.getOutcomeMeta=async()=>{throw Error('Controlled timeout');};
+  const original=f.client.getOutcomeMeta;let attempts=0;f.client.getOutcomeMeta=async()=>{if(++attempts===1)throw Error('Controlled timeout');return original();};
   const view=state.choices.findIndex(a=>a.kind==='view');await route(f,`liq:pick:${state.token}:${view}`);f.client.getOutcomeMeta=original;
-  await route(f,buttons(f)[0].callback_data);state=runtime.userStates.get(f.owner);const index=state.choices.findIndex(a=>a.kind==='event');assert(index>=0);
+  state=runtime.userStates.get(f.owner);assert.equal(attempts,2);const index=state.choices.findIndex(a=>a.kind==='event');assert(index>=0);
   await route(f,`liq:pick:${state.token}:${index}`);assert.equal(runtime.userStates.get(f.owner).state,'LIQUIDITY_INPUT');
   await route(f,buttons(f).find(b=>b.callback_data.startsWith('liq:back:')).callback_data);
   state=runtime.userStates.get(f.owner);assert.equal(state.state,'LIQUIDITY_CATALOG');assert(state.choices.some(a=>a.kind==='event'));assert.equal(f.actions.length,0);

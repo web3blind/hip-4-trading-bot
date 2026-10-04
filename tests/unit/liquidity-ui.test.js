@@ -148,7 +148,7 @@ test('real callback and text routers preserve event-only catalog, reject side-to
 for(const replacement of ['cancel','new start','client'])test(`async catalog refresh cannot revive or replace state after ${replacement}`,async()=>{
  const f=eventHarness();resetOutcomeCache();try {
   let entered,release;const reached=new Promise(r=>entered=r),hold=new Promise(r=>release=r),original=f.client.getOutcomeMeta;
-  f.client.getOutcomeMeta=async()=>{entered();await hold;return original();};const loading=f.ui.start(f.ctx,'live');await reached;
+  f.client.getOutcomeMeta=async({signal})=>{entered();await new Promise((resolve,reject)=>{hold.then(resolve);signal.addEventListener('abort',()=>reject(Error('Transport aborted')),{once:true});});return original();};const loading=f.ui.start(f.ctx,'live');await reached;
   if(replacement==='cancel')await f.ui.cancel(f.ctx);
   if(replacement==='client')runtime.setHLClient({...f.client});
   let newer;

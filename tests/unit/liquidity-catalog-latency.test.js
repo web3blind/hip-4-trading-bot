@@ -15,10 +15,10 @@ test('bounded page: first page and navigation do not scan unrelated universe',as
  }finally{await f.close();}
 });
 test('real router first/next/previous are page-directed and selected always rereads both legs',async()=>{
- const f=eventHarness({routed:true,standalone:true});try{many(f);const c=timed(f);const read=f.client.getOrderbook;f.client.getOrderbook=async coin=>({...await read(coin),time:Date.now()});await route(f,'liq:new:live');assert.equal(c.calls.length,10);
- let s=runtime.userStates.get(f.owner),index=s.choices.findIndex(x=>x.kind==='view'&&x.view.page===2);assert(index>=0);await route(f,`liq:pick:${s.token}:${index}`);assert.equal(c.calls.length,20);
- s=runtime.userStates.get(f.owner);index=s.choices.findIndex(x=>x.kind==='view'&&x.view.page===1);await route(f,`liq:pick:${s.token}:${index}`);assert.equal(c.calls.length,30);
- s=runtime.userStates.get(f.owner);index=s.choices.findIndex(x=>x.kind==='event');await route(f,`liq:pick:${s.token}:${index}`);assert.equal(c.calls.length,32);assert.equal(runtime.userStates.get(f.owner).state,'LIQUIDITY_INPUT');assert.equal(f.actions.length,0);
+ const f=eventHarness({routed:true,standalone:true});try{many(f);const c=timed(f);const read=f.client.getOrderbook;f.client.getOrderbook=async coin=>({...await read(coin),time:Date.now()});await route(f,'liq:new:live');assert.equal(c.calls.length,200);
+ let s=runtime.userStates.get(f.owner),index=s.choices.findIndex(x=>x.kind==='view'&&x.view.page===2);assert(index>=0);await route(f,`liq:pick:${s.token}:${index}`);assert.equal(c.calls.length,210);
+ s=runtime.userStates.get(f.owner);index=s.choices.findIndex(x=>x.kind==='view'&&x.view.page===1);await route(f,`liq:pick:${s.token}:${index}`);assert.equal(c.calls.length,220);
+ s=runtime.userStates.get(f.owner);index=s.choices.findIndex(x=>x.kind==='event');await route(f,`liq:pick:${s.token}:${index}`);assert.equal(c.calls.length,222);assert.equal(runtime.userStates.get(f.owner).state,'LIQUIDITY_INPUT');assert.equal(f.actions.length,0);
  }finally{await f.close();}
 });
 for(const change of ['books','fees','metadata','mode'])test(`page revisit reads current ${change}, not cached admission`,async()=>{
@@ -33,11 +33,11 @@ for(const change of ['books','fees','metadata','mode'])test(`page revisit reads 
  assert.equal(f.actions.length,0);
  }finally{await f.close();}
 });
-for(const language of ['en','ru'])test(`unknown candidate window retains next/retry without verified empty (${language})`,async()=>{
+for(const language of ['en','ru'])test(`complete unknown scan terminates without next/retry or false verified empty (${language})`,async()=>{
  const f=eventHarness({routed:true,standalone:true,language});try{many(f);const read=f.client.getOrderbook;f.client.getOrderbook=async coin=>({...await read(coin),time:Date.now()-10000});await route(f,'liq:new:live');
  const {getTranslator}=await import('../../src/modules/i18n.js'),t=await getTranslator(language),s=runtime.userStates.get(f.owner);
- assert(f.messages.at(-1).text.includes(t('liq_catalog_page_unknown')));assert(!f.messages.at(-1).text.includes(t('liq_no_sufficient_books')));
- assert(s.choices.some(x=>x.kind==='view'&&x.view.page===2));assert(s.choices.some(x=>x.kind==='view'&&x.view.page===1));assert(!s.choices.some(x=>x.kind==='event'));assert.equal(f.actions.length,0);
+ assert(f.messages.at(-1).text.includes(t('liq_catalog_terminal_unknown')));assert(!f.messages.at(-1).text.includes(t('liq_no_sufficient_books')));
+ assert(!s.choices.some(x=>x.kind==='view'));assert(!s.choices.some(x=>x.kind==='event'));assert.equal(f.actions.length,0);
  }finally{await f.close();}
 });
 for(const members of [12,24,25])test(`whole-event page budget: ${members*2} mandatory books, never publish a subset`,async()=>{

@@ -45,25 +45,108 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     state.state = 'LIQUIDITY_CATALOG'; state.view = view; state.token = randomBytes(8).toString('hex');
     state.loading=false;delete state.loadingNavigation;
     state.navigationToken = state.token; // visible Back/Cancel survive a consumed pick while loading
-    state.choices = [];
+    state.choices = [];state.catalogLabels=Object.fromEntries(events.map(item=>[eventKey(item),clean(item.name)]));
     const kb = new InlineKeyboard();
     const add = (label, action) => { const index = state.choices.push(action) - 1; kb.text(label.slice(0, 60), `liq:pick:${state.token}:${index}`).row(); };
+    const automatic=events.discovery?.automatic;
+    if(events.discovery?.transportErrors)safeLogError('liquidity:catalogue',new Error('Catalogue loading failed'),{stage:'books',code:'catalogue_api'});
     const list=events,pages=events.pagination?.pages||Math.max(1,Math.ceil(list.length/OUTCOMES_PAGE_SIZE));
-    if(events.pagination)view.page=events.pagination.page;
+    if(!events.discovery?.indexed&&events.pagination)view.page=events.pagination.page;
     view.page=Math.min(pages,Math.max(1,view.page));
-    let title=`${t('liq_select_event')}\n${events.pagination?t('liq_candidate_window')+' ':''}${view.page}/${pages}`;
-    if(!list.length) title+=`\n${t(events.summary?.unknown?'liq_catalog_page_unknown':events.pagination&&events.summary?.unscanned?'liq_catalog_page_empty':'liq_no_sufficient_books')}`;
-    if(!list.length&&events.summary?.unknown)add(t('liq_retry'),{kind:'view',view:{level:'events',page:view.page,cursor:events.cursor}});
+    let title=automatic?t('liq_select_event'):`${t('liq_select_event')}\n${events.pagination?t('liq_candidate_window')+' ':''}${view.page}/${pages}`;
+    if(!list.length) title+=`\n${t(events.summary?.unknown||automatic&&events.summary?.unscanned?'liq_catalog_terminal_unknown':events.pagination&&events.summary?.unscanned?'liq_catalog_page_empty':'liq_no_sufficient_books')}`;
+    if(!list.length&&events.summary?.livePriceUnsupported)title+=`\n${t('liq_assessment_live_price_unsupported')}`;
+
     if(events.summary?.partial)title+=`\n${t('liq_catalog_partial')}`;
     for(const item of list.slice(events.pagination?0:(view.page-1)*OUTCOMES_PAGE_SIZE,events.pagination?list.length:view.page*OUTCOMES_PAGE_SIZE))
       add(clean(item.name),{kind:'event',event:eventKey(item)});
-    for(const item of events.verification||[])
-      add(`${t('liq_verify_complete')}: ${clean(item.name)}`,{kind:'verify',event:`${item.type}:${item.id}`});
-    if(view.page>1) add(t('liq_previous'),{kind:'view',view:{level:'events',page:view.page-1,cursor:events.cursor}});
-    if(view.page<pages) add(t('liq_continue_search'),{kind:'view',view:{level:'events',page:events.pagination?.nextPage||view.page+1,cursor:events.cursor}});
+
+    if(automatic){
+      // Store only qualified page positions, never eligibility or book/fee proof.
+      if(events.discovery?.indexed&&state.catalogIndex?.length&&view.page>1)add(t('liq_previous'),{kind:'view',view:{level:'events',page:view.page-1}});
+      if(!events.discovery?.inProgress&&view.page*OUTCOMES_PAGE_SIZE<(state.catalogIndex?.length||0))add(t('liq_next'),{kind:'view',view:{level:'events',page:view.page+1}});
+    }
     add(t('back'),{kind:'menu'});
     add(t('cancel'), { kind: 'cancel' });
-    await screen(ctx, `${title}\n${t('liq_catalog_note')}`, kb);
+    await screen(ctx, `${title}\n${t('liq_catalog_note')}`, kb, state);
+  }
+  async function finishCatalogNavigation(ctx,state) {
+    const token=state.token,t=await tr();
+    if(!current(ctx,state)||state.token!==token)return;
+    // Update ONLY controls on the page already shown. Its labels are not new
+    // eligibility proof; every event pick/page still obtains fresh complete data.
+    const kb=new InlineKeyboard(),choices=state.choices.filter(a=>a.kind==='event');
+    for(const [i,action] of choices.entries()) {
+      const ref=state.catalogIndex.find(r=>`${r.type}:${r.id}`===action.event);
+      // Preserve the already-rendered label from the initial qualified result.
+      kb.text(clean(state.catalogLabels?.[action.event]||String(ref?.id)).slice(0,60),`liq:pick:${token}:${i}`).row();
+    }
+    const add=(label,action)=>{const i=choices.push(action)-1;kb.text(label,`liq:pick:${token}:${i}`).row();};
+    if(state.catalogIndex.length>OUTCOMES_PAGE_SIZE)add(t('liq_next'),{kind:'view',view:{level:'events',page:2}});
+    add(t('back'),{kind:'menu'});add(t('cancel'),{kind:'cancel'});
+    state.choices=choices;
+    await ctx.editMessageReplyMarkup({reply_markup:kb},AbortSignal.timeout(10000));
+  }
+  async function discoverScreen(ctx,state,view={level:'events',page:1},deadline=performance.now()+90000) {
+    const run={};state.discoveryRun=run;const mode=state.policy.mode;let firstPublished=false,firstResult;
+    const still=()=>current(ctx,state)&&state.discoveryRun===run&&state.policy.mode===mode;
+    try {
+    const args={automatic:true,mode,now,isCurrent:still,timeoutMs:Math.max(1,deadline-performance.now())};
+    if(state.catalogIndex?.length){
+      const events=await liquidityCatalogue(state.client,{...args,candidates:state.catalogIndex.slice((view.page-1)*OUTCOMES_PAGE_SIZE,view.page*OUTCOMES_PAGE_SIZE),cursor:state.catalogCursor});
+      if(still()&&events.discovery.bindingReset){delete state.catalogIndex;delete state.catalogCursor;return discoverScreen(ctx,state,undefined,deadline);}
+      if(still()){events.discovery.indexed=true;events.pagination={page:view.page,pages:Math.ceil(state.catalogIndex.length/OUTCOMES_PAGE_SIZE)};await catalogScreen(ctx,state,events,view);}return;
+    }
+    const result=await liquidityCatalogue(state.client,{...args,onQualified:async events=>{
+      if(!still())return;
+      firstPublished=true;firstResult=events;events.discovery.indexed=true;events.pagination={page:1,pages:1};
+      await catalogScreen(ctx,state,events,{level:'events',page:1});
+    }});
+    if(!still())return;
+    const index=result.discovery.index;
+    if(index?.length){
+      // A complete discovery index contains IDs only. Every visible page gets
+      // fresh metadata, both mandatory books, fees and unchanged admission again.
+      state.catalogIndex=index;state.catalogCursor=result.cursor;
+      const remaining=deadline-performance.now();
+      if(remaining<=0)return firstPublished?await finishCatalogNavigation(ctx,state):undefined;
+      if(now()<=firstResult?.validUntil&&index.slice(0,OUTCOMES_PAGE_SIZE).every(ref=>firstResult.some(e=>eventKey(e)===`${ref.type}:${ref.id}`))){
+        firstResult.discovery.inProgress=false;firstResult.pagination={page:1,pages:Math.ceil(index.length/OUTCOMES_PAGE_SIZE)};
+        return await catalogScreen(ctx,state,firstResult,{level:'events',page:1});
+      }
+      const remainingBooks=1200-result.discovery.bookReads;
+      if(remainingBooks<=0)return firstPublished?await finishCatalogNavigation(ctx,state):undefined;
+      try {
+        const events=await liquidityCatalogue(state.client,{...args,candidates:index.slice(0,OUTCOMES_PAGE_SIZE),cursor:result.cursor,timeoutMs:remaining,maxDiscoveryBooks:remainingBooks});
+        if(still()){events.discovery.indexed=true;events.summary.partial ||= result.summary.partial;events.pagination={page:1,pages:Math.ceil(index.length/OUTCOMES_PAGE_SIZE)};await catalogScreen(ctx,state,events,{level:'events',page:1});}
+      }catch(error){if(!firstPublished)throw error;} // Keep the already-published page; selection still rechecks.
+    }else await catalogScreen(ctx,state,result,view);
+    } finally {if(state.discoveryRun===run)delete state.discoveryRun;}
+  }
+  function runCatalogue(ctx,state,work,t,action) {
+    // Grammy's native long polling handles updates sequentially. Only this
+    // read-only, state-owned task may yield the handler so Cancel can arrive.
+    // Financial confirmation/execution handlers remain awaited as before.
+    const task=Promise.resolve().then(work).catch(async error=>{
+      try {
+        if(error?.code!=='catalogue_superseded'&&current(ctx,state)&&state.catalogueTask===task)await catalogueFailure(ctx,state,t,error,action);
+      } catch {
+        safeLogError('liquidity:catalogue',new Error('Catalogue terminal render failed'),{stage:'publication',code:'catalogue_api'});
+      }
+    }).finally(async()=>{
+      if(state.catalogueTask!==task)return;
+      delete state.catalogueTask;
+      // A selected empty/unknown result ends the wizard only AFTER its actual
+      // publication settles. Never invalidate from inside our owned task (that
+      // would self-await), or discard ownership while Telegram is still editing.
+      if(state.catalogueTerminal&&runtime.userStates.get(ctx.chat.id)===state)
+        await runtime.invalidateUserState(ctx.chat.id);
+    });
+    state.catalogueTask=task;
+    // Observe the complete chain, including terminal rendering and cleanup.
+    // Direct/financial handlers retain their normal awaited error behavior.
+    if(ctx.liquidityCatalogueAsync)void task.catch(()=>{});
+    return ctx.liquidityCatalogueAsync?undefined:task;
   }
   async function choose(ctx, data) {
     if (!await guard(ctx)) return;
@@ -75,33 +158,43 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     if (!m || state?.state !== 'LIQUIDITY_CATALOG' || !current(ctx, state) || !action || m[1] !== state.token && !visibleNavigation)
       return state?.loading&&current(ctx,state)?undefined:screen(ctx, t('session_expired'), back(t));
     state.token = randomBytes(8).toString('hex'); // consume before asynchronous refresh
+    delete state.discoveryRun; // any genuine owner choice cancels the request-lifetime discovery
+    if(state.catalogueTask)await state.catalogueTask;
     const token = state.token;
     if (action.kind === 'cancel') return cancel(ctx);
     if (action.kind === 'menu') { await runtime.invalidateUserState(ctx.chat.id); return menu(ctx); }
     try {
-      await loading(ctx,state,t,action.kind==='verify'?'liq_verifying_complete':'liq_catalog_loading');
-      const selected=['event','verify'].includes(action.kind)?{type:action.event.split(':')[0],id:Number(action.event.split(':')[1])}:undefined;
-      const events = await liquidityCatalogue(state.client,{selected,...(!selected?{page:action.view?.page||1,cursor:action.view?.cursor,pageSize:OUTCOMES_PAGE_SIZE,progressive:true}:{}),mode:state.policy.mode,now,isCurrent:()=>current(ctx,state)&&state.token===token});
+      await loading(ctx,state,t);
+      if(action.kind==='view')return runCatalogue(ctx,state,()=>discoverScreen(ctx,state,action.view),t,action);
+      return runCatalogue(ctx,state,async()=>{
+      const selected={type:action.event.split(':')[0],id:Number(action.event.split(':')[1])};
+      const events = await liquidityCatalogue(state.client,{selected,automatic:true,mode:state.policy.mode,now,isCurrent:()=>current(ctx,state)&&state.token===token});
       if (!current(ctx, state) || state.token !== token) return;
-      if(action.kind==='verify')return await catalogScreen(ctx,state,events,{level:'events',page:1});
-      if (action.kind === 'view') {
-        if (state.view.level === 'events') state.eventPage = state.view.page;
-        if (state.view.level === 'outcomes') state.outcomePage = state.view.page;
-        return await catalogScreen(ctx, state, events, action.view);
-      }
       const event=events.find(e=>eventKey(e)===action.event);
-      if(!event) {await runtime.invalidateUserState(ctx.chat.id);return screen(ctx,t('liq_no_sufficient_books'),back(t));}
+      if(!event) {
+        state.catalogueTerminal=true;
+        return await screen(ctx,t(events.summary?.unknown?'liq_catalog_terminal_unknown':'liq_no_sufficient_books'),back(t),state);
+      }
       state.eventPage=state.view.page;
       state.selection={event:clean(event.name)};
       state.policy.event={type:event.type,id:event.type==='question'?event.questionId:event.outcomeId};
       state.index=0;
       return await prompt(ctx, state, {events,token});
+      },t,action);
     } catch(error) { if (current(ctx, state) && state.token===token) await catalogueFailure(ctx,state,t,error,action); }
   }
   async function tr() { return getTranslator((await loadConfig()).language || 'en'); }
-  async function screen(ctx, text, keyboard) {
+  async function screen(ctx, text, keyboard, state) {
+    if(state&&!current(ctx,state))return;
     const extra = { reply_markup: keyboard };
-    try { await ctx.editMessageText(text, extra); } catch { await ctx.reply(text, extra); }
+    // One total 10s native transport budget, including edit -> reply fallback.
+    // Do not race-and-forget the request: drain its real promise before Cancel.
+    const signal=state?AbortSignal.timeout(10000):undefined;
+    try { await ctx.editMessageText(text, extra, signal); } catch(error) {
+      if(signal?.aborted)throw error;
+      if(state&&!current(ctx,state))return;
+      await ctx.reply(text, extra, signal);
+    }
   }
   async function loading(ctx,state,t,key='liq_catalog_loading') {
     state.loading=true;state.loadingMode=state.policy.mode;
@@ -124,10 +217,9 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     state.state='LIQUIDITY_CATALOG';state.view=action.view||state.view||{level:'events',page:1};
     state.token=randomBytes(8).toString('hex');state.navigationToken=state.token;
     state.loading=false;delete state.loadingNavigation;
-    state.choices=[action,{kind:'menu'},{kind:'cancel'}];
-    const kb=new InlineKeyboard().text(t('liq_retry'),`liq:pick:${state.token}:0`).row()
-      .text(t('back'),`liq:pick:${state.token}:1`).text(t('cancel'),`liq:pick:${state.token}:2`);
-    await screen(ctx,t(action.kind==='verify'?'liq_complete_unknown':'liq_catalog_unavailable'),kb);
+    state.choices=[{kind:'menu'},{kind:'cancel'}];
+    const kb=new InlineKeyboard().text(t('back'),`liq:pick:${state.token}:0`).text(t('cancel'),`liq:pick:${state.token}:1`);
+    await screen(ctx,t('liq_catalog_terminal_unknown'),kb,state);
   }
   async function serviceFailure(ctx, t, error, keyboard=back(t)) {
     if(error?.assessment) {
@@ -191,7 +283,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     }
     state.token = randomBytes(8).toString('hex');
     const kb = new InlineKeyboard().text(t('back'), `liq:back:${state.token}`).text(t('cancel'), 'liq:cancel');
-    await screen(ctx, `${t('liq_step')} ${state.index + 1}/${fields.length}\n${t(field[1])}`, kb);
+    await screen(ctx, `${t('liq_step')} ${state.index + 1}/${fields.length}\n${t(field[1])}`, kb, state);
   }
   async function start(ctx, mode) {
     if (!await guard(ctx)) return;
@@ -209,10 +301,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     await screen(ctx,t('liq_catalog_loading'),new InlineKeyboard()
       .text(t('back'),`liq:pick:${token}:0`).text(t('cancel'),`liq:pick:${token}:1`));
     if(!current(ctx,state)||state.token!==token)return;
-    try {
-      const events = await liquidityCatalogue(state.client,{page:1,pageSize:OUTCOMES_PAGE_SIZE,progressive:true,mode:state.policy.mode,now,isCurrent:()=>current(ctx,state)&&state.token===token});
-      if (current(ctx, state) && state.token===token) await catalogScreen(ctx, state, events);
-    } catch(error) { if (current(ctx, state) && state.token===token) await catalogueFailure(ctx,state,t,error); }
+    return runCatalogue(ctx,state,()=>discoverScreen(ctx,state),t);
   }
   async function input(ctx, state, text) {
     if (!await guard(ctx) || runtime.userStates.get(ctx.chat.id) !== state || state.state !== 'LIQUIDITY_INPUT') return;
@@ -278,8 +367,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
       const refreshToken=state.token;
       try {
         await loading(ctx,state,t);
-        const events=await liquidityCatalogue(state.client,{page:state.eventPage||1,pageSize:OUTCOMES_PAGE_SIZE,progressive:true,mode:state.policy.mode,now,isCurrent:()=>current(ctx,state)&&state.token===refreshToken});
-        if(current(ctx,state)&&state.token===refreshToken)return await catalogScreen(ctx,state,events,{level:'events',page:state.eventPage||1});
+        return runCatalogue(ctx,state,()=>discoverScreen(ctx,state,{level:'events',page:state.eventPage||1}),t);
       } catch(error) { if (current(ctx,state)&&state.token===refreshToken) await catalogueFailure(ctx,state,t,error); }
       return;
     }

@@ -114,11 +114,13 @@ export function scheduleMessageDeletion(ctx, ids, ttl = 30000) {
   cleanupTimers.set(timer, { chatId: ctx.chat.id, remove });
 }
 export async function invalidateUserState(chatId) {
+  const catalogueTask=userStates.get(chatId)?.catalogueTask;
   userStates.delete(chatId);
   pendingConfirmations.delete(chatId);
   for (const [timer, entry] of cleanupTimers) {
     if (entry.chatId === chatId) { clearTimeout(timer); cleanupTimers.delete(timer); await entry.remove(); }
   }
+  if(catalogueTask)await catalogueTask; // deleted state aborts and drains read-only discovery
 }
 export function isAuthorizedPrivateContext(ctx) {
   return ctx.chat?.type === 'private' && !!ctx.from?.id && String(ctx.from.id) === String(allowedUserId) && String(ctx.chat.id) === String(allowedUserId);

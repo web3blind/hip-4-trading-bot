@@ -58,7 +58,7 @@ test('missing account fee evidence is catalogue unknown with retry, not verified
  const f=eventHarness();try{
   f.client.getUserFees=async()=>{throw Error('PRIVATE_DO_NOT_LOG');};
   await assert.rejects(liquidityCatalogue(f.client),e=>e.code==='catalogue_unknown');
-  await f.ui.start(f.ctx,'live');assert.equal(f.messages.at(-1).text,(await getTranslator('en'))('liq_catalog_unavailable'));
+  await f.ui.start(f.ctx,'live');assert.equal(f.messages.at(-1).text,(await getTranslator('en'))('liq_catalog_terminal_unknown'));
   assert(buttons(f).some(b=>b.callback_data.startsWith('liq:pick:')));assert.equal(f.actions.length,0);
  }finally{await f.close();}
 });
