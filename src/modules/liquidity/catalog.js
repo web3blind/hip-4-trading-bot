@@ -1,8 +1,10 @@
+import {createHash,randomUUID} from 'node:crypto';
 import {HLClient} from '../hyperliquid.js';
 import {resolveLiquidityEvent} from './event.js';
 import {bookQuote,market,feeEvidence,automaticFeeSpreadThreshold} from './market.js';
 
 const corridor={minSpread:0,minPrice:0,maxPrice:1};
+const clientBindings=new WeakMap(); // identity only; no books/fees/eligibility cache
 const numeric=v=>(typeof v==='number'||typeof v==='string'&&/^\d+(?:\.\d+)?$/.test(v))&&Number.isFinite(Number(v))?Number(v):NaN;
 
 /** Book quality only, not fee/capital/strategy admission. No summed mirrored depth. */
@@ -72,13 +74,19 @@ export async function catalogueEventAdmission(meta,resolved,books,fees,at=Date.n
 
 /** Non-atomic account-specific scan; complete fresh fee-admitted events only. */
 const catalogueError=(code,stage)=>Object.assign(Error(code==='catalogue_unknown'?'Catalogue freshness unavailable':code==='catalogue_deadline'?'Catalogue deadline exceeded':code==='catalogue_superseded'?'Catalogue refresh superseded':'Catalogue data unavailable'),{code,stage});
-export async function liquidityCatalogue(client,{selected,mode='live',isCurrent=()=>true,now=Date.now,timeoutMs=30000}={}) {
+export async function liquidityCatalogue(client,{selected,mode='live',isCurrent=()=>true,now=Date.now,timeoutMs=30000,page,pageSize=5,progressive=false,discoveryBudgetMs=8000,maxDiscoveryBooks=200,cursor}={}) {
   const controller=new AbortController(),options={signal:controller.signal};
+  const discoveryStarted=now(),wallStarted=performance.now();
   let stopped=false,timer,poll,stage='metadata';
   const check=()=>{if(stopped||!isCurrent())throw catalogueError('catalogue_superseded',stage);};
   const work=(async()=>{
     check();const meta=await client.getOutcomeMeta(options);check();
     if(!Array.isArray(meta?.questions)||!Array.isArray(meta?.outcomes))throw Error('Metadata unavailable');
+    if(!clientBindings.has(client))clientBindings.set(client,randomUUID());
+    const fingerprint=createHash('sha256').update(JSON.stringify([meta,mode,client.network,String(client.address).toLowerCase(),clientBindings.get(client)])).digest('hex');
+    // A continuation is an expiring discovery position, NEVER eligibility proof.
+    // Reordering/membership, account/network or mode drift starts fresh discovery.
+    if(cursor&&(cursor.fingerprint!==fingerprint||now()>=cursor.expiresAt))page=1;
     let fees,feesObservedAt;
     const feesFresh=at=>Number.isSafeInteger(feesObservedAt)&&at>=feesObservedAt&&at-feesObservedAt<=5000;
     async function readFees() {
@@ -92,13 +100,31 @@ export async function liquidityCatalogue(client,{selected,mode='live',isCurrent=
       ...meta.questions.map(q=>({type:'question',id:q.question})),
       ...meta.outcomes.filter(o=>!grouped.has(o.outcome)).map(o=>({type:'standalone',id:o.outcome})),
     ];
-    const events=[];let membershipUnknown=0;
+    let events=[];let membershipUnknown=0;
     for(const ref of refs) {
       let resolved;
       try {resolved=resolveLiquidityEvent(meta,ref);}catch(error){if(error.code==='market_unsuitable')continue;membershipUnknown++;continue;}
       // Reuse final market guards for the selected mode; only explicit observation bypasses live restrictions.
       try {for(const l of resolved.legs)market(meta,l.coin,now(),mode!=='observe');}catch(error){if(error.code==='market_unsuitable')continue;/* Unknown timing is checked in the unchanged final assessment, not book quality. */}
       events.push({resolved,books:new Map()});
+    }
+    // Page windows are discovery only, rebuilt from THIS metadata and mode on
+    // every request. No cached books, fees, eligibility, or account binding.
+    // Count candidate windows, not an invented number of qualified-result pages.
+    const totalCandidates=events.length;
+    let pagination,unscanned=0,windows;
+    let scanned=0,skippedWeak=0,bookReads=0;
+    if(!selected&&page!==undefined) {
+      if(!Number.isSafeInteger(page)||page<1||!Number.isSafeInteger(pageSize)||pageSize<1||pageSize>5)throw Error('Invalid candidate page');
+      windows=[];let window=[],books=0;
+      for(const e of events) {
+        if(window.length&&(window.length>=pageSize||books+e.resolved.legs.length>24)){windows.push(window);window=[];books=0;}
+        window.push(e);books+=e.resolved.legs.length;
+      }
+      if(window.length)windows.push(window);
+      const pages=Math.max(1,windows.length),currentPage=Math.min(page,pages);
+      events=windows[currentPage-1]||[];unscanned=totalCandidates-events.length;
+      pagination={page:currentPage,pages,candidateWindows:true};
     }
     const fresh=(book,at)=>{const time=numeric(book?.time);return Number.isSafeInteger(time)&&time<=at+1000&&at-time<=5000;};
     const allFresh=(e,at)=>e.resolved.legs.every(l=>fresh(e.books.get(l.coin),at));
@@ -117,18 +143,23 @@ export async function liquidityCatalogue(client,{selected,mode='live',isCurrent=
       await Promise.all(Array.from({length:Math.min(6,jobs.length)},async()=>{
         while(index<jobs.length) {
           check();const {e,l}=jobs[index++];const book=await client.getOrderbook(l.coin,options);check();
+          bookReads++;
           e.books.set(l.coin,book);remaining.set(e,remaining.get(e)-1);
           if(!remaining.get(e))await classify(e);
         }
       }));
     }
+    for(;;) {
     stage='books';
-    await read(events.flatMap(e=>e.resolved.legs.map(l=>({e,l}))));
+    // Normally <=24 books/window; a single larger complete event may read
+    // <=48. Above that cap leave the WHOLE event UNKNOWN, never read/publish
+    // a subset. Selected-event/final assessment paths keep their full membership.
+    await read(events.filter(e=>!pagination||e.resolved.legs.length<=48).flatMap(e=>e.resolved.legs.map(l=>({e,l}))));
     // Keep quality observed at each event's completion. Stale unrelated books
     // are UNKNOWN, not weak. Prioritize EARLY qualified candidates, with a hard
     // 24-book refresh budget (whole events, at most two reads/coin). Never chase
     // freshness across the entire universe a second time.
-    stage='candidate_refresh';let budget=24;const refresh=[];
+    stage='candidate_refresh';let budget=progressive&&pagination?Math.min(24,Math.max(0,maxDiscoveryBooks-bookReads)):24;const refresh=[];
     const at=now();
     for(const e of [...events.filter(e=>e.quality?.eligible),...events.filter(e=>!e.quality)]) {
       if(allFresh(e,at)||e.resolved.legs.length>budget)continue;
@@ -160,13 +191,34 @@ export async function liquidityCatalogue(client,{selected,mode='live',isCurrent=
     const published=events.filter(e=>e.quality?.eligible&&allFresh(e,finalAt));
     const weak=events.filter(e=>e.quality&&!e.quality.eligible).length;
     const unknown=membershipUnknown+events.length-published.length-weak;
-    if(!published.length&&unknown)throw catalogueError('catalogue_unknown',stage);
+    const verification=events.filter(e=>pagination&&e.resolved.legs.length>48).map(({resolved:r})=>({type:r.event.type,id:r.event.id,name:r.label,books:r.legs.length}));
+    if(progressive&&pagination) {
+      scanned+=events.length;
+      unscanned=totalCandidates-scanned;
+      const next=windows[pagination.page];
+      const cost=next?.reduce((n,e)=>n+e.resolved.legs.length,0)||0;
+      // The 8s budget stops scheduling additional whole windows; an in-flight
+      // window may finish later, always within the original 30s hard deadline.
+      // Skip ONLY completely verified weak windows. Unknown/oversized events
+      // retain their visible retry/verification; never infer weakness from a cap.
+      if(!published.length&&!unknown&&next&&bookReads+cost<=maxDiscoveryBooks&&
+        Math.max(now()-discoveryStarted,performance.now()-wallStarted)<discoveryBudgetMs) {
+        skippedWeak+=weak;pagination.page++;events=next;continue;
+      }
+      pagination.nextPage=next?pagination.page+1:null;
+      pagination.scannedWindows=skippedWeak?pagination.page-Math.min(page,pagination.pages)+1:1;
+    }
+    if(!published.length&&unknown&&!verification.length&&(!pagination||!unscanned))throw catalogueError('catalogue_unknown',stage);
     const result=published.map(({resolved:r})=>({type:r.event.type,
       ...(r.event.type==='question'?{questionId:r.event.id}:{outcomeId:r.event.id}),name:r.label}));
     // Keep the existing array/pagination API; publish counts, never account fee payloads.
-    result.summary={total:membershipUnknown+events.length,qualified:published.length,weak,unknown,partial:unknown>0};
+    result.summary={total:membershipUnknown+totalCandidates,qualified:published.length,weak:weak+skippedWeak,unknown,...(pagination?{unscanned}:{}),partial:unknown>0||unscanned>0};
+    if(verification.length)result.verification=verification;
+    if(pagination)result.pagination=pagination;
+    if(pagination)result.cursor={fingerprint,expiresAt:now()+60000};
     result.validUntil=Math.min(feesObservedAt+5000,...published.flatMap(e=>e.resolved.legs.map(l=>numeric(e.books.get(l.coin).time)+5000)));
     return result;
+    }
   })();
   const interrupted=new Promise((_,reject)=>{
     timer=setTimeout(()=>{stopped=true;reject(catalogueError('catalogue_deadline',stage));},timeoutMs);

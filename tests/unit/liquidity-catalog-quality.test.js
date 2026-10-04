@@ -32,7 +32,7 @@ for(const language of ['en','ru'])for(const operation of ['page','event'])for(co
  const f=eventHarness({language,routed:true});const originalFetch=globalThis.fetch;let release,pending;try{
   mixedGroups(f);await start(f);const t=await getTranslator(language);
   const visible=buttons(f),navigate=visible.find(b=>b.text===t(navigation==='cancel'?'cancel':'back')).callback_data;
-  const pick=visible.find(b=>b.text===(operation==='page'?t('liq_next'):'Group 0')).callback_data;
+  const pick=visible.find(b=>b.text===(operation==='page'?t('liq_continue_search'):'Group 0')).callback_data;
   let entered,aborted=0,calls=0;const reached=new Promise(r=>entered=r),hold=new Promise(r=>release=r);
   globalThis.fetch=async(url,{body,signal})=>{
    const request=JSON.parse(body);assert.equal(request.type,'l2Book');calls++;entered();
@@ -212,7 +212,7 @@ function mixedGroups(f,count=OUTCOMES_PAGE_SIZE+4){
  }
  return strong;
 }
-for(const language of ['en','ru'])test(`real routers paginate mixed strong/weak full groups AFTER filtering (${language})`,async()=>{
+for(const language of ['en','ru'])test(`real routers paginate bounded candidate windows and filter whole groups (${language})`,async()=>{
  const f=eventHarness({language,routed:true});try{
   const strong=mixedGroups(f),t=await getTranslator(language),reads=[];let pending=0,peak=0;
   const read=f.client.getOrderbook;f.client.getOrderbook=async coin=>{reads.push(coin);pending++;peak=Math.max(peak,pending);await new Promise(r=>setTimeout(r,2));try{return await read(coin);}finally{pending--;}};
@@ -221,17 +221,17 @@ for(const language of ['en','ru'])test(`real routers paginate mixed strong/weak 
   let metaReads=0;const meta=f.client.getOutcomeMeta;f.client.getOutcomeMeta=async()=>{metaReads++;return meta();};
   await start(f);
   const groupNames=()=>buttons(f).filter(b=>/^Group /.test(b.text)).map(b=>b.text);
-  assert.deepEqual(groupNames(),strong.slice(0,OUTCOMES_PAGE_SIZE));assert(f.messages.at(-1).text.includes('1/2'));
-  assert.equal(metaReads,1);assert.equal(feeReads,1);assert.equal(reads.length,f.meta.outcomes.length*2);assert.equal(new Set(reads).size,reads.length);assert(peak<=6&&peak>1);
-  const next=buttons(f).find(b=>b.text===t('liq_next')).callback_data;
-  await route(f,next);assert.deepEqual(groupNames(),strong.slice(OUTCOMES_PAGE_SIZE));
+  assert.deepEqual(groupNames(),['Group 0','Group 2']);assert(f.messages.at(-1).text.includes('1/3'));
+  assert.equal(metaReads,1);assert.equal(feeReads,1);assert.equal(reads.length,24);assert.equal(new Set(reads).size,reads.length);assert(peak<=6&&peak>1);
+  const next=buttons(f).find(b=>b.text===t('liq_continue_search')).callback_data;
+  await route(f,next);assert.deepEqual(groupNames(),['Group 4','Group 5','Group 6','Group 7']);assert.equal(reads.length,48);
   const pick=buttons(f).find(b=>/^Group /.test(b.text)).callback_data;
   const priorToken=runtime.userStates.get(f.owner).token,priorReads=reads.length;
   await route(f,next);assert.equal(runtime.userStates.get(f.owner).token,priorToken,'Stale page token must not replay');assert.equal(reads.length,priorReads);assert.equal(f.messages.at(-1).text,t('session_expired'));
   const before=reads.length;await route(f,pick);assert.equal(reads.length-before,6,'Pick checks only selected complete event');
   assert.equal(runtime.userStates.get(f.owner).state,'LIQUIDITY_INPUT');
   const back=buttons(f).find(b=>b.callback_data.startsWith('liq:back:')).callback_data;
-  await route(f,back);assert.deepEqual(groupNames(),strong.slice(OUTCOMES_PAGE_SIZE));assert(f.messages.at(-1).text.includes('2/2'));
+  await route(f,back);assert.deepEqual(groupNames(),['Group 4','Group 5','Group 6','Group 7']);assert(f.messages.at(-1).text.includes('2/3'));assert.equal(reads.length-before,30);
   assert.equal(f.actions.length,0);assert.equal((await f.c.list()).length,0);
  }finally{await f.close();}
 });

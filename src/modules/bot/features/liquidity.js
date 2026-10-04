@@ -32,6 +32,7 @@ const bindingMatches = policy => !!runtime.hlClient && policy?.network === runti
 export function createLiquidityFeature({ service = coordinator, now = Date.now } = {}) {
   const current = (ctx, state) => runtime.userStates.get(ctx.chat.id) === state &&
     bindingMatches(state.policy) && state.client === runtime.hlClient &&
+    (!state.loading||state.loadingMode===state.policy.mode) &&
     !runtime.runtimeTransitioning && now() < state.expiresAt;
   const sideName = (o, side, t) => /^(yes|no)$/i.test(o[`side${side}Name`] || '')
     ? t(side === 0 ? 'yes' : 'no') : clean(o[`side${side}Name`] || t(side === 0 ? 'yes' : 'no'));
@@ -42,19 +43,24 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     if (!current(ctx, state) || state.token!==expectedToken) return;
     if(now()>events.validUntil)throw Object.assign(Error('Catalogue evidence expired'),{code:'catalogue_unknown',stage:'publication'});
     state.state = 'LIQUIDITY_CATALOG'; state.view = view; state.token = randomBytes(8).toString('hex');
+    state.loading=false;delete state.loadingNavigation;
     state.navigationToken = state.token; // visible Back/Cancel survive a consumed pick while loading
     state.choices = [];
     const kb = new InlineKeyboard();
     const add = (label, action) => { const index = state.choices.push(action) - 1; kb.text(label.slice(0, 60), `liq:pick:${state.token}:${index}`).row(); };
-    const list=events,pages=Math.max(1,Math.ceil(list.length/OUTCOMES_PAGE_SIZE));
+    const list=events,pages=events.pagination?.pages||Math.max(1,Math.ceil(list.length/OUTCOMES_PAGE_SIZE));
+    if(events.pagination)view.page=events.pagination.page;
     view.page=Math.min(pages,Math.max(1,view.page));
-    let title=`${t('liq_select_event')}\n${view.page}/${pages}`;
-    if(!list.length) title+=`\n${t('liq_no_sufficient_books')}`;
+    let title=`${t('liq_select_event')}\n${events.pagination?t('liq_candidate_window')+' ':''}${view.page}/${pages}`;
+    if(!list.length) title+=`\n${t(events.summary?.unknown?'liq_catalog_page_unknown':events.pagination&&events.summary?.unscanned?'liq_catalog_page_empty':'liq_no_sufficient_books')}`;
+    if(!list.length&&events.summary?.unknown)add(t('liq_retry'),{kind:'view',view:{level:'events',page:view.page,cursor:events.cursor}});
     if(events.summary?.partial)title+=`\n${t('liq_catalog_partial')}`;
-    for(const item of list.slice((view.page-1)*OUTCOMES_PAGE_SIZE,view.page*OUTCOMES_PAGE_SIZE))
+    for(const item of list.slice(events.pagination?0:(view.page-1)*OUTCOMES_PAGE_SIZE,events.pagination?list.length:view.page*OUTCOMES_PAGE_SIZE))
       add(clean(item.name),{kind:'event',event:eventKey(item)});
-    if(view.page>1) add(t('liq_previous'),{kind:'view',view:{level:'events',page:view.page-1}});
-    if(view.page<pages) add(t('liq_next'),{kind:'view',view:{level:'events',page:view.page+1}});
+    for(const item of events.verification||[])
+      add(`${t('liq_verify_complete')}: ${clean(item.name)}`,{kind:'verify',event:`${item.type}:${item.id}`});
+    if(view.page>1) add(t('liq_previous'),{kind:'view',view:{level:'events',page:view.page-1,cursor:events.cursor}});
+    if(view.page<pages) add(t('liq_continue_search'),{kind:'view',view:{level:'events',page:events.pagination?.nextPage||view.page+1,cursor:events.cursor}});
     add(t('back'),{kind:'menu'});
     add(t('cancel'), { kind: 'cancel' });
     await screen(ctx, `${title}\n${t('liq_catalog_note')}`, kb);
@@ -63,18 +69,21 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     if (!await guard(ctx)) return;
     const state = runtime.userStates.get(ctx.chat.id), t = await tr();
     const m = /^liq:pick:([0-9a-f]{16}):(0|[1-9]\d*)$/.exec(data);
-    const action = m && state?.choices?.[Number(m[2])];
-    const visibleNavigation = action && ['cancel','menu'].includes(action.kind) && m[1] === state.navigationToken;
+    const priorNavigation=m&&state?.loadingNavigation?.token===m[1]&&state.loadingNavigation.choices[Number(m[2])];
+    const action = priorNavigation || m && state?.choices?.[Number(m[2])];
+    const visibleNavigation = action && ['cancel','menu'].includes(action.kind) && (m[1] === state.navigationToken||priorNavigation);
     if (!m || state?.state !== 'LIQUIDITY_CATALOG' || !current(ctx, state) || !action || m[1] !== state.token && !visibleNavigation)
-      return screen(ctx, t('session_expired'), back(t));
+      return state?.loading&&current(ctx,state)?undefined:screen(ctx, t('session_expired'), back(t));
     state.token = randomBytes(8).toString('hex'); // consume before asynchronous refresh
     const token = state.token;
     if (action.kind === 'cancel') return cancel(ctx);
     if (action.kind === 'menu') { await runtime.invalidateUserState(ctx.chat.id); return menu(ctx); }
     try {
-      const selected=action.kind==='event'?{type:action.event.split(':')[0],id:Number(action.event.split(':')[1])}:undefined;
-      const events = await liquidityCatalogue(state.client,{selected,mode:state.policy.mode,now,isCurrent:()=>current(ctx,state)&&state.token===token});
+      await loading(ctx,state,t,action.kind==='verify'?'liq_verifying_complete':'liq_catalog_loading');
+      const selected=['event','verify'].includes(action.kind)?{type:action.event.split(':')[0],id:Number(action.event.split(':')[1])}:undefined;
+      const events = await liquidityCatalogue(state.client,{selected,...(!selected?{page:action.view?.page||1,cursor:action.view?.cursor,pageSize:OUTCOMES_PAGE_SIZE,progressive:true}:{}),mode:state.policy.mode,now,isCurrent:()=>current(ctx,state)&&state.token===token});
       if (!current(ctx, state) || state.token !== token) return;
+      if(action.kind==='verify')return await catalogScreen(ctx,state,events,{level:'events',page:1});
       if (action.kind === 'view') {
         if (state.view.level === 'events') state.eventPage = state.view.page;
         if (state.view.level === 'outcomes') state.outcomePage = state.view.page;
@@ -94,6 +103,12 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     const extra = { reply_markup: keyboard };
     try { await ctx.editMessageText(text, extra); } catch { await ctx.reply(text, extra); }
   }
+  async function loading(ctx,state,t,key='liq_catalog_loading') {
+    state.loading=true;state.loadingMode=state.policy.mode;
+    state.loadingNavigation={token:state.navigationToken,choices:state.choices.map(a=>['menu','cancel'].includes(a.kind)?a:undefined)};
+    state.navigationToken=state.token;state.choices=[{kind:'menu'},{kind:'cancel'}];
+    await screen(ctx,t(key),new InlineKeyboard().text(t('back'),`liq:pick:${state.token}:0`).text(t('cancel'),`liq:pick:${state.token}:1`));
+  }
   const back = (t, target = 'liq:menu') => new InlineKeyboard().text(t('back'), target);
   async function guard(ctx) {
     if (!runtime.isAuthorizedPrivateContext(ctx) || runtime.runtimeTransitioning) return false;
@@ -108,10 +123,11 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     safeLogError('liquidity:catalogue',new Error('Catalogue loading failed'),{stage,code});
     state.state='LIQUIDITY_CATALOG';state.view=action.view||state.view||{level:'events',page:1};
     state.token=randomBytes(8).toString('hex');state.navigationToken=state.token;
+    state.loading=false;delete state.loadingNavigation;
     state.choices=[action,{kind:'menu'},{kind:'cancel'}];
     const kb=new InlineKeyboard().text(t('liq_retry'),`liq:pick:${state.token}:0`).row()
       .text(t('back'),`liq:pick:${state.token}:1`).text(t('cancel'),`liq:pick:${state.token}:2`);
-    await screen(ctx,t('liq_catalog_unavailable'),kb);
+    await screen(ctx,t(action.kind==='verify'?'liq_complete_unknown':'liq_catalog_unavailable'),kb);
   }
   async function serviceFailure(ctx, t, error, keyboard=back(t)) {
     if(error?.assessment) {
@@ -165,6 +181,7 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     } catch { await screen(ctx, t('liq_campaign_unavailable'), back(t)); }
   }
   async function prompt(ctx, state, catalogue) {
+    state.loading=false;delete state.loadingNavigation;
     const t = await tr(), field = fields[state.index];
     if (!current(ctx, state) || catalogue && state.token!==catalogue.token) return;
     // Last awaited formatting precedes both the evidence guard and transition.
@@ -186,8 +203,14 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
     const t = await tr();
     if (!current(ctx, state)) return;
     const token=state.token;
+    state.view={level:'events',page:1};state.navigationToken=token;
+    state.loading=true;state.loadingMode=state.policy.mode;
+    state.choices=[{kind:'menu'},{kind:'cancel'}];
+    await screen(ctx,t('liq_catalog_loading'),new InlineKeyboard()
+      .text(t('back'),`liq:pick:${token}:0`).text(t('cancel'),`liq:pick:${token}:1`));
+    if(!current(ctx,state)||state.token!==token)return;
     try {
-      const events = await liquidityCatalogue(state.client,{mode:state.policy.mode,now,isCurrent:()=>current(ctx,state)&&state.token===token});
+      const events = await liquidityCatalogue(state.client,{page:1,pageSize:OUTCOMES_PAGE_SIZE,progressive:true,mode:state.policy.mode,now,isCurrent:()=>current(ctx,state)&&state.token===token});
       if (current(ctx, state) && state.token===token) await catalogScreen(ctx, state, events);
     } catch(error) { if (current(ctx, state) && state.token===token) await catalogueFailure(ctx,state,t,error); }
   }
@@ -254,7 +277,8 @@ export function createLiquidityFeature({ service = coordinator, now = Date.now }
       state.state = 'LIQUIDITY_CATALOG'; state.token = randomBytes(8).toString('hex');
       const refreshToken=state.token;
       try {
-        const events=await liquidityCatalogue(state.client,{mode:state.policy.mode,now,isCurrent:()=>current(ctx,state)&&state.token===refreshToken});
+        await loading(ctx,state,t);
+        const events=await liquidityCatalogue(state.client,{page:state.eventPage||1,pageSize:OUTCOMES_PAGE_SIZE,progressive:true,mode:state.policy.mode,now,isCurrent:()=>current(ctx,state)&&state.token===refreshToken});
         if(current(ctx,state)&&state.token===refreshToken)return await catalogScreen(ctx,state,events,{level:'events',page:state.eventPage||1});
       } catch(error) { if (current(ctx,state)&&state.token===refreshToken) await catalogueFailure(ctx,state,t,error); }
       return;
